@@ -1,0 +1,94 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Resource Files">
+      <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
+      <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <FxCompile Include="source\graphics\shaders\pixelshader.hlsl" />
+    <FxCompile Include="source\graphics\shaders\vertexshader.hlsl" />
+    <FxCompile Include="source\graphics\shaders\geometryshaderthickness.hlsl" />
+    <FxCompile Include="source\graphics\shaders\geometryshaderpoints.hlsl" />
+    <FxCompile Include="source\graphics\shaders\pixelshaderoutline.hlsl" />
+    <FxCompile Include="source\graphics\shaders\vertexshaderFSQuad.hlsl" />
+    <FxCompile Include="source\graphics\shaders\pixelshaderoutlinemerge.hlsl" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="source\eigen-master\bench\perf_monitoring\resources\chart_footer.html" />
+    <None Include="source\eigen-master\bench\perf_monitoring\resources\chart_header.html" />
+    <None Include="source\eigen-master\bench\perf_monitoring\resources\footer.html" />
+    <None Include="source\eigen-master\bench\perf_monitoring\resources\header.html" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="source\graphics\imgui\imconfig.h" />
+    <ClInclude Include="source\graphics\imgui\imgui.h" />
+    <ClInclude Include="source\graphics\imgui\imgui_impl_dx11.h" />
+    <ClInclude Include="source\graphics\imgui\imgui_impl_win32.h" />
+    <ClInclude Include="source\graphics\imgui\imgui_internal.h" />
+    <ClInclude Include="source\graphics\imgui\imstb_rectpack.h" />
+    <ClInclude Include="source\graphics\imgui\imstb_textedit.h" />
+    <ClInclude Include="source\graphics\imgui\imstb_truetype.h" />
+    <ClInclude Include="source\utils\adapterReader.h" />
+    <ClInclude Include="source\graphics\camera\Camera.h" />
+    <ClInclude Include="source\graphics\buffers\constantBuffer.h" />
+    <ClInclude Include="source\graphics\graphics.h" />
+    <ClInclude Include="source\graphics\buffers\indexBuffer.h" />
+    <ClInclude Include="source\graphics\scene\primitives\primitive.h" />
+    <ClInclude Include="source\graphics\shaders\shaders.h" />
+    <ClInclude Include="source\graphics\buffers\vertex.h" />
+    <ClInclude Include="source\graphics\buffers\vertexBuffer.h" />
+    <ClInclude Include="source\utils\COMException.h" />
+    <ClInclude Include="source\window\engine.h" />
+    <ClInclude Include="source\utils\errorLogger.h" />
+    <ClInclude Include="source\IO\keyboardClass.h" />
+    <ClInclude Include="source\IO\keyboardEvent.h" />
+    <ClInclude Include="source\IO\mouseClass.h" />
+    <ClInclude Include="source\IO\mouseEvent.h" />
+    <ClInclude Include="source\window\renderWindow.h" />
+    <ClInclude Include="source\utils\stringConverter.h" />
+    <ClInclude Include="source\utils\Timer.h" />
+    <ClInclude Include="source\window\windowContainer.h" />
+    <ClInclude Include="source\graphics\scene\scene.h" />
+    <ClInclude Include="source\graphics\imgui\implot.h" />
+    <ClInclude Include="source\graphics\imgui\implot_internal.h" />
+    <ClInclude Include="source\graphics\camera\Projections.h" />
+    <ClInclude Include="source\graphics\misc\Colors.h" />
+    <ClInclude Include="source\graphics\misc\inlines.h" />
+    <ClInclude Include="source\external\json.hpp" />
+    <ClInclude Include="source\graphics\misc\DataVisualizer.h" />
+    <ClInclude Include="source\graphics\scene\jsonSaver.h" />
+    <ClInclude Include="source\graphics\imgui\imgui_stdlib.h" />
+    <ClInclude Include="source\graphics\math.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="source\graphics\imgui\imgui.cpp" />
+    <ClCompile Include="source\graphics\imgui\imgui_draw.cpp" />
+    <ClCompile Include="source\graphics\imgui\imgui_impl_dx11.cpp" />
+    <ClCompile Include="source\graphics\imgui\imgui_impl_win32.cpp" />
+    <ClCompile Include="source\graphics\imgui\imgui_tables.cpp" />
+    <ClCompile Include="source\graphics\imgui\imgui_widgets.cpp" />
+    <ClCompile Include="source\utils\adapterReader.cpp" />
+    <ClCompile Include="source\graphics\camera\Camera.cpp" />
+    <ClCompile Include="source\graphics\graphics.cpp" />
+    <ClCompile Include="source\graphics\scene\primitives\primitive.cpp" />
+    <ClCompile Include="source\graphics\shaders\shaders.cpp" />
+    <ClCompile Include="source\window\engine.cpp" />
+    <ClCompile Include="source\utils\errorLogger.cpp" />
+    <ClCompile Include="source\IO\keyboardClass.cpp" />
+    <ClCompile Include="source\IO\keyboardEvent.cpp" />
+    <ClCompile Include="source\IO\mouseClass.cpp" />
+    <ClCompile Include="source\IO\mouseEvent.cpp" />
+    <ClCompile Include="source\window\renderWindow.cpp" />
+    <ClCompile Include="source\utils\stringConverter.cpp" />
+    <ClCompile Include="source\utils\Timer.cpp" />
+    <ClCompile Include="source\window\windowContainer.cpp" />
+    <ClCompile Include="source\graphics\scene\scene.cpp" />
+    <ClCompile Include="source\main.cpp" />
+    <ClCompile Include="source\graphics\imgui\implot.cpp" />
+    <ClCompile Include="source\graphics\imgui\implot_items.cpp" />
+    <ClCompile Include="source\graphics\gui.cpp" />
+    <ClCompile Include="source\graphics\imgui\imgui_stdlib.cpp" />
+  </ItemGroup>
+</Project>
