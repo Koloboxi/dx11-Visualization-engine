@@ -47,6 +47,9 @@ private:
 	Microsoft::WRL::ComPtr<ID3D11DepthStencilView> depthStencilView;
 	Microsoft::WRL::ComPtr<ID3D11Texture2D> depthStencilBuffer;
 
+	Microsoft::WRL::ComPtr<ID3D11DepthStencilView> depthStencilViewNoMSAA;
+	Microsoft::WRL::ComPtr<ID3D11Texture2D> depthStencilBufferNoMSAA;
+
 	Microsoft::WRL::ComPtr<ID3D11BlendState> blendState;
 
 	Timer fpsTimer;

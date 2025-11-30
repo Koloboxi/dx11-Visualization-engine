@@ -63,19 +63,8 @@ void Engine::Update()
 			);
 		}
 
-		/*if (me.GetType() == MouseEvent::LRelease) {
-			XMFLOAT2 mouseRay = this->gfx.ScreenCoords2NDC(me.GetPosX(), me.GetPosY());
-
-			XMFLOAT3 rayDir = {mouseRay.x, mouseRay.y, -1.f};
-			XMFLOAT3 rayOri = {mouseRay.x, mouseRay.y, 0.f};
-
-			XMVECTOR rayDirVec = XMLoadFloat3(&rayDir);
-			XMVECTOR rayOriVec = XMLoadFloat3(&rayOri);
-
-			rayDirVec = XMVector3TransformNormal(rayDirVec, this->gfx.scene.camera.GetInverseMatrix());
-			rayOriVec = XMVector3TransformCoord(rayOriVec, this->gfx.scene.camera.GetInverseMatrix());
-
-			this->gfx.scene.HandleMouseRay(rayOriVec, rayDirVec);
-		}*/
+		if (me.GetType() == MouseEvent::LRelease) {
+			this->gfx.scene.HandleMouseInteraction(me.GetPosX(), me.GetPosY());
+		}
 	}
 }

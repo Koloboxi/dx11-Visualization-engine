@@ -36,6 +36,12 @@ struct CB_PS_pixelshaderOutline
 	float pad;
 };
 
+struct CB_PS_id
+{
+	UINT id;
+	float pad[3];
+};
+
 template<class T>
 class ConstantBuffer 
 {

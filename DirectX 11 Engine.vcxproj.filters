@@ -14,6 +14,7 @@
     <FxCompile Include="source\graphics\shaders\pixelshaderoutline.hlsl" />
     <FxCompile Include="source\graphics\shaders\vertexshaderFSQuad.hlsl" />
     <FxCompile Include="source\graphics\shaders\pixelshaderoutlinemerge.hlsl" />
+    <FxCompile Include="source\graphics\shaders\pixelshaderwriteids.hlsl" />
   </ItemGroup>
   <ItemGroup>
     <None Include="source\eigen-master\bench\perf_monitoring\resources\chart_footer.html" />
@@ -90,5 +91,6 @@
     <ClCompile Include="source\graphics\imgui\implot_items.cpp" />
     <ClCompile Include="source\graphics\gui.cpp" />
     <ClCompile Include="source\graphics\imgui\imgui_stdlib.cpp" />
+    <ClCompile Include="cpp source\graphics\scene\scene.cpp" />
   </ItemGroup>
 </Project>

@@ -10,7 +10,7 @@ bool Graphics::Initialize(HWND hwnd, int width, int height) {
 	if (!InitializeShaders())
 		return false;
 
-	if (!this->scene.Initialize(this->device.Get(), this->deviceContext.Get(), this->shadersPath, this->depthStencilView.Get(), this->renderTargetView.Get(), &this->vertexshader, this->windowWidth, this->windowHeight))
+	if (!this->scene.Initialize(this->device.Get(), this->deviceContext.Get(), this->shadersPath, this->depthStencilView.Get(), this->depthStencilViewNoMSAA.Get(), this->renderTargetView.Get(), &this->vertexshader, this->windowWidth, this->windowHeight))
 		return false;	
 
 
@@ -93,6 +93,14 @@ void Graphics::OnResize(int newWidth, int newHeight)
 		);
 		COM_ERROR_IF_FAILED(hr, "Failed to recreate depth stencil view after resize.");
 
+		depthStencilDesc.SampleDesc.Count = 1;
+		hr = this->device->CreateDepthStencilView(
+			this->depthStencilBuffer.Get(),
+			nullptr,
+			this->depthStencilViewNoMSAA.GetAddressOf()
+		);
+		COM_ERROR_IF_FAILED(hr, "Failed to recreate depth stencil view after resize.");
+
 		CD3D11_VIEWPORT viewport(
 			0.0f,
 			0.0f,
@@ -102,7 +110,7 @@ void Graphics::OnResize(int newWidth, int newHeight)
 		this->deviceContext->RSSetViewports(1, &viewport);
 
 
-		this->scene.OnResize(this->depthStencilView.Get(), this->renderTargetView.Get(), this->windowWidth, this->windowHeight);
+		this->scene.OnResize(this->depthStencilView.Get(), this->depthStencilViewNoMSAA.Get(), this->renderTargetView.Get(), this->windowWidth, this->windowHeight);
 
 		this->cb_gs_geometryshader.data.AspectRatio = (float)this->windowWidth / (float)this->windowHeight;
 		this->cb_gs_geometryshader.ApplyChanges();
@@ -118,6 +126,7 @@ void Graphics::RenderFrame()
 	static float bgcolor[] = { 0.117647f, 0.117647f, 0.117647f, 0.117647f };
 	this->deviceContext->ClearRenderTargetView(this->renderTargetView.Get(), bgcolor);
 	this->deviceContext->ClearDepthStencilView(this->depthStencilView.Get(), D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0);
+	this->deviceContext->ClearDepthStencilView(this->depthStencilViewNoMSAA.Get(), D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0);
 
 	this->deviceContext->IASetInputLayout(this->vertexshader.GetInputLayout());
 	this->deviceContext->VSSetShader(this->vertexshader.GetShader(), NULL, 0);
@@ -214,6 +223,13 @@ bool Graphics::InitializeDirectX(HWND hwnd) {
 		COM_ERROR_IF_FAILED(hr, "Failed to create depth stencil buffer.");
 
 		hr = this->device->CreateDepthStencilView(this->depthStencilBuffer.Get(), NULL, this->depthStencilView.GetAddressOf());
+		COM_ERROR_IF_FAILED(hr, "Failed to create depth stencil view.");
+
+		depthStencilDesc.SampleDesc.Count = 1;
+		hr = this->device->CreateTexture2D(&depthStencilDesc, NULL, this->depthStencilBufferNoMSAA.GetAddressOf());
+		COM_ERROR_IF_FAILED(hr, "Failed to create depth stencil buffer.");
+
+		hr = this->device->CreateDepthStencilView(this->depthStencilBufferNoMSAA.Get(), NULL, this->depthStencilViewNoMSAA.GetAddressOf());
 		COM_ERROR_IF_FAILED(hr, "Failed to create depth stencil view.");
 
 		//Create + set the Viewport

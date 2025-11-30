@@ -57,7 +57,9 @@ void Primitive::SetColor(const XMFLOAT4& col)
 	this->cb_ps_pixelshader.data.color[2] = col.z;
 	this->cb_ps_pixelshader.data.color[3] = col.w;
 	this->cb_ps_pixelshader.ApplyChanges();
-}
+
+	this->transparent = (col.w < 1.0f);
+}	
 
 void Primitive::SetIlluminationCapability(const bool l)
 {
@@ -199,6 +201,11 @@ void Primitive::SetPrimitiveTopology(const D3D10_PRIMITIVE_TOPOLOGY& top)
 XMFLOAT4 Primitive::GetColor() const
 {
 	return XMFLOAT4(this->cb_ps_pixelshader.data.color);
+}
+
+bool Primitive::GetTransparent() const
+{
+	return this->transparent;
 }
 
 bool Primitive::GetIlluminationCapability() const

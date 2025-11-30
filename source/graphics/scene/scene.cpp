@@ -1,12 +1,13 @@
 #include "scene.h"
 #include <fstream>
 
-bool Scene::Initialize(ID3D11Device* device, ID3D11DeviceContext* deviceContext, std::wstring shadersPath, ID3D11DepthStencilView* dsView, ID3D11RenderTargetView* mainRTV, VertexShader* vs, int windowWidth, int windowHeight)
+bool Scene::Initialize(ID3D11Device* device, ID3D11DeviceContext* deviceContext, std::wstring shadersPath, ID3D11DepthStencilView* dsView, ID3D11DepthStencilView* dsViewNoMSAA, ID3D11RenderTargetView* mainRTV, VertexShader* vs, int windowWidth, int windowHeight)
 {
 	this->device = device;
 	this->deviceContext = deviceContext;
 
 	this->dsView = dsView;
+	this->dsViewNoMSAA = dsViewNoMSAA;
 	this->mainRTV = mainRTV;
 
 	this->vsMain = vs;
@@ -66,72 +67,18 @@ bool Scene::Initialize(ID3D11Device* device, ID3D11DeviceContext* deviceContext,
 	return true;
 }
 
-void Scene::OnResize(ID3D11DepthStencilView* dsView, ID3D11RenderTargetView* mainRTV, int newWidth, int newHeight)
+void Scene::OnResize(ID3D11DepthStencilView* dsView, ID3D11DepthStencilView* dsViewNoMSAA, ID3D11RenderTargetView* mainRTV, int newWidth, int newHeight)
 {
 	this->dsView = dsView;
+	this->dsViewNoMSAA = dsViewNoMSAA;
 	this->mainRTV = mainRTV;
 	this->width = newWidth;
 	this->height = newHeight;
 	this->camera.SetProjectionValues(this->width, this->height, -1000000, 1000000);
 
 	try {
-		CD3D11_TEXTURE2D_DESC maskDesc(
-			DXGI_FORMAT_R8_UNORM,
-			this->width,
-			this->height
-		);
-		maskDesc.MipLevels = 1;
-		maskDesc.BindFlags = D3D11_BIND_RENDER_TARGET;
-		maskDesc.SampleDesc.Count = 8;
-		maskDesc.SampleDesc.Quality = 0;
-
-		HRESULT hr = this->device->CreateTexture2D(&maskDesc, nullptr, this->geometryPresenceMask.GetAddressOf());
-		COM_ERROR_IF_FAILED(hr, "Failed to create texture for mask.");
-
-		maskDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-		maskDesc.SampleDesc.Count = 1;
-		hr = this->device->CreateTexture2D(&maskDesc, nullptr, this->geometryPresenceMaskResolved.GetAddressOf());
-		COM_ERROR_IF_FAILED(hr, "Failed to create texture for mask.");
-
-
-		maskDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-
-		maskDesc.BindFlags = D3D11_BIND_RENDER_TARGET;
-		maskDesc.SampleDesc.Count = 8;
-		hr = this->device->CreateTexture2D(&maskDesc, nullptr, this->outlinesTexture.GetAddressOf());
-		COM_ERROR_IF_FAILED(hr, "Failed to create texture for outlines.");
-
-		maskDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-		maskDesc.SampleDesc.Count = 1;
-		hr = this->device->CreateTexture2D(&maskDesc, nullptr, this->outlinesTextureResolved.GetAddressOf());
-		COM_ERROR_IF_FAILED(hr, "Failed to create texture for outlines.");
-		hr = this->device->CreateTexture2D(&maskDesc, nullptr, this->mainRTVTextureResolved.GetAddressOf());
-		COM_ERROR_IF_FAILED(hr, "Failed to create texture for main RTV.");
-
-
-		hr = this->device->CreateRenderTargetView(this->geometryPresenceMask.Get(), nullptr, this->maskRTV.GetAddressOf());
-		COM_ERROR_IF_FAILED(hr, "Failed to create mask RTV.");
-		hr = this->device->CreateRenderTargetView(this->outlinesTexture.Get(), nullptr, this->outlinesRTV.GetAddressOf());
-		COM_ERROR_IF_FAILED(hr, "Failed to create outlines RTV.");
-
-		this->UpdateRTVs();
-
-
-		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-		srvDesc.Format = maskDesc.Format;
-		srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-		srvDesc.Texture2D.MipLevels = 1;
-		hr = this->device->CreateShaderResourceView(this->geometryPresenceMaskResolved.Get(), nullptr, this->maskSRV.GetAddressOf());
-		COM_ERROR_IF_FAILED(hr, "Failed to create mask SRV.");
-		hr = this->device->CreateShaderResourceView(this->outlinesTextureResolved.Get(), nullptr, this->outlinesSRV.GetAddressOf());
-		COM_ERROR_IF_FAILED(hr, "Failed to create outlines SRV.");
-		hr = this->device->CreateShaderResourceView(this->mainRTVTextureResolved.Get(), nullptr, this->sceneSRV.GetAddressOf());
-		COM_ERROR_IF_FAILED(hr, "Failed to create scene SRV.");
-
-		this->SRVs[0] = this->maskSRV.Get();
-		this->SRVs[1] = this->outlinesSRV.Get();
-		this->SRVs[2] = this->sceneSRV.Get();
-		this->deviceContext->PSSetShaderResources(0, 3, this->SRVs);
+		HRESULT hr = CreateResources();
+		COM_ERROR_IF_FAILED(hr, "Failed to create resources.");
 	}
 	catch (COMException& exception) {
 		ErrorLogger::Log(exception);
@@ -146,7 +93,8 @@ ID3D11RenderTargetView* Scene::GetMaskRTV() const
 void Scene::Draw()
 {
 	std::vector<Primitive*> primitivesOrdered = GetPrimitivesSorted();
-		
+
+	this->deviceContext->ClearRenderTargetView(this->primitivesIDsRTV.Get(), Colors::clearColor);
 	for (Primitive* p : primitivesOrdered) {
 		UCHAR dim = p->GetDimension();
 		switch (dim) {
@@ -158,7 +106,18 @@ void Scene::Draw()
 		XMMATRIX projectionMatrix = (p->ProjectionScalabe() ? this->camera.GetProjectionMatrix() : this->camera.GetProjectionMatrixNoScale());
 
 		this->deviceContext->RSSetState(this->rasterizerSolid.Get());
-		this->deviceContext->OMSetRenderTargets(3, this->rtvsMain, this->dsView);
+
+
+		this->deviceContext->OMSetRenderTargets(1, this->rtvIDs, this->dsViewNoMSAA);
+		this->deviceContext->PSSetShader(this->pixelShaderWriteIDs.GetShader(), NULL, 0);
+		this->deviceContext->PSSetConstantBuffers(1, 1, this->cb_ps_id.GetAddressOf());
+		this->SetIDToWrite(p->id);
+
+		p->Draw(this->camera.GetViewMatrix(), projectionMatrix);
+
+		this->deviceContext->OMSetRenderTargets(1, this->rtvsMain, this->dsView);
+		this->deviceContext->PSSetShader(this->pixelShaderMain.GetShader(), NULL, 0);
+
 
 		if (dim < 2) {
 			XMFLOAT4 col = p->GetColor();
@@ -176,13 +135,19 @@ void Scene::Draw()
 		if (this->rsSolid) {
 			this->deviceContext->ClearRenderTargetView(this->maskRTV.Get(), Colors::clearColor);
 
+			bool transparent = p->GetTransparent();
+			if (transparent) this->deviceContext->OMSetDepthStencilState(this->dsStateDepthNoWrite.Get(), 0);
+			
+
 			if (this->outlineThroughObjets && p->selected){
 				this->deviceContext->OMSetRenderTargets(3, this->rtvsMask, this->dsView);
 				this->deviceContext->OMSetDepthStencilState(this->dsStateNoDepth.Get(), 0);
 				p->Draw(this->camera.GetViewMatrix(), projectionMatrix);
 
 				this->deviceContext->OMSetRenderTargets(1, this->rtvsMain, this->dsView);
-				this->deviceContext->OMSetDepthStencilState(this->dsStateDepth.Get(), 0);
+
+				if(transparent) this->deviceContext->OMSetDepthStencilState(this->dsStateDepthNoWrite.Get(), 0);
+				else this->deviceContext->OMSetDepthStencilState(this->dsStateDepth.Get(), 0);
 			}
 			else {
 				this->deviceContext->OMSetRenderTargets(3, this->rtvsMainMask, this->dsView);
@@ -232,13 +197,32 @@ void Scene::Draw()
 	this->RenderOutline();
 }
 
-void Scene::HandleMouseRay(XMVECTOR rayOrigin, XMVECTOR rayDirection)
+void Scene::HandleMouseInteraction(int px, int py)
 {
-	std::vector<XMFLOAT3> poses(2);
+	try {
+		this->deviceContext->CopyResource(
+			this->primitivesIDsTextureStaging.Get(),
+			this->primitivesIDsTexture.Get()
+		);
 
-	XMStoreFloat3(&poses[0], rayOrigin);
-	XMStoreFloat3(&poses[1], rayDirection);
-	this->AddLine(poses, RED);
+		D3D11_MAPPED_SUBRESOURCE mapped = {};
+		HRESULT hr = this->deviceContext->Map(this->primitivesIDsTextureStaging.Get(), 
+			0, D3D11_MAP_READ, 0, &mapped);
+		COM_ERROR_IF_FAILED(hr, "Failed to map primitives IDs texture staging resource.");
+
+		uint8_t* basePtr = (uint8_t*)mapped.pData;
+		uint8_t* rowPtr = basePtr + py * mapped.RowPitch;
+		UINT* pixel = (UINT*)(rowPtr + px * sizeof(uint32_t));
+		UINT id = *pixel;
+
+		this->deviceContext->Unmap(this->primitivesIDsTextureStaging.Get(), 0);
+
+		Primitive* p = this->GetPrimitiveByID(id);
+		p->selected = !p->selected;
+	}
+	catch (COMException& exception) {
+		ErrorLogger::Log(exception);
+	}
 }
 
 void Scene::AddPoint(const XMFLOAT3& pos, const XMFLOAT4& col)
@@ -252,6 +236,8 @@ void Scene::AddPoint(const XMFLOAT3& pos, const XMFLOAT4& col)
 	point->SetPosition(pos);
 	point->SetColor(col);
 	point->SetIlluminationCapability(false);
+	point->id = static_cast<UINT>(this->primitives.size() + 1);
+
 
 	this->primitives.push_back(point);
 }
@@ -270,6 +256,7 @@ void Scene::AddLine(const std::vector<XMFLOAT3>& poses, const XMFLOAT4& col)
 	line->SetPosition(BaseVectors::ORIGIN);
 	line->SetColor(col);
 	line->SetIlluminationCapability(false);
+	line->id = static_cast<UINT>(this->primitives.size() + 1);
 
 	this->primitives.push_back(line);
 }
@@ -308,6 +295,7 @@ void Scene::AddPolygon(const std::vector<XMFLOAT3>& poses, const XMFLOAT4& col)
 	poly->SetPosition(BaseVectors::ORIGIN);
 	poly->SetColor(col);
 	poly->SetIlluminationCapability(true);
+	poly->id = static_cast<UINT>(this->primitives.size() + 1);
 
 	this->primitives.push_back(poly);
 }
@@ -377,6 +365,7 @@ void Scene::AddSphere(float radius, const XMFLOAT3& pos, const UINT numSubdivide
 	poly->SetPosition(pos);
 	poly->SetColor(col);
 	poly->SetIlluminationCapability(true);
+	poly->id = static_cast<UINT>(this->primitives.size() + 1);
 
 	this->primitives.push_back(poly);
 }
@@ -487,37 +476,86 @@ bool Scene::InitializeDirectX()
 		return false;
 
 	try {
-		CD3D11_RASTERIZER_DESC rasterizerDesc(D3D11_DEFAULT);
-		rasterizerDesc.CullMode = D3D11_CULL_BACK;
-		rasterizerDesc.FillMode = D3D11_FILL_SOLID;
-		rasterizerDesc.AntialiasedLineEnable = TRUE;
-		rasterizerDesc.MultisampleEnable = TRUE;
-		rasterizerDesc.FrontCounterClockwise = TRUE;
-		HRESULT hr = this->device->CreateRasterizerState(&rasterizerDesc, this->rasterizerSolid.GetAddressOf());
-		rasterizerDesc.FillMode = D3D11_FILL_WIREFRAME;
-		hr = this->device->CreateRasterizerState(&rasterizerDesc, this->rasterizerWireframe.GetAddressOf());
-		COM_ERROR_IF_FAILED(hr, "Failed to create rasterizer state.");
+		HRESULT hr{};
+		{ // RASTERIZER STATES
+			CD3D11_RASTERIZER_DESC rasterizerDesc(D3D11_DEFAULT);
+			rasterizerDesc.CullMode = D3D11_CULL_BACK;
+			rasterizerDesc.FillMode = D3D11_FILL_SOLID;
+			rasterizerDesc.AntialiasedLineEnable = TRUE;
+			rasterizerDesc.MultisampleEnable = TRUE;
+			rasterizerDesc.FrontCounterClockwise = TRUE;
+			hr = this->device->CreateRasterizerState(&rasterizerDesc, this->rasterizerSolid.GetAddressOf());
+			rasterizerDesc.FillMode = D3D11_FILL_WIREFRAME;
+			hr = this->device->CreateRasterizerState(&rasterizerDesc, this->rasterizerWireframe.GetAddressOf());
+			COM_ERROR_IF_FAILED(hr, "Failed to create rasterizer state.");
+		}
 
 
-		CD3D11_DEPTH_STENCIL_DESC depthStencilStateDesc(D3D11_DEFAULT);
-		depthStencilStateDesc.DepthFunc = D3D11_COMPARISON_FUNC::D3D11_COMPARISON_LESS_EQUAL;
-		hr = this->device->CreateDepthStencilState(&depthStencilStateDesc, this->dsStateDepth.GetAddressOf());
-		COM_ERROR_IF_FAILED(hr, "Failed to create depth stencil state.");
+		{ // DEPTH STENCIL STATES
+			CD3D11_DEPTH_STENCIL_DESC depthStencilStateDesc(D3D11_DEFAULT);
+			depthStencilStateDesc.DepthFunc = D3D11_COMPARISON_FUNC::D3D11_COMPARISON_LESS_EQUAL;
+			hr = this->device->CreateDepthStencilState(&depthStencilStateDesc, this->dsStateDepth.GetAddressOf());
+			COM_ERROR_IF_FAILED(hr, "Failed to create depth stencil state.");
 
-		depthStencilStateDesc.DepthEnable = FALSE;
-		hr = this->device->CreateDepthStencilState(&depthStencilStateDesc, this->dsStateNoDepth.GetAddressOf());
-		COM_ERROR_IF_FAILED(hr, "Failed to create depth stencil state.");
+			depthStencilStateDesc.DepthEnable = FALSE;
+			hr = this->device->CreateDepthStencilState(&depthStencilStateDesc, this->dsStateNoDepth.GetAddressOf());
+			COM_ERROR_IF_FAILED(hr, "Failed to create depth stencil state.");
 
-
-		D3D11_SAMPLER_DESC sampDesc = {};
-		sampDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
-		sampDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
-		sampDesc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
-		sampDesc.MaxLOD = D3D11_FLOAT32_MAX;
-		device->CreateSamplerState(&sampDesc, this->samplerState.GetAddressOf());
-		this->deviceContext->PSSetSamplers(0, 1, this->samplerState.GetAddressOf());
+			depthStencilStateDesc.DepthEnable = TRUE;
+			depthStencilStateDesc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
+			hr = this->device->CreateDepthStencilState(&depthStencilStateDesc, this->dsStateDepthNoWrite.GetAddressOf());
+		}
 
 
+		{ // SAMPLER STATE
+			D3D11_SAMPLER_DESC sampDesc = {};
+			sampDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+			sampDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+			sampDesc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
+			sampDesc.MaxLOD = D3D11_FLOAT32_MAX;
+			device->CreateSamplerState(&sampDesc, this->samplerState.GetAddressOf());
+			this->deviceContext->PSSetSamplers(0, 1, this->samplerState.GetAddressOf());
+		}
+
+
+		hr = CreateResources();
+		COM_ERROR_IF_FAILED(hr, "Failed to create resources.");
+
+
+		{ // SHADERS AND CONSTANT BUFFERS
+			if (!this->vsFSQuad.Initialize(this->device, this->shadersPath + L"vertexshaderFSQuad.cso", nullptr, NULL))
+				return false;
+			if (!this->pixelShaderMain.Initialize(this->device, this->shadersPath + L"pixelshader.cso"))
+				return false;
+			if (!this->pixelShaderOutlineToTexture.Initialize(this->device, this->shadersPath + L"pixelshaderoutline.cso"))
+				return false;
+			if (!this->pixelShaderOutlineToScreen.Initialize(this->device, this->shadersPath + L"pixelshaderoutlinemerge.cso"))
+				return false;
+			if (!this->pixelShaderWriteIDs.Initialize(this->device, this->shadersPath + L"pixelshaderwriteids.cso"))
+				return false;
+
+
+			hr = this->cb_ps_outline.Initialize(this->device, this->deviceContext);
+			COM_ERROR_IF_FAILED(hr, "Failed to create cb ps outline.");
+			hr = this->cb_ps_id.Initialize(this->device, this->deviceContext);
+			COM_ERROR_IF_FAILED(hr, "Failed to create cb ps id.");
+
+			SetOutline(BLACK, 0.1f);
+		}
+	}
+	catch (COMException& exception) {
+		ErrorLogger::Log(exception);
+		return false;
+	}
+
+	this->SetMainResources();
+	return true;
+}
+
+HRESULT Scene::CreateResources()
+{
+	HRESULT hr{};
+	try {
 		CD3D11_TEXTURE2D_DESC maskDesc(
 			DXGI_FORMAT_R8_UNORM,
 			this->width,
@@ -538,7 +576,6 @@ bool Scene::InitializeDirectX()
 
 
 		maskDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-
 		maskDesc.BindFlags = D3D11_BIND_RENDER_TARGET;
 		maskDesc.SampleDesc.Count = 8;
 		hr = this->device->CreateTexture2D(&maskDesc, nullptr, this->outlinesTexture.GetAddressOf());
@@ -550,17 +587,33 @@ bool Scene::InitializeDirectX()
 		COM_ERROR_IF_FAILED(hr, "Failed to create texture for outlines.");
 		hr = this->device->CreateTexture2D(&maskDesc, nullptr, this->mainRTVTextureResolved.GetAddressOf());
 		COM_ERROR_IF_FAILED(hr, "Failed to create texture for main RTV.");
-		
+
+
+		maskDesc.Format = DXGI_FORMAT_R32_UINT;
+		maskDesc.BindFlags = D3D11_BIND_RENDER_TARGET;
+		maskDesc.SampleDesc.Count = 1;
+		hr = this->device->CreateTexture2D(&maskDesc, nullptr, this->primitivesIDsTexture.GetAddressOf());
+		COM_ERROR_IF_FAILED(hr, "Failed to create texture for ids RTV.");
+
+		maskDesc.BindFlags = 0;
+		maskDesc.SampleDesc.Count = 1;
+		maskDesc.Usage = D3D11_USAGE_STAGING;
+		maskDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+		hr = this->device->CreateTexture2D(&maskDesc, nullptr, this->primitivesIDsTextureStaging.GetAddressOf());
+		COM_ERROR_IF_FAILED(hr, "Failed to create texture for staging ids RTV.");
+
 
 		hr = this->device->CreateRenderTargetView(this->geometryPresenceMask.Get(), nullptr, this->maskRTV.GetAddressOf());
 		COM_ERROR_IF_FAILED(hr, "Failed to create mask RTV.");
 		hr = this->device->CreateRenderTargetView(this->outlinesTexture.Get(), nullptr, this->outlinesRTV.GetAddressOf());
 		COM_ERROR_IF_FAILED(hr, "Failed to create outlines RTV.");
+		hr = this->device->CreateRenderTargetView(this->primitivesIDsTexture.Get(), nullptr, this->primitivesIDsRTV.GetAddressOf());
+		COM_ERROR_IF_FAILED(hr, "Failed to create ids RTV.");
 		this->UpdateRTVs();
 
 
 		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-		srvDesc.Format = maskDesc.Format;
+		srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
 		srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
 		srvDesc.Texture2D.MipLevels = 1;
 		hr = this->device->CreateShaderResourceView(this->geometryPresenceMaskResolved.Get(), nullptr, this->maskSRV.GetAddressOf());
@@ -574,30 +627,12 @@ bool Scene::InitializeDirectX()
 		this->SRVs[1] = this->outlinesSRV.Get();
 		this->SRVs[2] = this->sceneSRV.Get();
 		this->deviceContext->PSSetShaderResources(0, 3, this->SRVs);
-
-
-		if (!this->vsFSQuad.Initialize(this->device, this->shadersPath + L"vertexshaderFSQuad.cso", nullptr, NULL))
-			return false;
-		if (!this->pixelShaderMain.Initialize(this->device, this->shadersPath + L"pixelshader.cso"))
-			return false;
-		if (!this->pixelShaderOutlineToTexture.Initialize(this->device, this->shadersPath + L"pixelshaderoutline.cso"))
-			return false;
-		if (!this->pixelShaderOutlineToScreen.Initialize(this->device, this->shadersPath + L"pixelshaderoutlinemerge.cso"))
-			return false;
-
-
-		hr = this->cb_ps_outline.Initialize(this->device, this->deviceContext);
-		COM_ERROR_IF_FAILED(hr, "Failed to create cb ps outline.");
-
-		SetOutline(BLACK, 0.1f);
 	}
 	catch (COMException& exception) {
 		ErrorLogger::Log(exception);
-		return false;
 	}
 
-	this->SetMainResources();
-	return true;
+	return hr;
 }
 
 void Scene::UpdateRTVs()
@@ -621,6 +656,8 @@ void Scene::UpdateRTVs()
 	this->rtvsOutlines[0] = nullptr;
 	this->rtvsOutlines[1] = nullptr;
 	this->rtvsOutlines[2] = this->outlinesRTV.Get();
+
+	this->rtvIDs[0] = this->primitivesIDsRTV.Get();
 }
 
 void Scene::SetMainResources()
@@ -644,22 +681,56 @@ void Scene::SetOutlineResources()
 	this->deviceContext->OMSetDepthStencilState(this->dsStateNoDepth.Get(), 0);
 }
 
+
 std::vector<Primitive*>& Scene::GetPrimitivesSorted()
 {
 	size_t primitivesCount = this->primitives.size();
-	size_t selectedCount = 0;
-	static std::vector<Primitive*> primitivesOrdered(primitivesCount);
+	static std::vector<Primitive*> primitivesOrdered;
+	primitivesOrdered.clear();
+	primitivesOrdered.reserve(primitivesCount);
 
-	for (size_t i = 0; i < primitivesCount; ++i) {
-		if (this->primitives[i]->selected && this->primitives[i]->GetDimension() == 2) {
-			primitivesOrdered[primitivesCount - 1 - selectedCount++] = this->primitives[i];
+	std::vector<Primitive*> nonSelOpaque;
+	std::vector<Primitive*> selOpaque;
+	std::vector<std::pair<Primitive*, float>> nonSelTransparent;
+	std::vector<std::pair<Primitive*, float>> selTransparent;
+
+	
+	XMVECTOR camPosV = this->camera.GetPositionVector();
+	XMVECTOR camForward = this->camera.GetForwardVector();
+
+	for (Primitive* p : this->primitives) {
+		bool transparent = p->GetTransparent();
+		bool sel = p->selected;
+
+		if (!transparent) {
+			if (sel) selOpaque.push_back(p);
+			else nonSelOpaque.push_back(p);
 		}
 		else {
-			primitivesOrdered[i - selectedCount] = this->primitives[i];
+			XMFLOAT3 posF = p->GetPosition();
+			XMVECTOR posV = XMLoadFloat3(&posF);
+			XMVECTOR rel = XMVectorSubtract(posV, camPosV);
+			float proj = XMVectorGetX(XMVector3Dot(rel, camForward));
+			if (sel) selTransparent.emplace_back(p, proj);
+			else nonSelTransparent.emplace_back(p, proj);
 		}
 	}
+
+	auto cmp = [](const std::pair<Primitive*, float>& a, const std::pair<Primitive*, float>& b) {
+		return a.second > b.second;
+		};
+	std::sort(nonSelTransparent.begin(), nonSelTransparent.end(), cmp);
+	std::sort(selTransparent.begin(), selTransparent.end(), cmp);
+
+
+	primitivesOrdered.insert(primitivesOrdered.end(), nonSelOpaque.begin(), nonSelOpaque.end());
+	primitivesOrdered.insert(primitivesOrdered.end(), selOpaque.begin(), selOpaque.end());
+	for (auto& pr : nonSelTransparent) primitivesOrdered.push_back(pr.first);
+	for (auto& pr : selTransparent) primitivesOrdered.push_back(pr.first);
+
 	return primitivesOrdered;
 }
+
 
 void Scene::SetOutline(const XMFLOAT4& col, const float outlineScale)
 {
@@ -698,6 +769,20 @@ void Scene::RenderOutline()
 	this->deviceContext->Draw(6, 0);
 	this->SetMainResources();
 }
+
+void Scene::SetIDToWrite(UINT id)
+{
+	this->cb_ps_id.data.id = id;
+	this->cb_ps_id.ApplyChanges();
+}
+
+Primitive* Scene::GetPrimitiveByID(UINT id)
+{
+	for (Primitive* p : this->primitives) {
+		if (p->id == id) return p;
+	}
+}
+
 
 void Scene::UpdateSavedScenes()
 {

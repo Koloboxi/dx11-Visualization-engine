@@ -21,6 +21,8 @@ public:
 	Primitive(ID3D11Device* device, ID3D11DeviceContext* deviceContext);
 	HRESULT SetVertexIndexBuffers(Vertex* vertexData, UINT vertexNumVertices, DWORD* indexData, UINT indexNumVertices, UCHAR dim);
 
+	UINT id{};
+
 	void Draw(const XMMATRIX& viewMatrix, const XMMATRIX& projectionMatrix);
 	bool selected = false;
 
@@ -40,6 +42,7 @@ public:
 	void SetPrimitiveTopology(const D3D10_PRIMITIVE_TOPOLOGY& top);
 
 	XMFLOAT4 GetColor() const;
+	bool GetTransparent() const;
 	bool GetIlluminationCapability() const;
 
 	const bool GetScale() const;
@@ -78,6 +81,7 @@ private:
 
 	bool illuminationCapability;
 	bool smoothShade = true;
+	bool transparent;
 
 	XMFLOAT3 pos{};
 	XMFLOAT3 rot{};
