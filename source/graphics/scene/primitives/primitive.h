@@ -28,16 +28,18 @@ public:
 
 	void SetColor(const XMFLOAT4& col);
 	void SetIlluminationCapability(const bool l);
-	void SetLighting(const float ambient, const float intensity, float shininess);
+	void SetLighting(const float ambient, const float intensity, const float shininess);
 	void SetSmoothShading(const bool sh);
 
 	void SetScale(const float s);
-	void SetScalable(const bool b);
 
 	void SetPosition(const XMFLOAT3& pos);
 	void AdjustPosition(const XMFLOAT3& pos);
+
 	void SetRotation(const XMFLOAT3& rot);
-	void AdjustRotation(const XMFLOAT3& rot);
+	void SetRotation(const XMFLOAT4& rot);
+	void SetRotationZero(const XMFLOAT3& rot);
+	void RotateAroundAxis(XMVECTOR axis, float angle);
 
 	void SetPrimitiveTopology(const D3D10_PRIMITIVE_TOPOLOGY& top);
 
@@ -46,19 +48,16 @@ public:
 	bool GetIlluminationCapability() const;
 
 	const bool GetScale() const;
-	const bool GetScalable() const;
 
 	const XMFLOAT3& GetPosition() const;
-	const XMFLOAT3& GetRotation() const;
+	const XMFLOAT4& GetRotation() const;
 
 	const D3D10_PRIMITIVE_TOPOLOGY& GetPrimitiveTopology() const;
 	const std::vector<Vertex> GetVertexData() const;
 	const std::vector<DWORD> GetIndexData() const;
 
-	void SetProjectionScalability(const bool f);
-	bool ProjectionScalabe() const;
-
 	UCHAR GetDimension() const;
+
 private:
 	XMMATRIX worldMatrix = XMMatrixIdentity();
 	void UpdateWorldMatrix();
@@ -76,7 +75,6 @@ private:
 	ConstantBuffer<CB_VS_vertexshader> cb_vs_vertexshader{};
 	ConstantBuffer<CB_PS_pixelshader> cb_ps_pixelshader{};
 	
-	bool scalable = true;
 	float scale = 1.0f;
 
 	bool illuminationCapability;
@@ -84,6 +82,22 @@ private:
 	bool transparent;
 
 	XMFLOAT3 pos{};
-	XMFLOAT3 rot{};
+	XMFLOAT4 rotQuat = { 0.0f, 0.0f, 0.0f, 1.0f };
+	XMFLOAT3 rotZero{};
 	XMFLOAT4 col{};
 };
+
+#include "..\..\misc\inlines.h"
+namespace PrimitiveConstructor {
+	extern ID3D11Device* device;
+	extern ID3D11DeviceContext* deviceContext;
+
+	Primitive* Point(const XMFLOAT3& pos, const XMFLOAT4& col, UINT id);
+	Primitive* Line(const std::vector<XMFLOAT3>& poses, const XMFLOAT4& col, UINT id);
+	Primitive* Polygon(const std::vector<XMFLOAT3>& poses, const XMFLOAT4& col, UINT id);
+
+	Primitive* Sphere(float radius, const XMFLOAT3& pos, const UINT numSubdivides, const XMFLOAT4& col, UINT id);
+	Primitive* Line3d(float radius, const std::vector<XMFLOAT3>& poses, const UINT numSubdivides, const XMFLOAT4& col, UINT id);
+
+	Primitive* Arc3d(float arcRadius, float lineRadius, float angleDeg, const XMFLOAT3& center, const UINT numSubdivides, const XMFLOAT4& col, UINT id);
+}

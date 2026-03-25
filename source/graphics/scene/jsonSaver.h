@@ -5,17 +5,16 @@ using json = nlohmann::json;
 
 namespace jsonSaver {
     inline void to_json(json& j, const Primitive& p) {
-        j["scalable"] = p.GetScalable();
         j["scale"] = p.GetScale();
         j["dimension"] = p.GetDimension();
         j["primitiveTopology"] = p.GetPrimitiveTopology();
         j["illuminationCapability"] = p.GetIlluminationCapability();
 
         XMFLOAT3 pos = p.GetPosition();
-        XMFLOAT3 rot = p.GetRotation();
+        XMFLOAT4 rot = p.GetRotation();
         XMFLOAT4 col = p.GetColor();
         j["position"] = { pos.x, pos.y, pos.z };
-        j["rotation"] = { rot.x, rot.y, rot.z };
+        j["rotation"] = { rot.x, rot.y, rot.z, rot.w };
         j["color"] = { col.x, col.y, col.z, col.w };
 
         std::vector<Vertex> vertices = p.GetVertexData();
@@ -35,13 +34,12 @@ namespace jsonSaver {
     }
 
     inline bool from_json(const json& j, Primitive& p) {
-        p.SetScalable(j["scalable"]);
         p.SetScale(j["scale"]);
         p.SetPrimitiveTopology(j["primitiveTopology"]);
         p.SetIlluminationCapability(j["illuminationCapability"]);
 
         XMFLOAT3 pos = XMFLOAT3(j["position"][0], j["position"][1], j["position"][2]);
-        XMFLOAT3 rot = XMFLOAT3(j["rotation"][0], j["rotation"][1], j["rotation"][2]);
+        XMFLOAT4 rot = XMFLOAT4(j["rotation"][0], j["rotation"][1], j["rotation"][2], j["rotation"][3]);
         XMFLOAT4 col = XMFLOAT4(j["color"][0], j["color"][1], j["color"][2], j["color"][3]);
         p.SetPosition(pos);
         p.SetRotation(rot);

@@ -36,85 +36,24 @@ void Graphics::OnResize(int newWidth, int newHeight)
 		this->windowWidth = newWidth;
 		this->windowHeight = newHeight;
 
-		this->deviceContext->OMSetRenderTargets(0, nullptr, nullptr);
-		this->deviceContext->Flush();
-		this->renderTargetView.Reset();
-		this->depthStencilView.Reset();
-		this->depthStencilBuffer.Reset();
-		
+		this->ResetResources();
+				
 		HRESULT hr = this->swapchain->ResizeBuffers(
 			0,
-			newWidth,
-			newHeight,
+			this->windowWidth,
+			this->windowHeight,
 			DXGI_FORMAT_R8G8B8A8_UNORM,
 			DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH
 		);
 		COM_ERROR_IF_FAILED(hr, "Failed to resize swap chain buffers.");
-
-		
-		Microsoft::WRL::ComPtr<ID3D11Texture2D> backBuffer;
-		hr = this->swapchain->GetBuffer(
-			0,
-			__uuidof(ID3D11Texture2D),
-			reinterpret_cast<void**>(backBuffer.GetAddressOf())
-		);
-		COM_ERROR_IF_FAILED(hr, "Failed to get back buffer after resize.");
 				
-		hr = this->device->CreateRenderTargetView(
-			backBuffer.Get(),
-			nullptr,
-			this->renderTargetView.GetAddressOf()
-		);
-		COM_ERROR_IF_FAILED(hr, "Failed to recreate render target view after resize.");
-
-		
-		CD3D11_TEXTURE2D_DESC depthStencilDesc(
-			DXGI_FORMAT_D24_UNORM_S8_UINT,
-			newWidth,
-			newHeight
-		);
-		depthStencilDesc.MipLevels = 1;
-		depthStencilDesc.BindFlags = D3D11_BIND_DEPTH_STENCIL;
-		depthStencilDesc.SampleDesc.Count = 8;  
-		depthStencilDesc.SampleDesc.Quality = 0;
-
-		hr = this->device->CreateTexture2D(
-			&depthStencilDesc,
-			nullptr,
-			this->depthStencilBuffer.GetAddressOf()
-		);
-		COM_ERROR_IF_FAILED(hr, "Failed to recreate depth stencil buffer after resize.");
-
-		
-		hr = this->device->CreateDepthStencilView(
-			this->depthStencilBuffer.Get(),
-			nullptr,
-			this->depthStencilView.GetAddressOf()
-		);
-		COM_ERROR_IF_FAILED(hr, "Failed to recreate depth stencil view after resize.");
-
-		depthStencilDesc.SampleDesc.Count = 1;
-		hr = this->device->CreateDepthStencilView(
-			this->depthStencilBuffer.Get(),
-			nullptr,
-			this->depthStencilViewNoMSAA.GetAddressOf()
-		);
-		COM_ERROR_IF_FAILED(hr, "Failed to recreate depth stencil view after resize.");
-
-		CD3D11_VIEWPORT viewport(
-			0.0f,
-			0.0f,
-			static_cast<float>(newWidth),
-			static_cast<float>(newHeight)
-		);
-		this->deviceContext->RSSetViewports(1, &viewport);
-
-
-		this->scene.OnResize(this->depthStencilView.Get(), this->depthStencilViewNoMSAA.Get(), this->renderTargetView.Get(), this->windowWidth, this->windowHeight);
+		this->InitializeResources();
 
 		this->cb_gs_geometryshader.data.AspectRatio = (float)this->windowWidth / (float)this->windowHeight;
 		this->cb_gs_geometryshader.ApplyChanges();
 		this->deviceContext->GSSetConstantBuffers(0, 1, this->cb_gs_geometryshader.GetAddressOf());
+
+		this->scene.OnResize(this->depthStencilView.Get(), this->depthStencilViewNoMSAA.Get(), this->renderTargetView.Get(), this->windowWidth, this->windowHeight);
 	}
 	catch (COMException& exception) {
 		ErrorLogger::Log(exception);
@@ -167,9 +106,7 @@ bool Graphics::InitializeDirectX(HWND hwnd) {
 			return false;
 		}
 
-		//Create device and swapchain
 		DXGI_SWAP_CHAIN_DESC swap_chain_desc{};
-
 		swap_chain_desc.BufferDesc.Width = this->windowWidth;
 		swap_chain_desc.BufferDesc.Height = this->windowHeight;
 		swap_chain_desc.BufferDesc.RefreshRate.Numerator = 120;
@@ -177,10 +114,8 @@ bool Graphics::InitializeDirectX(HWND hwnd) {
 		swap_chain_desc.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM; 
 		swap_chain_desc.BufferDesc.ScanlineOrdering = DXGI_MODE_SCANLINE_ORDER_UNSPECIFIED;
 		swap_chain_desc.BufferDesc.Scaling = DXGI_MODE_SCALING_UNSPECIFIED;
-
 		swap_chain_desc.SampleDesc.Count = 8;
 		swap_chain_desc.SampleDesc.Quality = 0;
-
 		swap_chain_desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
 		swap_chain_desc.BufferCount = 1;
 		swap_chain_desc.OutputWindow = hwnd;
@@ -204,40 +139,10 @@ bool Graphics::InitializeDirectX(HWND hwnd) {
 			this->deviceContext.GetAddressOf()
 		);
 		COM_ERROR_IF_FAILED(hr, "Failed to create device and swapchain.");
+				
+		this->InitializeResources();
 
-		Microsoft::WRL::ComPtr<ID3D11Texture2D> backBuffer;
-		hr = this->swapchain->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(backBuffer.GetAddressOf()));
-		COM_ERROR_IF_FAILED(hr, "Failed to get buffer.");
-
-		hr = this->device->CreateRenderTargetView(backBuffer.Get(), NULL, this->renderTargetView.GetAddressOf());
-		COM_ERROR_IF_FAILED(hr, "Failed to create render target view.");
-
-		//Describe Depth stencil buffer
-		CD3D11_TEXTURE2D_DESC depthStencilDesc(DXGI_FORMAT_D24_UNORM_S8_UINT, this->windowWidth, this->windowHeight);
-		depthStencilDesc.MipLevels = 1;
-		depthStencilDesc.SampleDesc.Count = 8;
-		depthStencilDesc.SampleDesc.Quality = 0;
-		depthStencilDesc.BindFlags = D3D11_BIND_DEPTH_STENCIL;
-
-		hr = this->device->CreateTexture2D(&depthStencilDesc, NULL, this->depthStencilBuffer.GetAddressOf());
-		COM_ERROR_IF_FAILED(hr, "Failed to create depth stencil buffer.");
-
-		hr = this->device->CreateDepthStencilView(this->depthStencilBuffer.Get(), NULL, this->depthStencilView.GetAddressOf());
-		COM_ERROR_IF_FAILED(hr, "Failed to create depth stencil view.");
-
-		depthStencilDesc.SampleDesc.Count = 1;
-		hr = this->device->CreateTexture2D(&depthStencilDesc, NULL, this->depthStencilBufferNoMSAA.GetAddressOf());
-		COM_ERROR_IF_FAILED(hr, "Failed to create depth stencil buffer.");
-
-		hr = this->device->CreateDepthStencilView(this->depthStencilBufferNoMSAA.Get(), NULL, this->depthStencilViewNoMSAA.GetAddressOf());
-		COM_ERROR_IF_FAILED(hr, "Failed to create depth stencil view.");
-
-		//Create + set the Viewport
-		CD3D11_VIEWPORT viewport(0.0f, 0.0f, static_cast<FLOAT>(this->windowWidth), static_cast<FLOAT>(this->windowHeight));
-
-		this->deviceContext->RSSetViewports(1, &viewport);
-
-		//Create blend state
+		
 		D3D11_BLEND_DESC blendDesc{};
 		D3D11_RENDER_TARGET_BLEND_DESC rtbd{};
 
@@ -259,6 +164,59 @@ bool Graphics::InitializeDirectX(HWND hwnd) {
 		ErrorLogger::Log(exception);
 	}
 	return true;
+}
+
+void Graphics::ResetResources()
+{
+	this->deviceContext->Flush();
+	this->deviceContext->OMSetRenderTargets(0, nullptr, nullptr);
+
+	this->renderTargetView.Reset();
+
+	this->depthStencilBuffer.Reset();
+	this->depthStencilView.Reset();
+
+	this->depthStencilBufferNoMSAA.Reset();
+	this->depthStencilViewNoMSAA.Reset();
+}
+
+void Graphics::InitializeResources()
+{
+	try {
+		Microsoft::WRL::ComPtr<ID3D11Texture2D> backBuffer;
+		HRESULT hr = this->swapchain->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(backBuffer.GetAddressOf()));
+		COM_ERROR_IF_FAILED(hr, "Failed to get buffer.");
+
+		hr = this->device->CreateRenderTargetView(backBuffer.Get(), NULL, this->renderTargetView.GetAddressOf());
+		COM_ERROR_IF_FAILED(hr, "Failed to create render target view.");
+
+
+		CD3D11_TEXTURE2D_DESC depthStencilDesc(DXGI_FORMAT_D24_UNORM_S8_UINT, this->windowWidth, this->windowHeight);
+		depthStencilDesc.MipLevels = 1;
+		depthStencilDesc.SampleDesc.Count = 8;
+		depthStencilDesc.SampleDesc.Quality = 0;
+		depthStencilDesc.BindFlags = D3D11_BIND_DEPTH_STENCIL;
+
+		hr = this->device->CreateTexture2D(&depthStencilDesc, NULL, this->depthStencilBuffer.GetAddressOf());
+		COM_ERROR_IF_FAILED(hr, "Failed to create depth stencil buffer.");
+
+		hr = this->device->CreateDepthStencilView(this->depthStencilBuffer.Get(), NULL, this->depthStencilView.GetAddressOf());
+		COM_ERROR_IF_FAILED(hr, "Failed to create depth stencil view.");
+
+		depthStencilDesc.SampleDesc.Count = 1;
+		hr = this->device->CreateTexture2D(&depthStencilDesc, NULL, this->depthStencilBufferNoMSAA.GetAddressOf());
+		COM_ERROR_IF_FAILED(hr, "Failed to create depth stencil buffer.");
+
+		hr = this->device->CreateDepthStencilView(this->depthStencilBufferNoMSAA.Get(), NULL, this->depthStencilViewNoMSAA.GetAddressOf());
+		COM_ERROR_IF_FAILED(hr, "Failed to create depth stencil view.");
+
+
+		CD3D11_VIEWPORT viewport(0.0f, 0.0f, static_cast<FLOAT>(this->windowWidth), static_cast<FLOAT>(this->windowHeight));
+		this->deviceContext->RSSetViewports(1, &viewport);
+	}
+	catch (COMException& exception) {
+		ErrorLogger::Log(exception);
+	}
 }
 
 bool Graphics::InitializeShaders()

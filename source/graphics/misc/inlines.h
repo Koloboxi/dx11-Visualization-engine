@@ -140,3 +140,16 @@ inline std::vector<float> GetAllFloatsInRange() {
 
 	return result;
 }
+
+inline XMFLOAT3 operator+(XMFLOAT3 p1, XMFLOAT3 p2) {
+	return XMFLOAT3(p1.x + p2.x, p1.y + p2.y, p1.z + p2.z);
+}
+inline XMFLOAT3 operator-(XMFLOAT3 p1, XMFLOAT3 p2) {
+	return XMFLOAT3(p1.x - p2.x, p1.y - p2.y, p1.z - p2.z);
+}
+inline XMFLOAT3 operator*(const XMFLOAT3& v, float s) {
+	return XMFLOAT3(v.x * s, v.y * s, v.z * s);
+}
+inline XMFLOAT3 operator/(XMFLOAT3 p, float d) {
+	return XMFLOAT3(p.x / d, p.y / d, p.z / d);
+}

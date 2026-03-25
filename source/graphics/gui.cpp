@@ -16,9 +16,46 @@ void Graphics::Gui()
 	}
 	ImGui::GetBackgroundDrawList()->AddText(ImVec2(0, 0), ImColor(0, 255, 0), number.c_str());
 
+	bool blockMousePick = false;
+
 	ImGui::Begin("Parameters");
 	if (ImGui::BeginTabBar("Panels"))
 	{
+		if (ImGui::BeginTabItem("View"))
+		{
+			if (ImGui::Button("Reset Pos")) {
+				this->scene.camera.SetPosition(BaseVectors::ORIGIN);
+			}
+			if (ImGui::Button("Reset Scale")) {
+				this->scene.camera.SetScale(1);
+			}
+
+			if (ImGui::Button("Iso")) {
+				this->scene.camera.SetRotation(Projections::ISO);
+			}
+			if (ImGui::Button("Dim")) {
+				this->scene.camera.SetRotation(Projections::DIM);
+			}
+			if (ImGui::Button("XY")) {
+				this->scene.camera.SetRotation(Projections::XY);
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("XZ")) {
+				this->scene.camera.SetRotation(Projections::XZ);
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("YZ")) {
+				this->scene.camera.SetRotation(Projections::YZ);
+			}
+			ImGui::NewLine();
+
+			ImGui::Checkbox("Fill", &this->scene.rsSolid);
+			ImGui::Checkbox("Wirerame", &this->scene.rsWireframe);
+			ImGui::Checkbox("Outline through", &this->scene.outlineThroughObjets);
+
+			ImGui::EndTabItem();
+		}
+
 		if (ImGui::BeginTabItem("Scenes"))
 		{
 			static std::string name{};
@@ -62,42 +99,7 @@ void Graphics::Gui()
 
 			ImGui::EndTabItem();
 		}
-
-		if (ImGui::BeginTabItem("View"))
-		{
-			if (ImGui::Button("Reset Pos")) {
-				this->scene.camera.SetPosition(BaseVectors::ORIGIN);
-			}
-			if (ImGui::Button("Reset Scale")) {
-				this->scene.camera.SetScale(1);
-			}
-
-			if (ImGui::Button("Iso")) {
-				this->scene.camera.SetRotation(Projections::ISO);
-			}
-			if (ImGui::Button("Dim")) {
-				this->scene.camera.SetRotation(Projections::DIM);
-			}
-			if (ImGui::Button("XY")) {
-				this->scene.camera.SetRotation(Projections::XY);
-			}
-			ImGui::SameLine();
-			if (ImGui::Button("XZ")) {
-				this->scene.camera.SetRotation(Projections::XZ);
-			}
-			ImGui::SameLine();
-			if (ImGui::Button("YZ")) {
-				this->scene.camera.SetRotation(Projections::YZ);
-			}
-			ImGui::NewLine();
-
-			ImGui::Checkbox("Fill", &this->scene.rsSolid);
-			ImGui::Checkbox("Wirerame", &this->scene.rsWireframe);
-			ImGui::Checkbox("Outline through", &this->scene.outlineThroughObjets);
-
-			ImGui::EndTabItem();
-		}
-
+		
 		if (ImGui::BeginTabItem("Light"))
 		{
 			if (ImGui::DragFloat("Ambient", &this->scene.ambient, 0.05f, 0.0f, 1.0f, "%.2f")) {
@@ -118,6 +120,8 @@ void Graphics::Gui()
 
 		ImGui::EndTabBar();
 	}
+
+	if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) blockMousePick = true;
 	ImGui::End();
 
 	ImGui::Begin("Primitives");
@@ -131,7 +135,12 @@ void Graphics::Gui()
 		}
 		ImGui::TreePop();
 	}
+
+
+	if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) blockMousePick = true;
 	ImGui::End();
+
+	this->scene.blockMousePick = blockMousePick;
 
 	ImGui::Render();
 	ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());

@@ -19,6 +19,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
 		int width = workArea.right - workArea.left; 
 		int height = workArea.bottom - workArea.top;
+		width /= 1.2f;
+		height /= 1.2f;
 
 		if (engine.Initialize(hInstance, "Title", "MyWindowClass", width, height)) {
 			while (engine.ProcessMessages()) {

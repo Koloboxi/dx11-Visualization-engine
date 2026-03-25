@@ -36,6 +36,9 @@ void Engine::Update()
 
 	while (!mouse.EventBufferIsEmpty()) {
 		MouseEvent me = mouse.ReadEvent();
+		/*if (me.GetType() == MouseEvent::EventType::Move) {
+			this->gfx.scene.HandleMouseMove(me.GetPosX(), me.GetPosY());
+		}*/
 		if (me.GetType() == MouseEvent::EventType::RAW_MOVE && this->mouse.IsRightDown()) {
 			XMMATRIX rotMatrix = XMMatrixRotationAxis(this->gfx.scene.camera.GetUpwardVector(), -0.003f * me.GetPosX());
 			rotMatrix *= XMMatrixRotationAxis(this->gfx.scene.camera.GetRightVector(), 0.003f * me.GetPosY());
@@ -63,8 +66,23 @@ void Engine::Update()
 			);
 		}
 
+		if (me.GetType() == MouseEvent::LPress) {
+			this->gfx.scene.HandleLMouse(me.GetPosX(), me.GetPosY(), true);
+		}
 		if (me.GetType() == MouseEvent::LRelease) {
-			this->gfx.scene.HandleMouseInteraction(me.GetPosX(), me.GetPosY());
+			this->gfx.scene.HandleLMouse(me.GetPosX(), me.GetPosY(), false);
+		}
+		if (me.GetType() == MouseEvent::EventType::RAW_MOVE && this->mouse.IsLeftDown()) {
+			if (this->gfx.scene.orientationTransformer.HasActiveObject()) {
+				XMFLOAT2 actionAxisScreen = { static_cast<float>(me.GetPosX()), -static_cast<float>(me.GetPosY()) };
+
+				POINT actionPointPoint;
+				GetCursorPos(&actionPointPoint);
+				ScreenToClient(this->render_window.GetHWND(), &actionPointPoint);
+				XMFLOAT2 actionPointNdc = this->gfx.ScreenCoords2NDC(actionPointPoint.x, actionPointPoint.y);
+
+				this->gfx.scene.orientationTransformer.HandleObjMove(actionAxisScreen, actionPointNdc, this->gfx.scene.camera.GetViewMatrix(), this->gfx.scene.camera.GetProjectionMatrix(), this->gfx.scene.camera.GetScale());
+			}
 		}
 	}
 }

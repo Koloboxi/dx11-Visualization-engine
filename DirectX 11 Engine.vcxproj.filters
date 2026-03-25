@@ -91,6 +91,8 @@
     <ClCompile Include="source\graphics\imgui\implot_items.cpp" />
     <ClCompile Include="source\graphics\gui.cpp" />
     <ClCompile Include="source\graphics\imgui\imgui_stdlib.cpp" />
-    <ClCompile Include="cpp source\graphics\scene\scene.cpp" />
+    <ClCompile Include="source\graphics\scene\auxiliaryObjects.h" />
+    <ClCompile Include="source\graphics\scene\auxiliaryObjects.cpp" />
+    <ClCompile Include="source\graphics\scene\primitives\primitiveConstructor.cpp" />
   </ItemGroup>
 </Project>

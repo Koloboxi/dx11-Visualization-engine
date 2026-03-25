@@ -5,8 +5,9 @@
 
 #include "../shaders/shaders.h"
 #include "..\misc\Colors.h"
-#include "..\misc\inlines.h"
 
+#include "..\imgui\imgui.h"
+#include "auxiliaryObjects.h"
 
 class Scene {
 public:
@@ -15,10 +16,11 @@ public:
 	ID3D11RenderTargetView* GetMaskRTV() const;
 
 	Camera camera;
+	OrientationTransformer orientationTransformer;
 	void Draw();
 
-	void HandleMouseInteraction(int px, int py);
-
+	void HandleLMouse(int px, int py, bool tPressfRelease);
+	bool blockMousePick = false;
 
 	bool rsSolid = true;
 	bool rsWireframe = false;
@@ -31,7 +33,6 @@ public:
 
 	bool outlineThroughObjets = true;
 
-
 	std::vector<Primitive*> primitives;
 
 	void AddPoint(const XMFLOAT3& pos, const XMFLOAT4& col);
@@ -39,6 +40,7 @@ public:
 	void AddPolygon(const std::vector<XMFLOAT3>& poses, const XMFLOAT4& col);
 
 	void AddSphere(float radius, const XMFLOAT3& pos, const UINT numSubdivides, const XMFLOAT4& col);
+	void AddLine3d(float radius, std::vector<XMFLOAT3>& poses, const UINT numSubdivides, const XMFLOAT4& col);
 
 
 	std::string scenesPath = "Data/Scenes/";
@@ -123,6 +125,7 @@ private:
 
 	void SetIDToWrite(UINT id);
 	Primitive* GetPrimitiveByID(UINT id);
+	UINT GetIdByPixel(int px, int py);
 
 	std::vector<std::string> savedScenes;
 	void UpdateSavedScenes();

@@ -42,10 +42,6 @@ const XMMATRIX& Camera::GetViewMatrix() const {
 const XMMATRIX& Camera::GetProjectionMatrix() const {
 	return this->projectionMatrix;
 }
-const XMMATRIX& Camera::GetProjectionMatrixNoScale() const
-{
-	return XMMatrixOrthographicRH(this->baseViewWidth, this->baseViewHeight, this->nearZ, this->farZ);
-}
 const XMMATRIX Camera::GetInverseMatrix() const
 {
 	return XMMatrixInverse(nullptr, this->viewMatrix * this->projectionMatrix);

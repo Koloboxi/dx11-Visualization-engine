@@ -27,6 +27,8 @@ public:
 	Scene scene;
 private:
 	bool InitializeDirectX(HWND hwnd);
+	void ResetResources();
+	void InitializeResources();
 	bool InitializeShaders();
 
 	void Gui();

@@ -11,7 +11,6 @@ public:
 	
 	const XMMATRIX& GetViewMatrix()	const;
 	const XMMATRIX& GetProjectionMatrix() const;
-	const XMMATRIX& GetProjectionMatrixNoScale() const;
 
 	const XMMATRIX GetInverseMatrix() const;
 
@@ -45,7 +44,6 @@ private:
 
 	XMMATRIX viewMatrix;
 	XMMATRIX projectionMatrix;
-	XMMATRIX projectionMatrixNoScale;
 
 	float scale = 1.0;
 	float baseViewWidth;

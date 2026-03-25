@@ -68,7 +68,7 @@ void Primitive::SetIlluminationCapability(const bool l)
 	this->cb_ps_pixelshader.ApplyChanges();
 }
 
-void Primitive::SetLighting(const float ambient, const float intensity, float shininess)
+void Primitive::SetLighting(const float ambient, const float intensity, const float shininess)
 {
 	this->cb_ps_pixelshader.data.ambient = ambient;
 	this->cb_ps_pixelshader.data.intensity = intensity;
@@ -109,9 +109,10 @@ void Primitive::SetSmoothShading(const bool sh)
 void Primitive::UpdateWorldMatrix()
 {
 	this->worldMatrix = XMMatrixScaling(this->scale, this->scale, this->scale);
-	this->worldMatrix *= XMMatrixRotationRollPitchYaw(this->rot.x, this->rot.y, this->rot.z);
+	XMMATRIX rotMatrix = XMMatrixRotationQuaternion(XMLoadFloat4(&this->rotQuat));
+	XMMATRIX rotZeroMatrix = XMMatrixRotationRollPitchYaw(this->rotZero.x, this->rotZero.y, this->rotZero.z);
+	this->worldMatrix *= rotZeroMatrix * rotMatrix;
 	this->worldMatrix *= XMMatrixTranslation(this->pos.x, this->pos.y, this->pos.z);
-	XMMATRIX vecRotationMatrix = XMMatrixRotationRollPitchYaw(0.0f, this->rot.y, 0.0f);
 }
 
 const XMFLOAT3& Primitive::GetPosition() const
@@ -119,9 +120,9 @@ const XMFLOAT3& Primitive::GetPosition() const
 	return this->pos;
 }
 
-const XMFLOAT3& Primitive::GetRotation() const
+const XMFLOAT4& Primitive::GetRotation() const
 {
-	return this->rot;
+	return this->rotQuat;
 }
 
 const D3D10_PRIMITIVE_TOPOLOGY& Primitive::GetPrimitiveTopology() const
@@ -147,7 +148,7 @@ void Primitive::SetPosition(const XMFLOAT3& pos)
 
 void Primitive::AdjustPosition(const XMFLOAT3& pos)
 {
-	this->pos.x += pos.y;
+	this->pos.x += pos.x;
 	this->pos.y += pos.y;
 	this->pos.z += pos.z;
 	this->UpdateWorldMatrix();
@@ -159,20 +160,6 @@ void Primitive::SetScale(const float s)
 	this->UpdateWorldMatrix();
 }
 
-void Primitive::SetScalable(const bool b)
-{
-	this->scalable = b;
-}
-
-void Primitive::SetProjectionScalability(bool f)
-{
-	this->scalable = f;
-}
-
-bool Primitive::ProjectionScalabe() const
-{
-	return this->scalable;
-}
 
 UCHAR Primitive::GetDimension() const
 {
@@ -181,15 +168,28 @@ UCHAR Primitive::GetDimension() const
 
 void Primitive::SetRotation(const XMFLOAT3& rot)
 {
-	this->rot = rot;
+	XMStoreFloat4(&this->rotQuat, XMQuaternionRotationRollPitchYaw(rot.x, rot.y, rot.z));
 	this->UpdateWorldMatrix();
 }
 
-void Primitive::AdjustRotation(const XMFLOAT3& rot)
+void Primitive::SetRotation(const XMFLOAT4& rot)
 {
-	this->rot.x += rot.x;
-	this->rot.y += rot.y;
-	this->rot.z += rot.z;
+	this->rotQuat = rot;
+	this->UpdateWorldMatrix();
+}
+
+void Primitive::SetRotationZero(const XMFLOAT3& rot)
+{
+	this->rotZero = rot;
+	this->rotQuat = { 0.0f, 0.0f, 0.0f, 1.0f };
+	this->UpdateWorldMatrix();
+}
+
+void Primitive::RotateAroundAxis(XMVECTOR axis, float angle)
+{
+	XMVECTOR delta = XMQuaternionRotationAxis(axis, angle);
+	XMVECTOR current = XMLoadFloat4(&this->rotQuat);
+	XMStoreFloat4(&this->rotQuat, XMQuaternionMultiply(current, delta));
 	this->UpdateWorldMatrix();
 }
 
@@ -216,9 +216,4 @@ bool Primitive::GetIlluminationCapability() const
 const bool Primitive::GetScale() const
 {
 	return this->scale;
-}
-
-const bool Primitive::GetScalable() const
-{
-	return this->scalable;
 }

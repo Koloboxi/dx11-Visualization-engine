@@ -16,6 +16,9 @@ bool Scene::Initialize(ID3D11Device* device, ID3D11DeviceContext* deviceContext,
 	this->width = windowWidth;
 	this->height = windowHeight;
 
+	PrimitiveConstructor::device = device;
+	PrimitiveConstructor::deviceContext = deviceContext;
+
 	InitializeDirectX();
 
 	camera.SetProjectionValues(this->width, this->height, -1000000, 1000000);
@@ -36,6 +39,7 @@ bool Scene::Initialize(ID3D11Device* device, ID3D11DeviceContext* deviceContext,
 
 	this->AddSphere(100, XMFLOAT3(0, 0, 200), 5, GenerateRandomFloat4(1));
 	this->AddSphere(100, XMFLOAT3(0, 0, -200), 6, GenerateRandomFloat4(1));
+		
 
 	std::vector< XMFLOAT3> poses = {
 		{-400, -400, -400},
@@ -43,7 +47,7 @@ bool Scene::Initialize(ID3D11Device* device, ID3D11DeviceContext* deviceContext,
 		{400, 400, -400},
 		{-400, 400, -400}
 	};
-	this->AddPolygon(poses, RED);
+	this->AddPolygon(poses, Colors::RED);
 	std::vector< XMFLOAT3> poses2 = {
 		{-500, -500, -500},
 		{500, 500, 500}
@@ -56,13 +60,16 @@ bool Scene::Initialize(ID3D11Device* device, ID3D11DeviceContext* deviceContext,
 		{500, -500, -500},
 		{-500, 500, -500}
 	};
-	this->AddLine(poses2, BLUE);
-	this->AddLine(poses3, BLUE);
-	this->AddLine(poses4, BLUE);
-	this->AddPoint(poses2[0], WHITE);
+	this->AddLine(poses2, Colors::BLUE);
+	this->AddLine(poses3, Colors::BLUE);
+	this->AddLine(poses4, Colors::BLUE);
+	this->AddPoint(poses2[0], Colors::WHITE);
+
+	this->orientationTransformer.Initialize(device, deviceContext);
 
 	this->UpdateLight();
 	this->UpdateSavedScenes();
+
 		
 	return true;
 }
@@ -103,7 +110,7 @@ void Scene::Draw()
 		case 2: this->deviceContext->GSSetShader(nullptr, NULL, 0); break;
 		}
 
-		XMMATRIX projectionMatrix = (p->ProjectionScalabe() ? this->camera.GetProjectionMatrix() : this->camera.GetProjectionMatrixNoScale());
+		XMMATRIX projectionMatrix = this->camera.GetProjectionMatrix();
 
 		this->deviceContext->RSSetState(this->rasterizerSolid.Get());
 
@@ -161,7 +168,7 @@ void Scene::Draw()
 				DXGI_FORMAT_R8_UNORM
 			);
 
-			SetOutline(p->selected ? Colors::SelectedColor : BLACK, p->selected ? 0.3f : 0.1f);
+			SetOutline(p->selected ? Colors::SelectedColor : Colors::BLACK, p->selected ? 0.3f : 0.1f);
 			this->RenderOutlineToTexture(this->outlineThroughObjets && p->selected);
 		}
 		if (this->rsWireframe) {
@@ -195,30 +202,67 @@ void Scene::Draw()
 
 	this->deviceContext->ClearRenderTargetView(this->outlinesRTV.Get(), Colors::clearColor);
 	this->RenderOutline();
+
+
+	this->deviceContext->OMSetDepthStencilState(this->dsStateNoDepth.Get(), 0);
+	this->orientationTransformer.Draw(this->camera.GetViewMatrix(), this->camera.GetProjectionMatrix(), this->camera.GetScale());
+
+	this->deviceContext->OMSetRenderTargets(1, this->rtvIDs, this->dsViewNoMSAA);
+	this->deviceContext->PSSetShader(this->pixelShaderWriteIDs.GetShader(), NULL, 0);
+	this->deviceContext->PSSetConstantBuffers(1, 1, this->cb_ps_id.GetAddressOf());
+	std::vector<UINT> idsAux = this->orientationTransformer.GetAuxiliaryObjectsIDs();
+
+	for (UINT id : idsAux) {
+		this->SetIDToWrite(id);
+		this->orientationTransformer.DrawID(this->camera.GetViewMatrix(), this->camera.GetProjectionMatrix(), this->camera.GetScale(), id);
+	}
+
+	this->SetMainResources();
+	this->deviceContext->OMSetDepthStencilState(this->dsStateDepth.Get(), 0);
 }
 
-void Scene::HandleMouseInteraction(int px, int py)
+void Scene::HandleLMouse(int px, int py, bool tPressfRelease)
 {
+	static bool blockNextLMouseRelease = false;
+
 	try {
-		this->deviceContext->CopyResource(
-			this->primitivesIDsTextureStaging.Get(),
-			this->primitivesIDsTexture.Get()
-		);
+		if (px < 0 || py < 0 || px >= this->width || py >= this->height || this->blockMousePick) return;
 
-		D3D11_MAPPED_SUBRESOURCE mapped = {};
-		HRESULT hr = this->deviceContext->Map(this->primitivesIDsTextureStaging.Get(), 
-			0, D3D11_MAP_READ, 0, &mapped);
-		COM_ERROR_IF_FAILED(hr, "Failed to map primitives IDs texture staging resource.");
+		UINT id = this->GetIdByPixel(px, py);
 
-		uint8_t* basePtr = (uint8_t*)mapped.pData;
-		uint8_t* rowPtr = basePtr + py * mapped.RowPitch;
-		UINT* pixel = (UINT*)(rowPtr + px * sizeof(uint32_t));
-		UINT id = *pixel;
+		if (tPressfRelease) {
+			std::vector<UINT> auxIDs = this->orientationTransformer.GetAuxiliaryObjectsIDs();
+			for (UINT auxID : auxIDs) {
+				if (id == auxID) {
+					this->orientationTransformer.HandleObjPress(id);
+					blockNextLMouseRelease = true;
+					break;
+				}
+			}
+			return;
+		}
+		this->orientationTransformer.HandleObjRelease();
 
-		this->deviceContext->Unmap(this->primitivesIDsTextureStaging.Get(), 0);
+		if (blockNextLMouseRelease) { blockNextLMouseRelease = false; return; }
 
-		Primitive* p = this->GetPrimitiveByID(id);
-		p->selected = !p->selected;
+		Primitive* primitiveClicked = this->GetPrimitiveByID(id);
+		if (!primitiveClicked) {
+			for (Primitive* p : this->primitives) {
+				p->selected = false;
+			}
+			this->orientationTransformer.SetTargetObject(nullptr);
+			return;
+		}
+		primitiveClicked->selected = !primitiveClicked->selected;
+		if (primitiveClicked->selected) this->orientationTransformer.SetTargetObject(primitiveClicked);
+		else this->orientationTransformer.SetTargetObject(nullptr);
+		
+		if (!(GetAsyncKeyState(VK_SHIFT) & 0x8000)) {
+			for (Primitive* p : this->primitives) {
+				if (p == primitiveClicked) continue;
+				p->selected = false;
+			}
+		}
 	}
 	catch (COMException& exception) {
 		ErrorLogger::Log(exception);
@@ -227,147 +271,27 @@ void Scene::HandleMouseInteraction(int px, int py)
 
 void Scene::AddPoint(const XMFLOAT3& pos, const XMFLOAT4& col)
 {
-	Primitive* point = new Primitive(this->device, this->deviceContext);
-	
-	Vertex vertexData[1] = { Vertex(BaseVectors::ORIGIN) };
-
-	point->SetVertexIndexBuffers(vertexData, 1, 0, 0, 0);
-	point->SetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_POINTLIST);
-	point->SetPosition(pos);
-	point->SetColor(col);
-	point->SetIlluminationCapability(false);
-	point->id = static_cast<UINT>(this->primitives.size() + 1);
-
-
-	this->primitives.push_back(point);
+	this->primitives.push_back(PrimitiveConstructor::Point(pos, col, this->primitives.size() + 1));
 }
 
 void Scene::AddLine(const std::vector<XMFLOAT3>& poses, const XMFLOAT4& col)
 {
-	Primitive* line = new Primitive(this->device, this->deviceContext);
-
-	std::vector<Vertex> vertexData{};
-	for (XMFLOAT3 pos : poses) {
-		vertexData.push_back(Vertex(pos));
-	}
-		
-	line->SetVertexIndexBuffers(vertexData.data(), vertexData.size(), 0, 0, 1);
-	line->SetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_LINESTRIP);
-	line->SetPosition(BaseVectors::ORIGIN);
-	line->SetColor(col);
-	line->SetIlluminationCapability(false);
-	line->id = static_cast<UINT>(this->primitives.size() + 1);
-
-	this->primitives.push_back(line);
+	this->primitives.push_back(PrimitiveConstructor::Line(poses, col, this->primitives.size() + 1));
 }
 
 void Scene::AddPolygon(const std::vector<XMFLOAT3>& poses, const XMFLOAT4& col)
 {
-	Primitive* poly = new Primitive(this->device, this->deviceContext);
-	std::vector<Vertex> vertexData{};
-
-	if (poses.size() == 3) {
-		vertexData = { Vertex(poses[0]), Vertex(poses[1]), Vertex(poses[2]) };
-		poly->SetVertexIndexBuffers(vertexData.data(), vertexData.size(), nullptr, NULL, 2);
-		poly->SetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
-	}
-	else {
-		DWORD centerIndex = vertexData.size();
-		XMFLOAT3 centerOfMass = math::GetCenterOfMass(poses);
-		
-		for (int i = 0; i < poses.size(); ++i) {
-			XMFLOAT3 faceNormal = math::ComputeNormal(centerOfMass, poses[i], poses[(i + 1) % poses.size()]);
-
-			vertexData.push_back(Vertex(centerOfMass, faceNormal));
-			vertexData.push_back(Vertex(poses[i], faceNormal));
-			vertexData.push_back(Vertex(poses[(i + 1) % poses.size()], faceNormal));
-		}
-
-
-		std::vector<DWORD> indexData{};
-		for (DWORD i = 0; i < vertexData.size(); ++i) {
-			indexData.push_back(i);
-		}
-		poly->SetVertexIndexBuffers(vertexData.data(), vertexData.size(), indexData.data(), indexData.size(), 2);
-		poly->SetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-	}
-
-	poly->SetPosition(BaseVectors::ORIGIN);
-	poly->SetColor(col);
-	poly->SetIlluminationCapability(true);
-	poly->id = static_cast<UINT>(this->primitives.size() + 1);
-
-	this->primitives.push_back(poly);
+	this->primitives.push_back(PrimitiveConstructor::Polygon(poses, col, this->primitives.size() + 1));
 }
 
 void Scene::AddSphere(float radius, const XMFLOAT3& pos, const UINT numSubdivides, const XMFLOAT4& col)
 {
-	std::vector<Vertex> vertexData = {
-	{ {  0.0f,      0.0f,      1.0f     }, {  0.0f,      0.0f,      1.0f     } },
+	this->primitives.push_back(PrimitiveConstructor::Sphere(radius, pos, numSubdivides, col, this->primitives.size() + 1));
+}
 
-	{ {  0.894427f, 0.0f,      0.447214f}, {  0.894427f, 0.0f,      0.447214f} },
-	{ {  0.276393f, 0.850651f, 0.447214f}, {  0.276393f, 0.850651f, 0.447214f} },
-	{ { -0.723607f, 0.525731f, 0.447214f}, { -0.723607f, 0.525731f, 0.447214f} },
-	{ { -0.723607f,-0.525731f, 0.447214f}, { -0.723607f,-0.525731f, 0.447214f} },
-	{ {  0.276393f,-0.850651f, 0.447214f}, {  0.276393f,-0.850651f, 0.447214f} },
-
-	{ {  0.723607f, 0.525731f,-0.447214f}, {  0.723607f, 0.525731f,-0.447214f} },
-	{ { -0.276393f, 0.850651f,-0.447214f}, { -0.276393f, 0.850651f,-0.447214f} },
-	{ { -0.894427f, 0.0f,     -0.447214f}, { -0.894427f, 0.0f,     -0.447214f} },
-	{ { -0.276393f,-0.850651f,-0.447214f}, { -0.276393f,-0.850651f,-0.447214f} },
-	{ {  0.723607f,-0.525731f,-0.447214f}, {  0.723607f,-0.525731f,-0.447214f} },
-
-	{ {  0.0f,      0.0f,     -1.0f     }, {  0.0f,      0.0f,     -1.0f     } }
-	};
-
-	std::vector<DWORD> indexData = {
-		0, 1, 2,
-		0, 2, 3,
-		0, 3, 4,
-		0, 4, 5,
-		0, 5, 1,
-
-		1, 6, 2,
-		2, 6, 7,
-		2, 7, 3,
-		3, 7, 8,
-		3, 8, 4,
-		4, 8, 9,
-		4, 9, 5,
-		5, 9, 10,
-		5, 10, 1,
-		1, 10, 6,
-
-		11, 7, 6,
-		11, 8, 7,
-		11, 9, 8,
-		11, 10, 9,
-		11, 6, 10
-	};
-
-	for (UINT i = 0; i < numSubdivides; ++i) {
-		Subdivide(vertexData, indexData);
-	}
-
-	for (Vertex& vertex : vertexData) {
-		XMVECTOR posVec = XMLoadFloat3(&vertex.pos);
-		posVec = XMVector3Normalize(posVec);
-		XMStoreFloat3(&vertex.pos, posVec);
-
-		vertex.pos.x *= radius;
-		vertex.pos.y *= radius;
-		vertex.pos.z *= radius;
-	}
-
-	Primitive* poly = new Primitive(this->device, this->deviceContext);
-	poly->SetVertexIndexBuffers(vertexData.data(), vertexData.size(), indexData.data(), indexData.size(), 2);
-	poly->SetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-	poly->SetPosition(pos);
-	poly->SetColor(col);
-	poly->SetIlluminationCapability(true);
-	poly->id = static_cast<UINT>(this->primitives.size() + 1);
-
-	this->primitives.push_back(poly);
+void Scene::AddLine3d(float radius, std::vector<XMFLOAT3>& poses, const UINT numSubdivides, const XMFLOAT4& col)
+{
+	this->primitives.push_back(PrimitiveConstructor::Line3d(radius, poses, numSubdivides, col, this->primitives.size() + 1));
 }
 
 void Scene::UpdateLight()
@@ -377,6 +301,7 @@ void Scene::UpdateLight()
 		p->SetLighting(this->ambient, this->intensity, this->shininess);
 		p->SetSmoothShading(this->smoothShade);
 	}
+	this->orientationTransformer.UpdateLighting(this->ambient, this->intensity, this->shininess, this->smoothShade);
 }
 
 const std::vector<std::string>& Scene::GetSavedScenes() const
@@ -540,7 +465,7 @@ bool Scene::InitializeDirectX()
 			hr = this->cb_ps_id.Initialize(this->device, this->deviceContext);
 			COM_ERROR_IF_FAILED(hr, "Failed to create cb ps id.");
 
-			SetOutline(BLACK, 0.1f);
+			SetOutline(Colors::BLACK, 0.1f);
 		}
 	}
 	catch (COMException& exception) {
@@ -556,6 +481,23 @@ HRESULT Scene::CreateResources()
 {
 	HRESULT hr{};
 	try {
+		this->geometryPresenceMask.Reset();
+		this->geometryPresenceMaskResolved.Reset();
+		this->outlinesTexture.Reset();
+		this->outlinesTextureResolved.Reset();
+		this->mainRTVTextureResolved.Reset();
+		this->primitivesIDsTexture.Reset();
+		this->primitivesIDsTextureStaging.Reset();
+
+		this->maskRTV.Reset();
+		this->outlinesRTV.Reset();
+		this->primitivesIDsRTV.Reset();
+
+		this->maskSRV.Reset();
+		this->outlinesSRV.Reset();
+		this->sceneSRV.Reset();
+
+
 		CD3D11_TEXTURE2D_DESC maskDesc(
 			DXGI_FORMAT_R8_UNORM,
 			this->width,
@@ -781,6 +723,31 @@ Primitive* Scene::GetPrimitiveByID(UINT id)
 	for (Primitive* p : this->primitives) {
 		if (p->id == id) return p;
 	}
+	return nullptr;
+}
+
+UINT Scene::GetIdByPixel(int px, int py)
+{
+	this->deviceContext->Flush();
+
+	this->deviceContext->CopyResource(
+		this->primitivesIDsTextureStaging.Get(),
+		this->primitivesIDsTexture.Get()
+	);
+
+	D3D11_MAPPED_SUBRESOURCE mapped = {};
+	HRESULT hr = this->deviceContext->Map(this->primitivesIDsTextureStaging.Get(),
+		0, D3D11_MAP_READ, 0, &mapped);
+	COM_ERROR_IF_FAILED(hr, "Failed to map primitives IDs texture staging resource.");
+
+	uint8_t* basePtr = (uint8_t*)mapped.pData;
+	uint8_t* rowPtr = basePtr + py * mapped.RowPitch;
+	UINT* pixel = (UINT*)(rowPtr + px * sizeof(uint32_t));
+	UINT id = *pixel;
+
+	this->deviceContext->Unmap(this->primitivesIDsTextureStaging.Get(), 0);
+
+	return id;
 }
 
 

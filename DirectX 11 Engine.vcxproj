@@ -43,13 +43,13 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v145</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v145</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
@@ -279,7 +279,6 @@
     <ClInclude Include="source\graphics\scene\scene.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="cpp source\graphics\scene\scene.cpp" />
     <ClCompile Include="source\graphics\gui.cpp" />
     <ClCompile Include="source\graphics\imgui\imgui_stdlib.cpp" />
     <FxCompile Include="source\graphics\shaders\pixelshaderwriteids.hlsl">
@@ -296,6 +295,9 @@
       <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">PS_WriteIDs</EntryPointName>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Pixel</ShaderType>
     </FxCompile>
+    <ClCompile Include="source\graphics\scene\auxiliaryObjects.cpp" />
+    <ClCompile Include="source\graphics\scene\auxiliaryObjects.h" />
+    <ClCompile Include="source\graphics\scene\primitives\primitiveConstructor.cpp" />
     <ClCompile Include="source\utils\adapterReader.cpp" />
     <ClCompile Include="source\graphics\camera\Camera.cpp" />
     <ClCompile Include="source\graphics\graphics.cpp" />
