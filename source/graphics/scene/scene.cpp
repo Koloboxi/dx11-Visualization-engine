@@ -25,7 +25,7 @@ bool Scene::Initialize(ID3D11Device* device, ID3D11DeviceContext* deviceContext,
 	this->camera.SetRotation(Projections::DIM);
 	this->camera.SetPosition(BaseVectors::ORIGIN);
 
-	XMFLOAT4 transparent = GenerateRandomFloat4(1);
+	/*XMFLOAT4 transparent = GenerateRandomFloat4(1);
 	transparent.w = 0.4f;
 	this->AddSphere(100, XMFLOAT3(0, 0, 0), 0, transparent);
 	transparent.x = 1.f - transparent.x;
@@ -38,38 +38,117 @@ bool Scene::Initialize(ID3D11Device* device, ID3D11DeviceContext* deviceContext,
 	this->AddSphere(100, XMFLOAT3(0, -200, 0), 4, GenerateRandomFloat4(1));
 
 	this->AddSphere(100, XMFLOAT3(0, 0, 200), 5, GenerateRandomFloat4(1));
-	this->AddSphere(100, XMFLOAT3(0, 0, -200), 6, GenerateRandomFloat4(1));
-		
+	this->AddSphere(GenerateRandomFloat3(150).x, XMFLOAT3(0, 0, -200), 6, GenerateRandomFloat4(1));
+	this->AddSphere(GenerateRandomFloat3(150).x, XMFLOAT3(0, 0, -200), 6, GenerateRandomFloat4(1));*/
+	
+	//XMFLOAT3 vel1{ 0.0f, 0.0f,  1.5f };
+	//XMFLOAT3 vel2{ 0.0f, 0.0f, -1.5f };
 
-	std::vector< XMFLOAT3> poses = {
-		{-400, -400, -400},
-		{400, -400, -400},
-		{400, 400, -400},
-		{-400, 400, -400}
-	};
-	this->AddPolygon(poses, Colors::RED);
-	std::vector< XMFLOAT3> poses2 = {
-		{-500, -500, -500},
-		{500, 500, 500}
-	};
-	std::vector< XMFLOAT3> poses3 = {
-		{-500, 500, -500},
-		{500, -500, 500}
-	};
-	std::vector< XMFLOAT3> poses4 = {
-		{500, -500, -500},
-		{-500, 500, -500}
-	};
-	this->AddLine(poses2, Colors::BLUE);
-	this->AddLine(poses3, Colors::BLUE);
-	this->AddLine(poses4, Colors::BLUE);
-	this->AddPoint(poses2[0], Colors::WHITE);
+	//const float G = 10.0f;
+	//const float m1 = 1.0f;
+	//const float m2 = 1.0f;
+
+	//Primitive* other = this->primitives[7];
+	//Primitive* other2 = this->primitives[6];
+	//this->primitives[6]->SetUpdater([other, vel1, G, m2](Primitive& p, float t, float dt) mutable {
+	//	if (!other) return;
+
+	//	XMFLOAT3 pos = p.GetPosition();
+	//	XMFLOAT3 opos = other->GetPosition();
+
+	//	float dx = opos.x - pos.x;
+	//	float dy = opos.y - pos.y;
+	//	float dz = opos.z - pos.z;
+	//	float dist = sqrtf(dx * dx + dy * dy + dz * dz);
+	//	if (dist < 0.5f) return;  // предотвращаем сингулярность
+
+	//	float force = G * m2 / (dist * dist);
+	//	float nx = dx / dist, ny = dy / dist, nz = dz / dist;
+
+	//	vel1.x += nx * force * dt;
+	//	vel1.y += ny * force * dt;
+	//	vel1.z += nz * force * dt;
+
+	//	p.SetPosition({ pos.x + vel1.x * dt,
+	//					pos.y + vel1.y * dt,
+	//					pos.z + vel1.z * dt });
+	//	});
+
+	//this->primitives[7]->SetUpdater([other2, vel2, G, m1](Primitive& p, float t, float dt) mutable {
+	//	if (!other2) return;
+
+	//	XMFLOAT3 pos = p.GetPosition();
+	//	XMFLOAT3 opos = other2->GetPosition();
+
+	//	float dx = opos.x - pos.x;
+	//	float dy = opos.y - pos.y;
+	//	float dz = opos.z - pos.z;
+	//	float dist = sqrtf(dx * dx + dy * dy + dz * dz);
+	//	if (dist < 0.5f) return;
+
+	//	float force = G * m1 / (dist * dist);
+	//	float nx = dx / dist, ny = dy / dist, nz = dz / dist;
+
+	//	vel2.x += nx * force * dt;
+	//	vel2.y += ny * force * dt;
+	//	vel2.z += nz * force * dt;
+
+	//	p.SetPosition({ pos.x + vel2.x * dt,
+	//					pos.y + vel2.y * dt,
+	//					pos.z + vel2.z * dt });
+	//	});
+
+	//std::vector< XMFLOAT3> poses = {
+	//	{-400, -400, -400},
+	//	{400, -400, -400},
+	//	{400, 400, -400},
+	//	{-400, 400, -400}
+	//};
+	//this->AddPolygon(poses, Colors::RED);
+	//std::vector< XMFLOAT3> poses2 = {
+	//	{-500, -500, -500},
+	//	{500, 500, 500}
+	//};
+	//std::vector< XMFLOAT3> poses3 = {
+	//	{-500, 500, -500},
+	//	{500, -500, 500}
+	//};
+	//std::vector< XMFLOAT3> poses4 = {
+	//	{500, -500, -500},
+	//	{-500, 500, -500}
+	//};
+	//this->AddLine(poses2, Colors::BLUE);
+	//this->AddLine(poses3, Colors::BLUE);
+	//this->AddLine(poses4, Colors::BLUE);
+	//this->AddPoint(poses2[0], Colors::WHITE);
+
+	/*for (float x = -100; x < 100; x += 4) {
+		for (float y = -100; y < 100; y += 4) {
+			float z = x * y / 50.f;
+			std::vector<XMFLOAT3> poses = { BaseVectors::ORIGIN, XMFLOAT3(x, y, z) };
+			this->AddLine(poses, XMFLOAT4(abs(z) / 100.f, 0, 1-abs(z) / 100.f, 1.f));
+			this->primitives.back()->SetUpdater([x, y](Primitive& p, float t, float dt) {
+				float z = 10 * sinf(t + x / 10.f) * cosf(t + y / 10.f);
+				p.SetPosition(XMFLOAT3(x, y, z)); p.SetColor(XMFLOAT4(abs(z) / 10.f, 0, 1 - abs(z) / 10.f, 1.f));
+				});
+		}
+	}*/
+	this->AddPoint(BaseVectors::ORIGIN, Colors::RED);
+	this->AddPoint(BaseVectors::ORIGIN, Colors::GREEN);
+	this->primitives[0]->SetUpdater([](Primitive& p, float t, float dt) {
+		p.SetPosition(XMFLOAT3(100 * cosf(t), 0, 100 * sinf(t)));
+		});
+	this->primitives[1]->SetUpdater([](Primitive& p, float t, float dt) {
+
+		p.SetPosition(XMFLOAT3(0, 100 * cosf(t), 100 * sinf(t)));
+		});
+		
 
 	this->orientationTransformer.Initialize(device, deviceContext);
 
 	this->UpdateLight();
 	this->UpdateSavedScenes();
-
+	this->tpsTimer.Start();
 		
 	return true;
 }
@@ -99,6 +178,7 @@ ID3D11RenderTargetView* Scene::GetMaskRTV() const
 
 void Scene::Draw()
 {
+	DrawGrid();
 	std::vector<Primitive*> primitivesOrdered = GetPrimitivesSorted();
 
 	this->deviceContext->ClearRenderTargetView(this->primitivesIDsRTV.Get(), Colors::clearColor);
@@ -205,6 +285,7 @@ void Scene::Draw()
 
 
 	this->deviceContext->OMSetDepthStencilState(this->dsStateNoDepth.Get(), 0);
+	this->deviceContext->GSSetShader(nullptr, NULL, 0);
 	this->orientationTransformer.Draw(this->camera.GetViewMatrix(), this->camera.GetProjectionMatrix(), this->camera.GetScale());
 
 	this->deviceContext->OMSetRenderTargets(1, this->rtvIDs, this->dsViewNoMSAA);
@@ -219,6 +300,29 @@ void Scene::Draw()
 
 	this->SetMainResources();
 	this->deviceContext->OMSetDepthStencilState(this->dsStateDepth.Get(), 0);
+
+	UpdateTime();
+}
+
+void Scene::HandleSelection(Primitive* primitiveClicked)
+{
+	if (!primitiveClicked) {
+		for (Primitive* p : this->primitives) {
+			p->selected = false;
+		}
+		this->orientationTransformer.SetTargetObject(nullptr);
+		return;
+	}
+	primitiveClicked->selected = !primitiveClicked->selected;
+	if (primitiveClicked->selected) this->orientationTransformer.SetTargetObject(primitiveClicked);
+	else this->orientationTransformer.SetTargetObject(nullptr);
+
+	if (!(GetAsyncKeyState(VK_SHIFT) & 0x8000)) {
+		for (Primitive* p : this->primitives) {
+			if (p == primitiveClicked) continue;
+			p->selected = false;
+		}
+	}
 }
 
 void Scene::HandleLMouse(int px, int py, bool tPressfRelease)
@@ -246,23 +350,7 @@ void Scene::HandleLMouse(int px, int py, bool tPressfRelease)
 		if (blockNextLMouseRelease) { blockNextLMouseRelease = false; return; }
 
 		Primitive* primitiveClicked = this->GetPrimitiveByID(id);
-		if (!primitiveClicked) {
-			for (Primitive* p : this->primitives) {
-				p->selected = false;
-			}
-			this->orientationTransformer.SetTargetObject(nullptr);
-			return;
-		}
-		primitiveClicked->selected = !primitiveClicked->selected;
-		if (primitiveClicked->selected) this->orientationTransformer.SetTargetObject(primitiveClicked);
-		else this->orientationTransformer.SetTargetObject(nullptr);
-		
-		if (!(GetAsyncKeyState(VK_SHIFT) & 0x8000)) {
-			for (Primitive* p : this->primitives) {
-				if (p == primitiveClicked) continue;
-				p->selected = false;
-			}
-		}
+		HandleSelection(primitiveClicked);
 	}
 	catch (COMException& exception) {
 		ErrorLogger::Log(exception);
@@ -390,6 +478,18 @@ void Scene::LoadScene(std::string name)
 	this->camera.SetRotation(camRot);
 	this->camera.SetPosition(camPos);
 	this->UpdateLight();
+}
+
+void Scene::UpdateTime()
+{
+	float dtSec = this->tpsTimer.GetMillisecondsElapsed() * 0.001f;
+	this->deltaTime = dtSec * this->timeSpeed;
+	this->currentTime += this->deltaTime;
+	this->tpsTimer.Restart();
+	for (auto& prim : this->primitives)
+		prim->Update(this->currentTime, this->deltaTime);
+
+	this->orientationTransformer.Update();
 }
 
 bool Scene::InitializeDirectX()
@@ -623,6 +723,73 @@ void Scene::SetOutlineResources()
 	this->deviceContext->OMSetDepthStencilState(this->dsStateNoDepth.Get(), 0);
 }
 
+void Scene::DrawGrid()
+{
+	this->deviceContext->GSSetShader(this->geometryshaderthickness.GetShader(), NULL, 0);
+
+	const float baseGridSize = 128.f;
+	const int linesNum = 40;
+	const float logStep = 2.0f;
+
+	auto scale = this->camera.GetScale();
+
+	float logScale = std::log(scale) / std::log(logStep);
+	float levelF = std::floor(logScale);
+	float fraction = logScale - levelF;
+
+	float step0 = baseGridSize * std::pow(logStep, levelF);
+	float step1 = baseGridSize * std::pow(logStep, levelF + 1.f);
+
+	float alpha0 = 1.0f - fraction;
+	float alpha1 = fraction;
+
+	auto drawGrid = [&](float gridSize, float alpha)
+		{
+			if (alpha <= 0.01f) return;
+
+			XMFLOAT4 color = { Colors::GRAY.x, Colors::GRAY.y, Colors::GRAY.z, Colors::GRAY.w * alpha };
+
+			for (float x = -20; x <= 20; x += 1)
+			{
+				std::vector<XMFLOAT3> poses = {
+					XMFLOAT3(x * gridSize,  linesNum * gridSize / 2.f, 0),
+					XMFLOAT3(x * gridSize, -linesNum * gridSize / 2.f, 0)
+				};
+				auto p1 = PrimitiveConstructor::Line(poses, color, 0);
+
+				poses = {
+					XMFLOAT3(linesNum * gridSize / 2.f, x * gridSize, 0),
+					XMFLOAT3(-linesNum * gridSize / 2.f, x * gridSize, 0)
+				};
+				auto p2 = PrimitiveConstructor::Line(poses, color, 0);
+
+				p1->Draw(this->camera.GetViewMatrix(), this->camera.GetProjectionMatrix());
+				p2->Draw(this->camera.GetViewMatrix(), this->camera.GetProjectionMatrix());
+				delete p1;
+				delete p2;
+			}
+		};
+
+	drawGrid(step0, alpha0);
+	drawGrid(step1, alpha1);
+
+	float axisLen = step1;
+
+	struct AxisLine { XMFLOAT3 from; XMFLOAT3 to; XMFLOAT4 color; };
+	AxisLine axes[] = {
+		{ XMFLOAT3(0, 0, 0), XMFLOAT3(axisLen, 0,       0), Colors::RED   },
+		{ XMFLOAT3(0, 0, 0), XMFLOAT3(0,       axisLen, 0), Colors::GREEN },
+		{ XMFLOAT3(0, 0, 0), XMFLOAT3(0,       0,       axisLen), Colors::BLUE  },
+	};
+
+	for (auto& axis : axes)
+	{
+		std::vector<XMFLOAT3> poses = { axis.from, axis.to };
+		auto line = PrimitiveConstructor::Line(poses, axis.color, 0);
+		line->Draw(this->camera.GetViewMatrix(), this->camera.GetProjectionMatrix());
+		delete line;
+	}
+}
 
 std::vector<Primitive*>& Scene::GetPrimitivesSorted()
 {

@@ -125,13 +125,14 @@ void Graphics::Gui()
 	ImGui::End();
 
 	ImGui::Begin("Primitives");
-	if (ImGui::TreeNode("Primitives")) {
+	if (ImGui::TreeNodeEx("Primitives", ImGuiTreeNodeFlags_DefaultOpen)) {
 		std::string ordinal;
 		for (UINT i = 0; i < this->scene.primitives.size(); ++i) {
 			ordinal = std::to_string(i);
 			UCHAR dimension = this->scene.primitives[i]->GetDimension();
 			ordinal += dimension == 0 ? "p" : (dimension == 1 ? "l" : "t");
-			ImGui::Selectable((ordinal).c_str(), &this->scene.primitives[i]->selected);
+			if(ImGui::Selectable((ordinal).c_str(), this->scene.primitives[i]->selected))
+				this->scene.HandleSelection(this->scene.primitives[i]);
 		}
 		ImGui::TreePop();
 	}

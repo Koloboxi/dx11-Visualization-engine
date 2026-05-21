@@ -17,11 +17,12 @@ public:
 	void HandleObjMove(XMFLOAT2& actionAxisScreen, XMFLOAT2& actionPointNdc, const XMMATRIX& vm, const XMMATRIX& pm, const float cameraScale);
 	void HandleObjRelease();
 
+	void Update();
+
 private:
 	ID3D11Device* device{};
 	ID3D11DeviceContext* deviceContext{};
 
-	void Update();
 
 	Primitive* targetObject;
 

@@ -1,6 +1,5 @@
 #pragma once
 #include "..\utils\adapterReader.h"
-#include "..\utils\Timer.h"
 #include "shaders\shaders.h"
 #include <SpriteBatch.h>
 #include <SpriteFont.h>

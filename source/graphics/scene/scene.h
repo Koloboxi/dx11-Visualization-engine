@@ -8,6 +8,7 @@
 
 #include "..\imgui\imgui.h"
 #include "auxiliaryObjects.h"
+#include "..\..\utils\Timer.h"
 
 class Scene {
 public:
@@ -19,6 +20,7 @@ public:
 	OrientationTransformer orientationTransformer;
 	void Draw();
 
+	void HandleSelection(Primitive* primitiveClicked);
 	void HandleLMouse(int px, int py, bool tPressfRelease);
 	bool blockMousePick = false;
 
@@ -110,12 +112,21 @@ private:
 	ConstantBuffer<CB_PS_pixelshaderOutline> cb_ps_outline{};
 	ConstantBuffer<CB_PS_id> cb_ps_id{};
 
+	Timer tpsTimer;
+	float currentTime = 0.0f;
+	float deltaTime = 0.0f;
+	float timeSpeed = 1.0f;
+	void UpdateTime();
+
 	bool InitializeDirectX();
 	HRESULT CreateResources();
 	void UpdateRTVs();
 
 	void SetMainResources();
 	void SetOutlineResources();
+
+
+	void DrawGrid();
 
 	std::vector<Primitive*>& GetPrimitivesSorted();
 

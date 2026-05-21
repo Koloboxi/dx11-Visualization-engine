@@ -11,6 +11,8 @@ namespace Colors {
 	static const XMFLOAT4 BLACK = XMFLOAT4(0, 0, 0, 1);
 	static const XMFLOAT4 WHITE = XMFLOAT4(1, 1, 1, 1);
 
+	static const XMFLOAT4 GRAY = XMFLOAT4(0.5f, 0.5f, 0.5f, 0.5f);
+
 	static const XMFLOAT4 RED = XMFLOAT4(1, 0, 0, 1);
 	static const XMFLOAT4 GREEN = XMFLOAT4(0, 1, 0, 1);
 	static const XMFLOAT4 BLUE = XMFLOAT4(0, 0, 1, 1);

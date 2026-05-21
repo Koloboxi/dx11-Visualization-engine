@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\kolobox\\\\source\\\\repos\\\\DirectX\\\\Visualization engine dx11\" -Recurse -Force)",
+      "Bash(Select-Object FullName)"
+    ]
+  }
+}

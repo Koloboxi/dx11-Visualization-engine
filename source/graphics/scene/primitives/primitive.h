@@ -3,8 +3,8 @@
 #include "..\..\buffers\vertexBuffer.h"
 #include "..\..\buffers\indexBuffer.h"
 #include "..\..\buffers\constantBuffer.h"
-
 #include "..\..\math.h"
+#include <functional>
 
 using namespace DirectX;
 
@@ -58,6 +58,11 @@ public:
 
 	UCHAR GetDimension() const;
 
+	using Updater = std::function<void(Primitive&, float t, float dt)>;
+	void SetUpdater(Updater fn) { updater = std::move(fn); }
+	void ClearUpdater() { updater = nullptr; }
+	void Update(float t, float dt) { if (updater) updater(*this, t, dt); }
+
 private:
 	XMMATRIX worldMatrix = XMMatrixIdentity();
 	void UpdateWorldMatrix();
@@ -85,6 +90,8 @@ private:
 	XMFLOAT4 rotQuat = { 0.0f, 0.0f, 0.0f, 1.0f };
 	XMFLOAT3 rotZero{};
 	XMFLOAT4 col{};
+
+	Updater updater;
 };
 
 #include "..\..\misc\inlines.h"
