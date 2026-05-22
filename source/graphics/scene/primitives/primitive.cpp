@@ -36,12 +36,21 @@ void Primitive::Draw(const XMMATRIX& viewMatrix, const XMMATRIX& projectionMatri
 	UINT offset = 0;
 	this->deviceContext->IASetPrimitiveTopology(this->primitiveTopology);
 
-	VertexBuffer<Vertex>* activeBuffer = 
-		this->smoothShade || this->primitiveTopology == D3D10_PRIMITIVE_TOPOLOGY_LINESTRIP  || this->primitiveTopology == D3D10_PRIMITIVE_TOPOLOGY_POINTLIST ?
-		&this->vertexBuffer : &this->vertexBufferFaces;
+	const bool isLine  = (this->primitiveTopology == D3D10_PRIMITIVE_TOPOLOGY_LINESTRIP);
+	const bool isPoint = (this->primitiveTopology == D3D10_PRIMITIVE_TOPOLOGY_POINTLIST);
+	const bool isMesh  = !isLine && !isPoint;
+
+	// For flat-shaded meshes use the pre-built face-normal buffer if it was generated;
+	// fall back to the regular vertex buffer (e.g. primitive has no index buffer).
+	VertexBuffer<Vertex>* activeBuffer =
+		(isMesh && !this->smoothShade && this->vertexBufferFaces.GetBufferSize() > 0)
+		? &this->vertexBufferFaces
+		: &this->vertexBuffer;
+
 	this->deviceContext->IASetVertexBuffers(0, 1, activeBuffer->GetAddressOf(), activeBuffer->GetStridePtr(), &offset);
 
-	if (this->smoothShade && this->primitiveTopology != D3D10_PRIMITIVE_TOPOLOGY_LINESTRIP && this->primitiveTopology != D3D10_PRIMITIVE_TOPOLOGY_POINTLIST) {
+	// Indexed draw only for smooth-shaded meshes that actually have an index buffer.
+	if (isMesh && this->smoothShade && this->indexBuffer.GetBufferSize() > 0) {
 		this->deviceContext->IASetIndexBuffer(this->indexBuffer.Get(), DXGI_FORMAT::DXGI_FORMAT_R32_UINT, 0);
 		this->deviceContext->DrawIndexed(this->indexBuffer.GetBufferSize(), 0, 0);
 	}
@@ -213,7 +222,7 @@ bool Primitive::GetIlluminationCapability() const
 	return this->illuminationCapability;
 }
 
-const bool Primitive::GetScale() const
+float Primitive::GetScale() const
 {
 	return this->scale;
 }

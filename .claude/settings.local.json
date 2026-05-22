@@ -2,7 +2,13 @@
   "permissions": {
     "allow": [
       "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\kolobox\\\\source\\\\repos\\\\DirectX\\\\Visualization engine dx11\" -Recurse -Force)",
-      "Bash(Select-Object FullName)"
+      "Bash(Select-Object FullName)",
+      "Bash(Get-ChildItem -Recurse \"C:\\\\Users\\\\kolobox\\\\source\\\\repos\\\\DirectX\\\\Visualization engine dx11\" -Include \"*.cpp\", \"*.h\")",
+      "Bash(Select-Object -ExpandProperty FullName)",
+      "Bash(Sort-Object)",
+      "Bash(msbuild \"DirectX 11 Engine.vcxproj\" /p:Configuration=Debug /p:Platform=x64 /t:Build /m /v:minimal)",
+      "PowerShell(cd \"C:\\\\Users\\\\kolobox\\\\source\\\\repos\\\\DirectX\\\\Visualization engine dx11\"; $result = & \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\2022\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\" \"DirectX 11 Engine.vcxproj\" /p:Configuration=Debug /p:Platform=x64 /t:Build /m /v:minimal 2>&1; $result | Select-Object -Last 10; Write-Host \"Exit code: $LASTEXITCODE\")",
+      "Bash(msbuild \"DirectX 11 Engine.vcxproj\" /p:Configuration=Debug /p:Platform=x64 /t:Build /v:minimal)"
     ]
   }
 }

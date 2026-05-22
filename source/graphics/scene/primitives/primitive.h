@@ -22,6 +22,7 @@ public:
 	HRESULT SetVertexIndexBuffers(Vertex* vertexData, UINT vertexNumVertices, DWORD* indexData, UINT indexNumVertices, UCHAR dim);
 
 	UINT id{};
+	std::string name;
 
 	void Draw(const XMMATRIX& viewMatrix, const XMMATRIX& projectionMatrix);
 	bool selected = false;
@@ -47,7 +48,7 @@ public:
 	bool GetTransparent() const;
 	bool GetIlluminationCapability() const;
 
-	const bool GetScale() const;
+	float GetScale() const;
 
 	const XMFLOAT3& GetPosition() const;
 	const XMFLOAT4& GetRotation() const;
@@ -58,10 +59,25 @@ public:
 
 	UCHAR GetDimension() const;
 
+	std::string luaScript;
+
+	float mass = 1.0f;
+	XMFLOAT3 velocity{};
+
 	using Updater = std::function<void(Primitive&, float t, float dt)>;
 	void SetUpdater(Updater fn) { updater = std::move(fn); }
 	void ClearUpdater() { updater = nullptr; }
-	void Update(float t, float dt) { if (updater) updater(*this, t, dt); }
+	bool HasUpdater() const { return updater != nullptr; }
+	void Update(float t, float dt) {
+		if (!updater) return;
+		XMFLOAT3 prevPos = pos;
+		updater(*this, t, dt);
+		if (dt > 0.0001f) {
+			velocity.x = (pos.x - prevPos.x) / dt;
+			velocity.y = (pos.y - prevPos.y) / dt;
+			velocity.z = (pos.z - prevPos.z) / dt;
+		}
+	}
 
 private:
 	XMMATRIX worldMatrix = XMMatrixIdentity();
@@ -89,7 +105,6 @@ private:
 	XMFLOAT3 pos{};
 	XMFLOAT4 rotQuat = { 0.0f, 0.0f, 0.0f, 1.0f };
 	XMFLOAT3 rotZero{};
-	XMFLOAT4 col{};
 
 	Updater updater;
 };
@@ -107,4 +122,7 @@ namespace PrimitiveConstructor {
 	Primitive* Line3d(float radius, const std::vector<XMFLOAT3>& poses, const UINT numSubdivides, const XMFLOAT4& col, UINT id);
 
 	Primitive* Arc3d(float arcRadius, float lineRadius, float angleDeg, const XMFLOAT3& center, const UINT numSubdivides, const XMFLOAT4& col, UINT id);
+
+	// Arrow: shaft (cylinder) + cone head from 'from' to 'to'
+	Primitive* Arrow3d(float shaftRadius, float headRadius, float headLength, const XMFLOAT3& from, const XMFLOAT3& to, UINT sides, const XMFLOAT4& col, UINT id);
 }

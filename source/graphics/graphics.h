@@ -11,6 +11,8 @@
 #include "imgui\imgui_stdlib.h"
 #include "Model.h"
 #include "scene\scene.h"
+#include "navcube\NavCube.h"
+#include "..\scripting\LuaUpdaterEditor.h"
 
 class Graphics
 {
@@ -23,7 +25,9 @@ public:
 	int GetClientWindowHeight();
 	XMFLOAT2 ScreenCoords2NDC(int x, int y);
 
+	LuaUpdaterEditor luaEditor;  // must be declared before scene (destroyed after scene)
 	Scene scene;
+
 private:
 	bool InitializeDirectX(HWND hwnd);
 	void ResetResources();

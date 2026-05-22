@@ -40,9 +40,15 @@ public:
 	void AddPoint(const XMFLOAT3& pos, const XMFLOAT4& col);
 	void AddLine(const std::vector<XMFLOAT3>& poses, const XMFLOAT4& col);
 	void AddPolygon(const std::vector<XMFLOAT3>& poses, const XMFLOAT4& col);
-
 	void AddSphere(float radius, const XMFLOAT3& pos, const UINT numSubdivides, const XMFLOAT4& col);
 	void AddLine3d(float radius, std::vector<XMFLOAT3>& poses, const UINT numSubdivides, const XMFLOAT4& col);
+	void AddArc3d(float arcRadius, float lineRadius, float angleDeg, const XMFLOAT3& center, const UINT numSubdivides, const XMFLOAT4& col);
+	void AddArrow3d(float shaftRadius, float headRadius, float headLength, const XMFLOAT3& from, const XMFLOAT3& to, UINT sides, const XMFLOAT4& col);
+	void AddFromSTL(const std::string& path, const XMFLOAT4& col, const std::string& name = "");
+
+	void RemovePrimitive(Primitive* p);
+
+	void LoadNewtonDemo();
 
 
 	std::string scenesPath = "Data/Scenes/";
@@ -51,10 +57,23 @@ public:
 	void ClearScene();
 	void LoadScene(std::string name);
 
+	// ── Time control ─────────────────────────────────────────────────────────
+	float currentTime = 0.0f;
+	float deltaTime   = 0.0f;
+	float timeSpeed   = 1.0f;
+	bool  timePaused  = false;
+	float timeMax     = 0.0f;   // 0 = unlimited
+	bool  timeLoop    = false;
+	void  ResetTime();
+
+	// ── Pick mode (used by Lua editor's "pick vector" feature) ────────────────
+	bool pickModeActive = false;
+	UINT pickedPrimId   = 0;
+
 private:
 	ID3D11Device* device;
 	ID3D11DeviceContext* deviceContext;
-	
+
 	int width;
 	int height;
 
@@ -113,9 +132,6 @@ private:
 	ConstantBuffer<CB_PS_id> cb_ps_id{};
 
 	Timer tpsTimer;
-	float currentTime = 0.0f;
-	float deltaTime = 0.0f;
-	float timeSpeed = 1.0f;
 	void UpdateTime();
 
 	bool InitializeDirectX();
@@ -137,6 +153,9 @@ private:
 	void SetIDToWrite(UINT id);
 	Primitive* GetPrimitiveByID(UINT id);
 	UINT GetIdByPixel(int px, int py);
+
+	UINT nextId = 1;
+	UINT NextId() { return nextId++; }
 
 	std::vector<std::string> savedScenes;
 	void UpdateSavedScenes();

@@ -1,4 +1,5 @@
 #include "windowContainer.h"
+#include <shellapi.h>
 
 bool RenderWindow::Initialize(
 	WindowContainer* pWindowContainer, HINSTANCE hInstance, std::string window_title, std::string window_class, int width, int height
@@ -43,6 +44,7 @@ bool RenderWindow::Initialize(
 	}
 
 	ShowWindow(this->handle, SW_SHOW);
+	DragAcceptFiles(this->handle, TRUE);
 	SetForegroundWindow(this->handle);
 	SetFocus(this->handle);
 

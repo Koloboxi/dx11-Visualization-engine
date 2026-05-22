@@ -1,5 +1,7 @@
 #include "scene.h"
+#include "..\..\loaders\STLLoader.h"
 #include <fstream>
+#include <algorithm>
 
 bool Scene::Initialize(ID3D11Device* device, ID3D11DeviceContext* deviceContext, std::wstring shadersPath, ID3D11DepthStencilView* dsView, ID3D11DepthStencilView* dsViewNoMSAA, ID3D11RenderTargetView* mainRTV, VertexShader* vs, int windowWidth, int windowHeight)
 {
@@ -25,123 +27,58 @@ bool Scene::Initialize(ID3D11Device* device, ID3D11DeviceContext* deviceContext,
 	this->camera.SetRotation(Projections::DIM);
 	this->camera.SetPosition(BaseVectors::ORIGIN);
 
-	/*XMFLOAT4 transparent = GenerateRandomFloat4(1);
-	transparent.w = 0.4f;
-	this->AddSphere(100, XMFLOAT3(0, 0, 0), 0, transparent);
-	transparent.x = 1.f - transparent.x;
-	transparent.y = 1.f - transparent.y;
-	transparent.z = 1.f - transparent.z;
-	this->AddSphere(100, XMFLOAT3(200, 0, 0), 1, transparent);
-
-	this->AddSphere(150, XMFLOAT3(-200, 0, 0), 2, GenerateRandomFloat4(1));
-	this->AddSphere(150, XMFLOAT3(0, 200, 0), 3, GenerateRandomFloat4(1));
-	this->AddSphere(100, XMFLOAT3(0, -200, 0), 4, GenerateRandomFloat4(1));
-
-	this->AddSphere(100, XMFLOAT3(0, 0, 200), 5, GenerateRandomFloat4(1));
-	this->AddSphere(GenerateRandomFloat3(150).x, XMFLOAT3(0, 0, -200), 6, GenerateRandomFloat4(1));
-	this->AddSphere(GenerateRandomFloat3(150).x, XMFLOAT3(0, 0, -200), 6, GenerateRandomFloat4(1));*/
-	
-	//XMFLOAT3 vel1{ 0.0f, 0.0f,  1.5f };
-	//XMFLOAT3 vel2{ 0.0f, 0.0f, -1.5f };
-
-	//const float G = 10.0f;
-	//const float m1 = 1.0f;
-	//const float m2 = 1.0f;
-
-	//Primitive* other = this->primitives[7];
-	//Primitive* other2 = this->primitives[6];
-	//this->primitives[6]->SetUpdater([other, vel1, G, m2](Primitive& p, float t, float dt) mutable {
-	//	if (!other) return;
-
-	//	XMFLOAT3 pos = p.GetPosition();
-	//	XMFLOAT3 opos = other->GetPosition();
-
-	//	float dx = opos.x - pos.x;
-	//	float dy = opos.y - pos.y;
-	//	float dz = opos.z - pos.z;
-	//	float dist = sqrtf(dx * dx + dy * dy + dz * dz);
-	//	if (dist < 0.5f) return;  // ïðåäîòâðàùàåì ñèíãóëÿðíîñòü
-
-	//	float force = G * m2 / (dist * dist);
-	//	float nx = dx / dist, ny = dy / dist, nz = dz / dist;
-
-	//	vel1.x += nx * force * dt;
-	//	vel1.y += ny * force * dt;
-	//	vel1.z += nz * force * dt;
-
-	//	p.SetPosition({ pos.x + vel1.x * dt,
-	//					pos.y + vel1.y * dt,
-	//					pos.z + vel1.z * dt });
-	//	});
-
-	//this->primitives[7]->SetUpdater([other2, vel2, G, m1](Primitive& p, float t, float dt) mutable {
-	//	if (!other2) return;
-
-	//	XMFLOAT3 pos = p.GetPosition();
-	//	XMFLOAT3 opos = other2->GetPosition();
-
-	//	float dx = opos.x - pos.x;
-	//	float dy = opos.y - pos.y;
-	//	float dz = opos.z - pos.z;
-	//	float dist = sqrtf(dx * dx + dy * dy + dz * dz);
-	//	if (dist < 0.5f) return;
-
-	//	float force = G * m1 / (dist * dist);
-	//	float nx = dx / dist, ny = dy / dist, nz = dz / dist;
-
-	//	vel2.x += nx * force * dt;
-	//	vel2.y += ny * force * dt;
-	//	vel2.z += nz * force * dt;
-
-	//	p.SetPosition({ pos.x + vel2.x * dt,
-	//					pos.y + vel2.y * dt,
-	//					pos.z + vel2.z * dt });
-	//	});
-
-	//std::vector< XMFLOAT3> poses = {
-	//	{-400, -400, -400},
-	//	{400, -400, -400},
-	//	{400, 400, -400},
-	//	{-400, 400, -400}
-	//};
-	//this->AddPolygon(poses, Colors::RED);
-	//std::vector< XMFLOAT3> poses2 = {
-	//	{-500, -500, -500},
-	//	{500, 500, 500}
-	//};
-	//std::vector< XMFLOAT3> poses3 = {
-	//	{-500, 500, -500},
-	//	{500, -500, 500}
-	//};
-	//std::vector< XMFLOAT3> poses4 = {
-	//	{500, -500, -500},
-	//	{-500, 500, -500}
-	//};
-	//this->AddLine(poses2, Colors::BLUE);
-	//this->AddLine(poses3, Colors::BLUE);
-	//this->AddLine(poses4, Colors::BLUE);
-	//this->AddPoint(poses2[0], Colors::WHITE);
-
-	/*for (float x = -100; x < 100; x += 4) {
-		for (float y = -100; y < 100; y += 4) {
-			float z = x * y / 50.f;
-			std::vector<XMFLOAT3> poses = { BaseVectors::ORIGIN, XMFLOAT3(x, y, z) };
-			this->AddLine(poses, XMFLOAT4(abs(z) / 100.f, 0, 1-abs(z) / 100.f, 1.f));
-			this->primitives.back()->SetUpdater([x, y](Primitive& p, float t, float dt) {
-				float z = 10 * sinf(t + x / 10.f) * cosf(t + y / 10.f);
-				p.SetPosition(XMFLOAT3(x, y, z)); p.SetColor(XMFLOAT4(abs(z) / 10.f, 0, 1 - abs(z) / 10.f, 1.f));
-				});
-		}
-	}*/
+	// 1. Orbiting point
 	this->AddPoint(BaseVectors::ORIGIN, Colors::RED);
-	this->AddPoint(BaseVectors::ORIGIN, Colors::GREEN);
-	this->primitives[0]->SetUpdater([](Primitive& p, float t, float dt) {
-		p.SetPosition(XMFLOAT3(100 * cosf(t), 0, 100 * sinf(t)));
-		});
-	this->primitives[1]->SetUpdater([](Primitive& p, float t, float dt) {
+	this->primitives.back()->name = "Point_orbit";
+	this->primitives.back()->SetUpdater([](Primitive& p, float t, float dt) {
+		p.SetPosition(XMFLOAT3(120.f * cosf(t * 2.f), 120.f * sinf(t * 2.f), 50.f * sinf(t * 3.f)));
+	});
 
-		p.SetPosition(XMFLOAT3(0, 100 * cosf(t), 100 * sinf(t)));
+	// 2. Orbiting sphere
+	this->AddSphere(40, XMFLOAT3(200, 0, 0), 2, XMFLOAT4(0.2f, 0.5f, 1.f, 1.f));
+	this->primitives.back()->name = "Sphere_orbit";
+	this->primitives.back()->SetUpdater([](Primitive& p, float t, float dt) {
+		p.SetPosition(XMFLOAT3(200.f * cosf(t * 0.7f), 60.f * sinf(t * 1.2f), 200.f * sinf(t * 0.7f)));
+	});
+
+	// 3. Pulsing semi-transparent sphere at origin
+	this->AddSphere(80, BaseVectors::ORIGIN, 3, XMFLOAT4(1.f, 0.3f, 0.3f, 0.6f));
+	this->primitives.back()->name = "Sphere_pulse";
+	this->primitives.back()->SetUpdater([](Primitive& p, float t, float dt) {
+		p.SetScale(1.f + 0.4f * sinf(t * 2.5f));
+	});
+
+	// 4. Spinning arc ring
+	this->AddArc3d(150, 4, 360, BaseVectors::ORIGIN, 32, XMFLOAT4(0.9f, 0.8f, 0.1f, 1.f));
+	this->primitives.back()->name = "Ring_spin";
+	this->primitives.back()->SetUpdater([](Primitive& p, float t, float dt) {
+		p.SetRotation(XMFLOAT3(t * 0.3f, t * 0.5f, 0));
+	});
+
+	// 5. Rotating + bobbing triangle
+	std::vector<XMFLOAT3> triPts = {
+		XMFLOAT3(100, 0, 0), XMFLOAT3(0, 100, 0), XMFLOAT3(0, 0, 100)
+	};
+	this->AddPolygon(triPts, XMFLOAT4(0.2f, 0.9f, 0.3f, 1.f));
+	this->primitives.back()->name = "Triangle_spin";
+	this->primitives.back()->SetUpdater([](Primitive& p, float t, float dt) {
+		p.SetRotation(XMFLOAT3(0, 0, -t));
+		p.SetPosition(XMFLOAT3(0, 0, 100.f * sinf(t * 0.5f)));
+	});
+
+	// 6. Rotating helix (Line3d)
+	{
+		std::vector<XMFLOAT3> helixPts;
+		for (int i = 0; i <= 20; ++i) {
+			float a = (float)i * (XM_2PI / 4.f);
+			helixPts.push_back(XMFLOAT3(60.f * cosf(a), 60.f * sinf(a), (float)(i - 10) * 12.f));
+		}
+		this->AddLine3d(5, helixPts, 6, XMFLOAT4(0.1f, 0.9f, 0.9f, 1.f));
+		this->primitives.back()->name = "Helix_spin";
+		this->primitives.back()->SetUpdater([](Primitive& p, float t, float dt) {
+			p.SetRotation(XMFLOAT3(0, 0, t * 0.6f));
 		});
+	}
 		
 
 	this->orientationTransformer.Initialize(device, deviceContext);
@@ -266,6 +203,38 @@ void Scene::Draw()
 			p->SetIlluminationCapability(illumination);
 		}
 	}
+	// â”€â”€ Velocity arrow for selected primitive â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+	{
+		Primitive* sel = nullptr;
+		for (Primitive* p : this->primitives) if (p->selected) { sel = p; break; }
+		if (sel) {
+			XMFLOAT3 v = sel->velocity;
+			float len2 = v.x*v.x + v.y*v.y + v.z*v.z;
+			if (len2 > 0.01f) {
+				float len = sqrtf(len2);
+				float headLen   = (len * 0.15f < 40.0f) ? len * 0.15f : 40.0f;
+				float headRad   = headLen * 0.4f;
+				float shaftRad  = (headRad * 0.3f > 1.0f) ? headRad * 0.3f : 1.0f;
+				XMFLOAT3 pos = sel->GetPosition();
+				XMFLOAT3 tip = { pos.x + v.x, pos.y + v.y, pos.z + v.z };
+				Primitive* arrow = PrimitiveConstructor::Arrow3d(shaftRad, headRad, headLen, pos, tip, 8,
+					XMFLOAT4(1.0f, 0.95f, 0.1f, 1.0f), 0);
+				if (arrow) {
+					arrow->SetLighting(this->ambient, this->intensity, this->shininess);
+					this->deviceContext->IASetInputLayout(this->vsMain->GetInputLayout());
+					this->deviceContext->VSSetShader(this->vsMain->GetShader(), NULL, 0);
+					this->deviceContext->PSSetShader(this->pixelShaderMain.GetShader(), NULL, 0);
+					this->deviceContext->GSSetShader(nullptr, NULL, 0);
+					this->deviceContext->RSSetState(this->rasterizerSolid.Get());
+					this->deviceContext->OMSetDepthStencilState(this->dsStateDepth.Get(), 0);
+					this->deviceContext->OMSetRenderTargets(1, this->rtvsMain, this->dsView);
+					arrow->Draw(this->camera.GetViewMatrix(), this->camera.GetProjectionMatrix());
+					delete arrow;
+				}
+			}
+		}
+	}
+
 	this->mainRTV->GetResource(this->mainRTVTexture.GetAddressOf());
 
 	this->deviceContext->ResolveSubresource(
@@ -334,6 +303,13 @@ void Scene::HandleLMouse(int px, int py, bool tPressfRelease)
 
 		UINT id = this->GetIdByPixel(px, py);
 
+		// Pick mode: capture one click for "pick vector" feature
+		if (!tPressfRelease && this->pickModeActive) {
+			this->pickModeActive = false;
+			this->pickedPrimId = id;
+			return;
+		}
+
 		if (tPressfRelease) {
 			std::vector<UINT> auxIDs = this->orientationTransformer.GetAuxiliaryObjectsIDs();
 			for (UINT auxID : auxIDs) {
@@ -359,27 +335,61 @@ void Scene::HandleLMouse(int px, int py, bool tPressfRelease)
 
 void Scene::AddPoint(const XMFLOAT3& pos, const XMFLOAT4& col)
 {
-	this->primitives.push_back(PrimitiveConstructor::Point(pos, col, this->primitives.size() + 1));
+	this->primitives.push_back(PrimitiveConstructor::Point(pos, col, NextId()));
 }
 
 void Scene::AddLine(const std::vector<XMFLOAT3>& poses, const XMFLOAT4& col)
 {
-	this->primitives.push_back(PrimitiveConstructor::Line(poses, col, this->primitives.size() + 1));
+	this->primitives.push_back(PrimitiveConstructor::Line(poses, col, NextId()));
 }
 
 void Scene::AddPolygon(const std::vector<XMFLOAT3>& poses, const XMFLOAT4& col)
 {
-	this->primitives.push_back(PrimitiveConstructor::Polygon(poses, col, this->primitives.size() + 1));
+	this->primitives.push_back(PrimitiveConstructor::Polygon(poses, col, NextId()));
 }
 
 void Scene::AddSphere(float radius, const XMFLOAT3& pos, const UINT numSubdivides, const XMFLOAT4& col)
 {
-	this->primitives.push_back(PrimitiveConstructor::Sphere(radius, pos, numSubdivides, col, this->primitives.size() + 1));
+	this->primitives.push_back(PrimitiveConstructor::Sphere(radius, pos, numSubdivides, col, NextId()));
 }
 
 void Scene::AddLine3d(float radius, std::vector<XMFLOAT3>& poses, const UINT numSubdivides, const XMFLOAT4& col)
 {
-	this->primitives.push_back(PrimitiveConstructor::Line3d(radius, poses, numSubdivides, col, this->primitives.size() + 1));
+	this->primitives.push_back(PrimitiveConstructor::Line3d(radius, poses, numSubdivides, col, NextId()));
+}
+
+void Scene::AddArc3d(float arcRadius, float lineRadius, float angleDeg, const XMFLOAT3& center, const UINT numSubdivides, const XMFLOAT4& col)
+{
+	this->primitives.push_back(PrimitiveConstructor::Arc3d(arcRadius, lineRadius, angleDeg, center, numSubdivides, col, NextId()));
+}
+
+void Scene::AddArrow3d(float shaftRadius, float headRadius, float headLength, const XMFLOAT3& from, const XMFLOAT3& to, UINT sides, const XMFLOAT4& col)
+{
+	Primitive* p = PrimitiveConstructor::Arrow3d(shaftRadius, headRadius, headLength, from, to, sides, col, NextId());
+	if (p) this->primitives.push_back(p);
+}
+
+void Scene::AddFromSTL(const std::string& path, const XMFLOAT4& col, const std::string& name)
+{
+	Primitive* p = STLLoader::Load(path, col, NextId());
+	if (!p) return;
+	if (!name.empty()) p->name = name;
+	this->primitives.push_back(p);
+	this->UpdateLight();
+}
+
+void Scene::RemovePrimitive(Primitive* p)
+{
+	if (!p) return;
+	auto it = std::find(this->primitives.begin(), this->primitives.end(), p);
+	if (it == this->primitives.end()) return;
+
+	if (this->orientationTransformer.HasActiveObject())
+		this->orientationTransformer.HandleObjRelease();
+
+	this->orientationTransformer.SetTargetObject(nullptr);
+	this->primitives.erase(it);
+	delete p;
 }
 
 void Scene::UpdateLight()
@@ -464,11 +474,14 @@ void Scene::LoadScene(std::string name)
 
 	for (json j : data["primitives"]) {
 		Primitive* p = new Primitive(this->device, this->deviceContext);
-		if(!jsonSaver::from_json(j, *p)) continue;
-
+		if (!jsonSaver::from_json(j, *p)) { delete p; continue; }
+		if (p->id == 0) p->id = NextId();
 		this->primitives.push_back(p);
 	}
 
+	// Advance nextId past any restored IDs
+	for (Primitive* p : this->primitives)
+		if (p->id >= this->nextId) this->nextId = p->id + 1;
 
 	XMFLOAT3 camPos = XMFLOAT3(data["camera"]["camPos"][0], data["camera"]["camPos"][1], data["camera"]["camPos"][2]);
 	XMMATRIX camRot = XMMATRIX(data["camera"]["camRot"].get<std::vector<float>>().data());
@@ -478,18 +491,113 @@ void Scene::LoadScene(std::string name)
 	this->camera.SetRotation(camRot);
 	this->camera.SetPosition(camPos);
 	this->UpdateLight();
+
+	this->tpsTimer.Stop();
+	this->currentTime = 0.0f;
+	this->deltaTime = 0.0f;
+	this->tpsTimer.Start();
 }
 
 void Scene::UpdateTime()
 {
 	float dtSec = this->tpsTimer.GetMillisecondsElapsed() * 0.001f;
+	this->tpsTimer.Restart();
+
+	if (this->timePaused) {
+		this->orientationTransformer.Update();
+		return;
+	}
+
 	this->deltaTime = dtSec * this->timeSpeed;
 	this->currentTime += this->deltaTime;
-	this->tpsTimer.Restart();
+
+	if (this->timeMax > 0.0f && this->currentTime >= this->timeMax) {
+		if (this->timeLoop)
+			this->currentTime = fmodf(this->currentTime, this->timeMax);
+		else {
+			this->currentTime = this->timeMax;
+			this->timePaused = true;
+		}
+	}
+
 	for (auto& prim : this->primitives)
 		prim->Update(this->currentTime, this->deltaTime);
 
 	this->orientationTransformer.Update();
+}
+
+void Scene::ResetTime()
+{
+	this->currentTime = 0.0f;
+	this->tpsTimer.Restart();
+}
+
+void Scene::LoadNewtonDemo()
+{
+	for (Primitive* p : this->primitives) delete p;
+	this->primitives.clear();
+	this->orientationTransformer.SetTargetObject(nullptr);
+
+	struct BodyDef { XMFLOAT3 pos; XMFLOAT3 vel; float mass; float radius; XMFLOAT4 col; const char* name; };
+	// G = 1000; v_circ(r) = sqrt(G*M/r). M_center=1000.
+	// v_circ(200)=70.7, v_circ(280)=59.8, v_circ(160)=79.1, v_circ(360)=52.7
+	BodyDef bodies[5] = {
+		{ {  0,   0,   0}, {  0,   0,   0}, 1000.f, 30.f, {1.0f,0.8f,0.2f,1.0f}, "Star"     },
+		{ {200,   0,   0}, {  0,  72,   0},    5.f, 12.f, {0.2f,0.5f,1.0f,1.0f}, "Planet_1"  },
+		{ {  0, 280,   0}, {-62,   0,  10},    3.f,  9.f, {0.3f,0.9f,0.3f,1.0f}, "Planet_2"  },
+		{ {-160,  0,  60}, {  0, -79,  15},    8.f, 11.f, {0.9f,0.3f,0.3f,1.0f}, "Planet_3"  },
+		{ {100,-100,  80}, { 40,  40, -30},    1.f,  7.f, {0.8f,0.5f,1.0f,1.0f}, "Comet"     },
+	};
+
+	for (auto& b : bodies) {
+		this->AddSphere(b.radius, b.pos, 2, b.col);
+		this->primitives.back()->mass = b.mass;
+		this->primitives.back()->name = b.name;
+	}
+
+	constexpr int N = 5;
+	auto nbody_vel = std::make_shared<std::array<XMFLOAT3, N>>();
+	for (int i = 0; i < N; i++) (*nbody_vel)[i] = bodies[i].vel;
+
+	std::array<Primitive*, N> pp;
+	for (int i = 0; i < N; i++) pp[i] = this->primitives[this->primitives.size() - N + i];
+	auto prims_sp = std::make_shared<std::array<Primitive*, N>>(pp);
+
+	constexpr float G = 1000.f;
+	constexpr float softening = 15.f;
+
+	pp[0]->SetUpdater([nbody_vel, prims_sp](Primitive& /*self*/, float /*t*/, float dt) {
+		XMFLOAT3 forces[N] = {};
+		for (int i = 0; i < N; i++) {
+			XMFLOAT3 pi = (*prims_sp)[i]->GetPosition();
+			for (int j = i + 1; j < N; j++) {
+				XMFLOAT3 pj = (*prims_sp)[j]->GetPosition();
+				float dx = pj.x - pi.x, dy = pj.y - pi.y, dz = pj.z - pi.z;
+				float r2 = dx*dx + dy*dy + dz*dz + softening*softening;
+				float r  = sqrtf(r2);
+				float mi = (*prims_sp)[i]->mass, mj = (*prims_sp)[j]->mass;
+				float f  = G * mi * mj / r2;
+				float fx = f*dx/r, fy = f*dy/r, fz = f*dz/r;
+				forces[i].x += fx; forces[i].y += fy; forces[i].z += fz;
+				forces[j].x -= fx; forces[j].y -= fy; forces[j].z -= fz;
+			}
+		}
+		for (int i = 0; i < N; i++) {
+			float mi = (*prims_sp)[i]->mass;
+			(*nbody_vel)[i].x += forces[i].x / mi * dt;
+			(*nbody_vel)[i].y += forces[i].y / mi * dt;
+			(*nbody_vel)[i].z += forces[i].z / mi * dt;
+			XMFLOAT3 pos = (*prims_sp)[i]->GetPosition();
+			pos.x += (*nbody_vel)[i].x * dt;
+			pos.y += (*nbody_vel)[i].y * dt;
+			pos.z += (*nbody_vel)[i].z * dt;
+			(*prims_sp)[i]->SetPosition(pos);
+			(*prims_sp)[i]->velocity = (*nbody_vel)[i];
+		}
+	});
+
+	this->UpdateLight();
+	this->ResetTime();
 }
 
 bool Scene::InitializeDirectX()

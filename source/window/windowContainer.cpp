@@ -1,4 +1,6 @@
 #include "windowContainer.h"
+#include <shellapi.h>
+#include <algorithm>
 
 WindowContainer::WindowContainer()
 {
@@ -130,6 +132,32 @@ LRESULT WindowContainer::WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM 
 				keyboard.OnChar(ch);
 			}
 		}
+		return 0;
+	}
+
+	case WM_DROPFILES: {
+		HDROP hDrop = reinterpret_cast<HDROP>(wParam);
+		UINT fileCount = DragQueryFileW(hDrop, 0xFFFFFFFF, nullptr, 0);
+		for (UINT i = 0; i < fileCount; ++i) {
+			WCHAR path[MAX_PATH];
+			if (!DragQueryFileW(hDrop, i, path, MAX_PATH)) continue;
+			std::wstring wpath(path);
+
+			// Case-insensitive .stl check
+			std::wstring lower = wpath;
+			std::transform(lower.begin(), lower.end(), lower.begin(), ::towlower);
+			if (lower.size() < 4 || lower.compare(lower.size() - 4, 4, L".stl") != 0) continue;
+
+			// Filename stem (without directory and extension)
+			size_t slash = wpath.find_last_of(L"\\/");
+			std::wstring stem = (slash != std::wstring::npos) ? wpath.substr(slash + 1) : wpath;
+			if (stem.size() >= 4) stem = stem.substr(0, stem.size() - 4);
+
+			std::string pathStr(wpath.begin(), wpath.end());
+			std::string nameStr(stem.begin(), stem.end());
+			gfx.scene.AddFromSTL(pathStr, XMFLOAT4(0.6f, 0.6f, 0.9f, 1.0f), nameStr);
+		}
+		DragFinish(hDrop);
 		return 0;
 	}
 

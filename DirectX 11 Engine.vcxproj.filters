@@ -62,6 +62,14 @@
     <ClInclude Include="source\graphics\scene\jsonSaver.h" />
     <ClInclude Include="source\graphics\imgui\imgui_stdlib.h" />
     <ClInclude Include="source\graphics\math.h" />
+    <ClInclude Include="source\graphics\navcube\NavCube.h" />
+    <ClInclude Include="source\scripting\LuaUpdaterEditor.h" />
+    <ClInclude Include="source\loaders\STLLoader.h" />
+    <ClInclude Include="source\external\lua\lauxlib.h" />
+    <ClInclude Include="source\external\lua\lua.h" />
+    <ClInclude Include="source\external\lua\lua.hpp" />
+    <ClInclude Include="source\external\lua\luaconf.h" />
+    <ClInclude Include="source\external\lua\lualib.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="source\graphics\imgui\imgui.cpp" />

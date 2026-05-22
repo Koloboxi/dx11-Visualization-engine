@@ -132,7 +132,7 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>d3d11.lib;DirectXTK.lib;DXGI.lib;D3DCompiler.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>d3d11.lib;DirectXTK.lib;DXGI.lib;D3DCompiler.lib;lua54.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -239,6 +239,11 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="source\external\json.hpp" />
+    <ClInclude Include="source\external\lua\lauxlib.h" />
+    <ClInclude Include="source\external\lua\lua.h" />
+    <ClInclude Include="source\external\lua\lua.hpp" />
+    <ClInclude Include="source\external\lua\luaconf.h" />
+    <ClInclude Include="source\external\lua\lualib.h" />
     <ClInclude Include="source\graphics\imgui\imgui_stdlib.h" />
     <ClInclude Include="source\graphics\math.h" />
     <ClInclude Include="source\graphics\misc\Colors.h" />
@@ -277,6 +282,9 @@
     <ClInclude Include="source\utils\Timer.h" />
     <ClInclude Include="source\window\windowContainer.h" />
     <ClInclude Include="source\graphics\scene\scene.h" />
+    <ClInclude Include="source\graphics\navcube\NavCube.h" />
+    <ClInclude Include="source\scripting\LuaUpdaterEditor.h" />
+    <ClInclude Include="source\loaders\STLLoader.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="source\graphics\gui.cpp" />
