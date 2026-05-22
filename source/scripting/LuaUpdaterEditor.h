@@ -133,6 +133,15 @@ inline void LuaUpdaterEditor::Init() {
 #ifdef ENABLE_LUA
     L = luaL_newstate();
     luaL_openlibs(L);
+    // Register euler(rx,ry,rz) → qx,qy,qz,qw  (XMQuaternionRotationRollPitchYaw equivalent)
+    luaL_dostring(L, R"(
+function euler(x,y,z)
+  local cx,sx=math.cos(x/2),math.sin(x/2)
+  local cy,sy=math.cos(y/2),math.sin(y/2)
+  local cz,sz=math.cos(z/2),math.sin(z/2)
+  return sx*cy*cz-cx*sy*sz, cx*sy*cz+sx*cy*sz, cx*cy*sz-sx*sy*cz, cx*cy*cz+sx*sy*sz
+end
+)");
 #endif
 }
 
@@ -273,10 +282,14 @@ inline bool LuaUpdaterEditor::CompileAndApply(
             Primitive* o = (*primsPtr)[i];
             lua_newtable(LS);
             XMFLOAT3 op = o->GetPosition();
-            lua_pushnumber(LS, op.x);      lua_setfield(LS, -2, "x");
-            lua_pushnumber(LS, op.y);      lua_setfield(LS, -2, "y");
-            lua_pushnumber(LS, op.z);      lua_setfield(LS, -2, "z");
+            lua_pushnumber(LS, op.x);       lua_setfield(LS, -2, "x");
+            lua_pushnumber(LS, op.y);       lua_setfield(LS, -2, "y");
+            lua_pushnumber(LS, op.z);       lua_setfield(LS, -2, "z");
             lua_pushnumber(LS, o->GetScale()); lua_setfield(LS, -2, "scale");
+            lua_pushnumber(LS, o->mass);    lua_setfield(LS, -2, "mass");
+            lua_pushnumber(LS, o->velocity.x); lua_setfield(LS, -2, "vx");
+            lua_pushnumber(LS, o->velocity.y); lua_setfield(LS, -2, "vy");
+            lua_pushnumber(LS, o->velocity.z); lua_setfield(LS, -2, "vz");
             lua_seti(LS, -2, i + 1);
         }
         lua_setglobal(LS, "scene");
@@ -294,6 +307,38 @@ inline bool LuaUpdaterEditor::CompileAndApply(
 
         lua_getglobal(LS, "p");
         if (lua_istable(LS, -1)) ReadPrimTable(-1, self);
+        lua_pop(LS, 1);
+
+        // ── Writable scene table: apply any changes to other primitives ────
+        // Find self index so we skip it (self is handled by ReadPrimTable above)
+        int selfIdx = -1;
+        for (int i = 0; i < (int)primsPtr->size(); i++)
+            if ((*primsPtr)[i] == &self) { selfIdx = i; break; }
+
+        lua_getglobal(LS, "scene");
+        if (lua_istable(LS, -1)) {
+            for (int i = 0; i < (int)primsPtr->size(); i++) {
+                if (i == selfIdx) continue;
+                lua_geti(LS, -1, i + 1);
+                if (lua_istable(LS, -1)) {
+                    auto gN = [&](const char* k) -> float {
+                        lua_getfield(LS, -1, k);
+                        float v = (float)lua_tonumber(LS, -1);
+                        lua_pop(LS, 1); return v;
+                    };
+                    Primitive* other = (*primsPtr)[i];
+                    XMFLOAT3 op = other->GetPosition();
+                    float nx = gN("x"), ny = gN("y"), nz = gN("z");
+                    if (nx != op.x || ny != op.y || nz != op.z)
+                        other->SetPosition({nx, ny, nz});
+                    float ns = gN("scale");
+                    if (ns != other->GetScale()) other->SetScale(ns);
+                    other->mass     = gN("mass");
+                    other->velocity = {gN("vx"), gN("vy"), gN("vz")};
+                }
+                lua_pop(LS, 1);
+            }
+        }
         lua_pop(LS, 1);
     });
 

@@ -10,6 +10,9 @@
 #include "auxiliaryObjects.h"
 #include "..\..\utils\Timer.h"
 
+#include <unordered_map>
+#include <deque>
+
 class Scene {
 public:
 	bool Initialize(ID3D11Device* device, ID3D11DeviceContext* deviceContext, std::wstring shadersPath, ID3D11DepthStencilView* dsView, ID3D11DepthStencilView* dsViewNoMSAA, ID3D11RenderTargetView* mainRTV, VertexShader* vs, int windowWidth, int windowHeight);
@@ -65,6 +68,11 @@ public:
 	float timeMax     = 0.0f;   // 0 = unlimited
 	bool  timeLoop    = false;
 	void  ResetTime();
+
+	// ── Trajectories ─────────────────────────────────────────────────────────
+	bool showTrajectories  = false;
+	int  trajectoryMaxLen  = 1000;  // 0 = unlimited
+	void ClearTrajectories();
 
 	// ── Pick mode (used by Lua editor's "pick vector" feature) ────────────────
 	bool pickModeActive = false;
@@ -133,6 +141,9 @@ private:
 
 	Timer tpsTimer;
 	void UpdateTime();
+
+	std::unordered_map<UINT, std::deque<XMFLOAT3>> trajectoryData;
+	void DrawTrajectories();
 
 	bool InitializeDirectX();
 	HRESULT CreateResources();

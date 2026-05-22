@@ -20,6 +20,7 @@ namespace jsonSaver {
         j["color"] = { col.x, col.y, col.z, col.w };
 
         if (!p.luaScript.empty()) j["luaScript"] = p.luaScript;
+        if (p.mass != 1.0f) j["mass"] = p.mass;
 
         std::vector<Vertex> vertices = p.GetVertexData();
         std::vector<DWORD> indices = p.GetIndexData();
@@ -39,6 +40,7 @@ namespace jsonSaver {
         if (j.contains("id")) p.id = j["id"].get<UINT>();
         if (j.contains("name")) p.name = j["name"].get<std::string>();
         if (j.contains("luaScript")) p.luaScript = j["luaScript"].get<std::string>();
+        p.mass = j.value("mass", 1.0f);
 
         p.SetScale(j.value("scale", 1.0f));
         p.SetPrimitiveTopology(j["primitiveTopology"].get<D3D10_PRIMITIVE_TOPOLOGY>());

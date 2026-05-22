@@ -30,6 +30,8 @@ bool Scene::Initialize(ID3D11Device* device, ID3D11DeviceContext* deviceContext,
 	// 1. Orbiting point
 	this->AddPoint(BaseVectors::ORIGIN, Colors::RED);
 	this->primitives.back()->name = "Point_orbit";
+	this->primitives.back()->luaScript =
+		"p.x=120*math.cos(t*2)\np.y=120*math.sin(t*2)\np.z=50*math.sin(t*3)";
 	this->primitives.back()->SetUpdater([](Primitive& p, float t, float dt) {
 		p.SetPosition(XMFLOAT3(120.f * cosf(t * 2.f), 120.f * sinf(t * 2.f), 50.f * sinf(t * 3.f)));
 	});
@@ -37,6 +39,8 @@ bool Scene::Initialize(ID3D11Device* device, ID3D11DeviceContext* deviceContext,
 	// 2. Orbiting sphere
 	this->AddSphere(40, XMFLOAT3(200, 0, 0), 2, XMFLOAT4(0.2f, 0.5f, 1.f, 1.f));
 	this->primitives.back()->name = "Sphere_orbit";
+	this->primitives.back()->luaScript =
+		"p.x=200*math.cos(t*0.7)\np.y=60*math.sin(t*1.2)\np.z=200*math.sin(t*0.7)";
 	this->primitives.back()->SetUpdater([](Primitive& p, float t, float dt) {
 		p.SetPosition(XMFLOAT3(200.f * cosf(t * 0.7f), 60.f * sinf(t * 1.2f), 200.f * sinf(t * 0.7f)));
 	});
@@ -44,6 +48,8 @@ bool Scene::Initialize(ID3D11Device* device, ID3D11DeviceContext* deviceContext,
 	// 3. Pulsing semi-transparent sphere at origin
 	this->AddSphere(80, BaseVectors::ORIGIN, 3, XMFLOAT4(1.f, 0.3f, 0.3f, 0.6f));
 	this->primitives.back()->name = "Sphere_pulse";
+	this->primitives.back()->luaScript =
+		"p.scale=1+0.4*math.sin(t*2.5)";
 	this->primitives.back()->SetUpdater([](Primitive& p, float t, float dt) {
 		p.SetScale(1.f + 0.4f * sinf(t * 2.5f));
 	});
@@ -51,6 +57,8 @@ bool Scene::Initialize(ID3D11Device* device, ID3D11DeviceContext* deviceContext,
 	// 4. Spinning arc ring
 	this->AddArc3d(150, 4, 360, BaseVectors::ORIGIN, 32, XMFLOAT4(0.9f, 0.8f, 0.1f, 1.f));
 	this->primitives.back()->name = "Ring_spin";
+	this->primitives.back()->luaScript =
+		"p.rx,p.ry,p.rz,p.rw=euler(t*0.3,t*0.5,0)";
 	this->primitives.back()->SetUpdater([](Primitive& p, float t, float dt) {
 		p.SetRotation(XMFLOAT3(t * 0.3f, t * 0.5f, 0));
 	});
@@ -61,6 +69,8 @@ bool Scene::Initialize(ID3D11Device* device, ID3D11DeviceContext* deviceContext,
 	};
 	this->AddPolygon(triPts, XMFLOAT4(0.2f, 0.9f, 0.3f, 1.f));
 	this->primitives.back()->name = "Triangle_spin";
+	this->primitives.back()->luaScript =
+		"p.rx,p.ry,p.rz,p.rw=euler(0,0,-t)\np.z=100*math.sin(t*0.5)";
 	this->primitives.back()->SetUpdater([](Primitive& p, float t, float dt) {
 		p.SetRotation(XMFLOAT3(0, 0, -t));
 		p.SetPosition(XMFLOAT3(0, 0, 100.f * sinf(t * 0.5f)));
@@ -75,6 +85,8 @@ bool Scene::Initialize(ID3D11Device* device, ID3D11DeviceContext* deviceContext,
 		}
 		this->AddLine3d(5, helixPts, 6, XMFLOAT4(0.1f, 0.9f, 0.9f, 1.f));
 		this->primitives.back()->name = "Helix_spin";
+		this->primitives.back()->luaScript =
+			"p.rx,p.ry,p.rz,p.rw=euler(0,0,t*0.6)";
 		this->primitives.back()->SetUpdater([](Primitive& p, float t, float dt) {
 			p.SetRotation(XMFLOAT3(0, 0, t * 0.6f));
 		});
@@ -203,6 +215,9 @@ void Scene::Draw()
 			p->SetIlluminationCapability(illumination);
 		}
 	}
+	// ── Trajectories ─────────────────────────────────────────────────────────
+	DrawTrajectories();
+
 	// ── Velocity arrow for selected primitive ────────────────────────────────
 	{
 		Primitive* sel = nullptr;
@@ -444,10 +459,10 @@ void Scene::SaveScene(std::string name)
 
 void Scene::ClearScene()
 {
-	for (Primitive* p : this->primitives) {
+	for (Primitive* p : this->primitives)
 		delete p;
-	}
 	this->primitives.clear();
+	this->ClearTrajectories();
 }
 
 void Scene::LoadScene(std::string name)
@@ -523,6 +538,17 @@ void Scene::UpdateTime()
 	for (auto& prim : this->primitives)
 		prim->Update(this->currentTime, this->deltaTime);
 
+	// Record trajectory positions after updaters ran
+	if (this->showTrajectories) {
+		for (Primitive* p : this->primitives) {
+			if (!p->HasUpdater()) continue;
+			auto& traj = this->trajectoryData[p->id];
+			traj.push_back(p->GetPosition());
+			if (this->trajectoryMaxLen > 0 && (int)traj.size() > this->trajectoryMaxLen)
+				traj.pop_front();
+		}
+	}
+
 	this->orientationTransformer.Update();
 }
 
@@ -530,6 +556,60 @@ void Scene::ResetTime()
 {
 	this->currentTime = 0.0f;
 	this->tpsTimer.Restart();
+	this->ClearTrajectories();
+}
+
+void Scene::ClearTrajectories()
+{
+	this->trajectoryData.clear();
+}
+
+void Scene::DrawTrajectories()
+{
+	if (!showTrajectories || trajectoryData.empty()) return;
+
+	// Use geometry shader for thickness and proper blend setup
+	this->deviceContext->GSSetShader(this->geometryshaderthickness.GetShader(), NULL, 0);
+	this->deviceContext->RSSetState(this->rasterizerSolid.Get());
+	this->deviceContext->OMSetDepthStencilState(this->dsStateDepth.Get(), 0);
+	this->deviceContext->OMSetRenderTargets(1, this->rtvsMain, this->dsView);
+	this->deviceContext->PSSetShader(this->pixelShaderMain.GetShader(), NULL, 0);
+
+	const int NUM_SEGS = 6;  // alpha segments: older→dimmer, newer→brighter
+
+	for (auto& [id, dq] : this->trajectoryData) {
+		if (dq.size() < 2) continue;
+
+		// Get base color from corresponding primitive
+		XMFLOAT4 col = { 1.f, 1.f, 1.f, 1.f };
+		for (Primitive* p : this->primitives)
+			if (p->id == id) { col = p->GetColor(); break; }
+
+		const int N = (int)dq.size();
+		const int segPts = (N + NUM_SEGS - 1) / NUM_SEGS;
+
+		for (int seg = 0; seg < NUM_SEGS; seg++) {
+			int start = seg * segPts;
+			if (start >= N) break;
+			int end = (start + segPts + 1 < N) ? start + segPts + 1 : N;  // +1 overlap
+
+			float alpha = (float)(seg + 1) / NUM_SEGS * 0.9f;
+			XMFLOAT4 sc = { col.x, col.y, col.z, alpha };
+
+			std::vector<XMFLOAT3> pts;
+			pts.reserve(end - start);
+			auto it = dq.begin();
+			std::advance(it, start);
+			for (int k = start; k < end; k++, ++it)
+				pts.push_back(*it);
+
+			Primitive* line = PrimitiveConstructor::Line(pts, sc, 0);
+			if (line) {
+				line->Draw(this->camera.GetViewMatrix(), this->camera.GetProjectionMatrix());
+				delete line;
+			}
+		}
+	}
 }
 
 void Scene::LoadNewtonDemo()
@@ -537,16 +617,15 @@ void Scene::LoadNewtonDemo()
 	for (Primitive* p : this->primitives) delete p;
 	this->primitives.clear();
 	this->orientationTransformer.SetTargetObject(nullptr);
+	this->ClearTrajectories();
 
 	struct BodyDef { XMFLOAT3 pos; XMFLOAT3 vel; float mass; float radius; XMFLOAT4 col; const char* name; };
-	// G = 1000; v_circ(r) = sqrt(G*M/r). M_center=1000.
-	// v_circ(200)=70.7, v_circ(280)=59.8, v_circ(160)=79.1, v_circ(360)=52.7
 	BodyDef bodies[5] = {
 		{ {  0,   0,   0}, {  0,   0,   0}, 1000.f, 30.f, {1.0f,0.8f,0.2f,1.0f}, "Star"     },
-		{ {200,   0,   0}, {  0,  72,   0},    5.f, 12.f, {0.2f,0.5f,1.0f,1.0f}, "Planet_1"  },
-		{ {  0, 280,   0}, {-62,   0,  10},    3.f,  9.f, {0.3f,0.9f,0.3f,1.0f}, "Planet_2"  },
-		{ {-160,  0,  60}, {  0, -79,  15},    8.f, 11.f, {0.9f,0.3f,0.3f,1.0f}, "Planet_3"  },
-		{ {100,-100,  80}, { 40,  40, -30},    1.f,  7.f, {0.8f,0.5f,1.0f,1.0f}, "Comet"     },
+		{ {200,   0,   0}, {  0,  72,   0},    5.f, 12.f, {0.2f,0.5f,1.0f,1.0f}, "Planet_1" },
+		{ {  0, 280,   0}, {-62,   0,  10},    3.f,  9.f, {0.3f,0.9f,0.3f,1.0f}, "Planet_2" },
+		{ {-160,  0,  60}, {  0, -79,  15},    8.f, 11.f, {0.9f,0.3f,0.3f,1.0f}, "Planet_3" },
+		{ {100,-100,  80}, { 40,  40, -30},    1.f,  7.f, {0.8f,0.5f,1.0f,1.0f}, "Comet"    },
 	};
 
 	for (auto& b : bodies) {
@@ -555,46 +634,122 @@ void Scene::LoadNewtonDemo()
 		this->primitives.back()->name = b.name;
 	}
 
-	constexpr int N = 5;
-	auto nbody_vel = std::make_shared<std::array<XMFLOAT3, N>>();
-	for (int i = 0; i < N; i++) (*nbody_vel)[i] = bodies[i].vel;
+	// Shared physics state: coordinator writes curPos[], each body's updater reads its own slot
+	struct NBodyShared {
+		std::array<XMFLOAT3, 5> vel;
+		std::array<XMFLOAT3, 5> curPos;
+		std::array<XMFLOAT3, 5> initVel;
+		std::array<XMFLOAT3, 5> initPos;
+		std::array<float,    5> masses;
+		float prevT = -1.0f;
+	};
+	auto nbody = std::make_shared<NBodyShared>();
+	for (int i = 0; i < 5; i++) {
+		nbody->vel[i]     = nbody->initVel[i] = bodies[i].vel;
+		nbody->initPos[i] = nbody->curPos[i]  = bodies[i].pos;
+		nbody->masses[i]  = bodies[i].mass;
+	}
 
-	std::array<Primitive*, N> pp;
-	for (int i = 0; i < N; i++) pp[i] = this->primitives[this->primitives.size() - N + i];
-	auto prims_sp = std::make_shared<std::array<Primitive*, N>>(pp);
+	Primitive* prims[5];
+	for (int i = 0; i < 5; i++)
+		prims[i] = this->primitives[this->primitives.size() - 5 + i];
 
-	constexpr float G = 1000.f;
-	constexpr float softening = 15.f;
+	// Star: runs full N-body physics, stores results in curPos[], sets only its own position
+	prims[0]->SetUpdater([nbody](Primitive& self, float t, float dt) {
+		if (t < nbody->prevT - 0.001f) {
+			for (int i = 0; i < 5; i++) {
+				nbody->curPos[i] = nbody->initPos[i];
+				nbody->vel[i]    = nbody->initVel[i];
+			}
+		}
+		nbody->prevT = t;
 
-	pp[0]->SetUpdater([nbody_vel, prims_sp](Primitive& /*self*/, float /*t*/, float dt) {
-		XMFLOAT3 forces[N] = {};
-		for (int i = 0; i < N; i++) {
-			XMFLOAT3 pi = (*prims_sp)[i]->GetPosition();
-			for (int j = i + 1; j < N; j++) {
-				XMFLOAT3 pj = (*prims_sp)[j]->GetPosition();
-				float dx = pj.x - pi.x, dy = pj.y - pi.y, dz = pj.z - pi.z;
-				float r2 = dx*dx + dy*dy + dz*dz + softening*softening;
+		XMFLOAT3 forces[5] = {};
+		for (int i = 0; i < 5; i++) {
+			for (int j = i + 1; j < 5; j++) {
+				float dx = nbody->curPos[j].x - nbody->curPos[i].x;
+				float dy = nbody->curPos[j].y - nbody->curPos[i].y;
+				float dz = nbody->curPos[j].z - nbody->curPos[i].z;
+				float r2 = dx*dx + dy*dy + dz*dz + 15.f*15.f;
 				float r  = sqrtf(r2);
-				float mi = (*prims_sp)[i]->mass, mj = (*prims_sp)[j]->mass;
-				float f  = G * mi * mj / r2;
+				float f  = 1000.f * nbody->masses[i] * nbody->masses[j] / r2;
 				float fx = f*dx/r, fy = f*dy/r, fz = f*dz/r;
 				forces[i].x += fx; forces[i].y += fy; forces[i].z += fz;
 				forces[j].x -= fx; forces[j].y -= fy; forces[j].z -= fz;
 			}
 		}
-		for (int i = 0; i < N; i++) {
-			float mi = (*prims_sp)[i]->mass;
-			(*nbody_vel)[i].x += forces[i].x / mi * dt;
-			(*nbody_vel)[i].y += forces[i].y / mi * dt;
-			(*nbody_vel)[i].z += forces[i].z / mi * dt;
-			XMFLOAT3 pos = (*prims_sp)[i]->GetPosition();
-			pos.x += (*nbody_vel)[i].x * dt;
-			pos.y += (*nbody_vel)[i].y * dt;
-			pos.z += (*nbody_vel)[i].z * dt;
-			(*prims_sp)[i]->SetPosition(pos);
-			(*prims_sp)[i]->velocity = (*nbody_vel)[i];
+		for (int i = 0; i < 5; i++) {
+			float mi = nbody->masses[i];
+			nbody->vel[i].x    += forces[i].x / mi * dt;
+			nbody->vel[i].y    += forces[i].y / mi * dt;
+			nbody->vel[i].z    += forces[i].z / mi * dt;
+			nbody->curPos[i].x += nbody->vel[i].x * dt;
+			nbody->curPos[i].y += nbody->vel[i].y * dt;
+			nbody->curPos[i].z += nbody->vel[i].z * dt;
 		}
+		self.SetPosition(nbody->curPos[0]);
 	});
+
+	// Each planet reads its own pre-computed position — updater modifies only itself
+	for (int i = 1; i < 5; i++) {
+		prims[i]->SetUpdater([nbody, i](Primitive& self, float t, float dt) {
+			self.SetPosition(nbody->curPos[i]);
+		});
+	}
+
+	// ── Lua scripts for JSON serialization ──────────────────────────────────
+	// Coordinator on Star: stores physics state in _nv, updates only p (self)
+	prims[0]->luaScript = R"(
+-- N-body coordinator on Star (body 1); stores state in _nv for others to read
+if _nv_t and t < _nv_t - 0.001 then _nv = nil end
+_nv_t = t
+if not _nv then
+  _nv = {
+    {vx=0,   vy=0,  vz=0,  px=0,    py=0,   pz=0  },
+    {vx=0,   vy=72, vz=0,  px=200,  py=0,   pz=0  },
+    {vx=-62, vy=0,  vz=10, px=0,    py=280, pz=0  },
+    {vx=0,   vy=-79,vz=15, px=-160, py=0,   pz=60 },
+    {vx=40,  vy=40, vz=-30,px=100,  py=-100,pz=80 }
+  }
+end
+local Nv, soft = 5, 15
+if not scene[Nv] then return end
+local Gv = (type(G)=="number") and G or 1000
+local fx, fy, fz = {}, {}, {}
+for i=1,Nv do fx[i]=0; fy[i]=0; fz[i]=0 end
+for i=1,Nv do
+  for j=i+1,Nv do
+    local dx=_nv[j].px-_nv[i].px
+    local dy=_nv[j].py-_nv[i].py
+    local dz=_nv[j].pz-_nv[i].pz
+    local r2=dx*dx+dy*dy+dz*dz+soft*soft
+    local r=math.sqrt(r2)
+    local f=Gv*scene[i].mass*scene[j].mass/r2
+    local ex,ey,ez=f*dx/r, f*dy/r, f*dz/r
+    fx[i]=fx[i]+ex; fy[i]=fy[i]+ey; fz[i]=fz[i]+ez
+    fx[j]=fx[j]-ex; fy[j]=fy[j]-ey; fz[j]=fz[j]-ez
+  end
+end
+for i=1,Nv do
+  local mi=scene[i].mass
+  _nv[i].vx=_nv[i].vx+fx[i]/mi*dt
+  _nv[i].vy=_nv[i].vy+fy[i]/mi*dt
+  _nv[i].vz=_nv[i].vz+fz[i]/mi*dt
+  _nv[i].px=_nv[i].px+_nv[i].vx*dt
+  _nv[i].py=_nv[i].py+_nv[i].vy*dt
+  _nv[i].pz=_nv[i].pz+_nv[i].vz*dt
+end
+p.x=_nv[1].px; p.y=_nv[1].py; p.z=_nv[1].pz)";
+
+	// Each planet reads its slot from _nv (written by coordinator on Star)
+	for (int i = 1; i < 5; i++) {
+		int li = i + 1;
+		prims[i]->luaScript =
+			"if _nv and _nv[" + std::to_string(li) + "] then "
+			"p.x=_nv[" + std::to_string(li) + "].px; "
+			"p.y=_nv[" + std::to_string(li) + "].py; "
+			"p.z=_nv[" + std::to_string(li) + "].pz end";
+	}
 
 	this->UpdateLight();
 	this->ResetTime();

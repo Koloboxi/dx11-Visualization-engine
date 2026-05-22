@@ -328,7 +328,7 @@ void Graphics::Gui()
 
     // ── Time Control window ───────────────────────────────────────────────
     {
-        ImGui::SetNextWindowSize(ImVec2(280, 130), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(300, 200), ImGuiCond_FirstUseEver);
         ImGui::Begin("Time Control");
         ImGui::Text("t = %.3f", this->scene.currentTime);
         if (this->scene.timePaused) {
@@ -339,8 +339,20 @@ void Graphics::Gui()
         ImGui::SameLine();
         if (ImGui::Button("Reset")) { this->scene.ResetTime(); this->scene.timePaused = false; }
         ImGui::DragFloat("Speed",    &this->scene.timeSpeed, 0.01f, 0.0f, 20.0f, "%.2f");
-        ImGui::DragFloat("Max time", &this->scene.timeMax,   0.5f,  0.0f, 10000.f, this->scene.timeMax < 0.01f ? "unlimited" : "%.1f s");
+        ImGui::DragFloat("Max time", &this->scene.timeMax,   0.5f,  0.0f, 10000.f,
+            this->scene.timeMax < 0.01f ? "unlimited" : "%.1f s");
         ImGui::Checkbox("Loop", &this->scene.timeLoop);
+
+        ImGui::Separator();
+        ImGui::Text("Trajectories");
+        ImGui::Checkbox("Show##traj", &this->scene.showTrajectories);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Clear##traj")) this->scene.ClearTrajectories();
+        ImGui::SetNextItemWidth(140);
+        ImGui::DragInt("Max len##traj", &this->scene.trajectoryMaxLen, 10, 0, 1000000,
+            this->scene.trajectoryMaxLen <= 0 ? "unlimited" : "%d pts");
+        if (this->scene.trajectoryMaxLen < 0) this->scene.trajectoryMaxLen = 0;
+
         if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem))
             blockMousePick = true;
         ImGui::End();
@@ -359,17 +371,28 @@ void Graphics::Gui()
 
     if (this->luaEditor.awaitingVectorPick && this->scene.pickedPrimId != 0) {
         Primitive* from = sel;
-        Primitive* to = nullptr;
-        for (Primitive* p : this->scene.primitives)
-            if (p->id == this->scene.pickedPrimId) { to = p; break; }
-        if (from && to) {
-            XMFLOAT3 fp = from->GetPosition(), tp = to->GetPosition();
-            std::string tname = to->name.empty()
-                ? ("p" + std::to_string(to->id)) : to->name;
-            std::string snip = "local vec_to_" + tname + " = {"
-                " x=" + std::to_string(tp.x - fp.x) +
-                ", y=" + std::to_string(tp.y - fp.y) +
-                ", z=" + std::to_string(tp.z - fp.z) + " }\n";
+        UINT to_id = this->scene.pickedPrimId;
+
+        // Find 1-based vector index (what Lua scene[] uses), NOT the primitive .id field
+        int toIdx = -1;
+        std::string tname;
+        for (int k = 0; k < (int)this->scene.primitives.size(); k++) {
+            if (this->scene.primitives[k]->id == to_id) {
+                toIdx = k + 1;  // 1-based Lua index
+                tname = this->scene.primitives[k]->name.empty()
+                    ? ("p" + std::to_string(to_id))
+                    : this->scene.primitives[k]->name;
+                break;
+            }
+        }
+
+        if (from && toIdx > 0) {
+            std::string idx = std::to_string(toIdx);
+            std::string snip =
+                "local vec_to_" + tname +
+                " = {x=scene[" + idx + "].x-p.x" +
+                ", y=scene[" + idx + "].y-p.y" +
+                ", z=scene[" + idx + "].z-p.z}\n";
             from->luaScript.insert(0, snip);
         }
         this->luaEditor.awaitingVectorPick = false;
