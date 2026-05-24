@@ -1,4 +1,5 @@
 #include "graphics.h"
+#include <fstream>
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -126,6 +127,11 @@ void Graphics::Gui()
                     this->luaEditor.OnPrimitiveRemoved(p);
                 this->scene.LoadNewtonDemo();
                 this->luaEditor.globals = { { "G", 1000.f } };
+            }
+            if (ImGui::Button("PH Demo")) {
+                for (Primitive* p : this->scene.primitives)
+                    this->luaEditor.OnPrimitiveRemoved(p);
+                this->scene.LoadPersistentHomologyScene();
             }
             ImGui::InputText("Scene name", &name);
 
@@ -337,7 +343,7 @@ void Graphics::Gui()
             if (ImGui::Button("Pause")) this->scene.timePaused = true;
         }
         ImGui::SameLine();
-        if (ImGui::Button("Reset")) { this->scene.ResetTime(); this->scene.timePaused = false; }
+        if (ImGui::Button("Reset")) this->scene.ResetTime();
         ImGui::DragFloat("Speed",    &this->scene.timeSpeed, 0.01f, 0.0f, 20.0f, "%.2f");
         ImGui::DragFloat("Max time", &this->scene.timeMax,   0.5f,  0.0f, 10000.f,
             this->scene.timeMax < 0.01f ? "unlimited" : "%.1f s");
@@ -400,7 +406,170 @@ void Graphics::Gui()
     }
 
     // ── Lua Globals window ────────────────────────────────────────────────
-    if (this->luaEditor.DrawGlobals()) blockMousePick = true;
+    {
+        float* phR      = nullptr;
+        float  phMax    = 500.f;
+        bool   phPaused = true;
+        if (this->scene.sceneType == SceneType::PersistentHomology && this->scene.phState.radiusShared) {
+            phR      = &this->scene.phState.currentRadius;
+            phMax    = this->scene.phState.coverageR * 3.f + 60.f;
+            phPaused = this->scene.timePaused;
+        }
+        if (this->luaEditor.DrawGlobals(phR, phMax, phPaused)) blockMousePick = true;
+    }
+
+    // ── PH scene windows ──────────────────────────────────────────────────
+    if (this->scene.sceneType == SceneType::PersistentHomology) {
+
+        // ── PH Generator window ───────────────────────────────────────────
+        if (this->scene.phState.windowsNeedRestore) {
+            ImGui::SetNextWindowPos(
+                ImVec2(scene.phState.genWindowPos[0], scene.phState.genWindowPos[1]),
+                ImGuiCond_Always);
+            ImGui::SetNextWindowSize(
+                ImVec2(scene.phState.genWindowSize[0], scene.phState.genWindowSize[1]),
+                ImGuiCond_Always);
+        } else {
+            ImGui::SetNextWindowPos(
+                ImVec2(scene.phState.genWindowPos[0], scene.phState.genWindowPos[1]),
+                ImGuiCond_FirstUseEver);
+            ImGui::SetNextWindowSize(
+                ImVec2(scene.phState.genWindowSize[0], scene.phState.genWindowSize[1]),
+                ImGuiCond_FirstUseEver);
+        }
+
+        if (ImGui::Begin("PH Generator", &scene.phState.genWindowOpen)) {
+            scene.phState.genWindowPos[0]  = ImGui::GetWindowPos().x;
+            scene.phState.genWindowPos[1]  = ImGui::GetWindowPos().y;
+            scene.phState.genWindowSize[0] = ImGui::GetWindowSize().x;
+            scene.phState.genWindowSize[1] = ImGui::GetWindowSize().y;
+
+            ImGui::SetNextItemWidth(55);
+            ImGui::DragInt("##phN", &scene.phState.pointCount, 1, 3, 300);
+            ImGui::SameLine(); ImGui::TextUnformatted("pts");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(75);
+            ImGui::DragFloat("##phB", &scene.phState.bounds, 2.f, 10.f, 5000.f, "b=%.0f");
+
+            static const char* distribNames[] = { "Uniform", "Gaussian", "Sphere surf" };
+            ImGui::SetNextItemWidth(110);
+            ImGui::Combo("Distrib##ph", &scene.phState.distribType, distribNames, 3);
+            if (scene.phState.distribType == 1) {
+                ImGui::SameLine(); ImGui::SetNextItemWidth(65);
+                ImGui::DragFloat("σ##phG", &scene.phState.gaussSigma, 1.f, 1.f, 3000.f, "%.0f");
+            }
+            if (scene.phState.distribType == 2) {
+                ImGui::SameLine(); ImGui::SetNextItemWidth(65);
+                ImGui::DragFloat("R##phS", &scene.phState.sphereR, 1.f, 10.f, 3000.f, "%.0f");
+            }
+
+            if (ImGui::Button("Generate Random##ph")) {
+                scene.phState.GenerateRandom();
+                scene.RegeneratePHCloud();
+                scene.ResetTime();
+            }
+
+            ImGui::Separator();
+            ImGui::TextUnformatted("Import cloud (x,y,z per line):");
+            static char importPath[512] = {};
+            ImGui::SetNextItemWidth(160);
+            ImGui::InputText("##phpath", importPath, sizeof(importPath));
+            ImGui::SameLine();
+            if (ImGui::Button("Import##ph")) {
+                if (scene.ImportPHCloud(importPath)) {
+                    scene.RegeneratePHCloud();
+                    scene.ResetTime();
+                }
+            }
+
+            ImGui::Separator();
+            ImGui::SetNextItemWidth(100);
+            ImGui::DragFloat("Radius speed##ph", &scene.phState.radiusSpeed,
+                0.5f, 0.1f, 2000.f, "%.1f u/s");
+            ImGui::Text("Coverage r: %.2f", scene.phState.coverageR);
+
+            if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem))
+                blockMousePick = true;
+        }
+        ImGui::End();
+
+        // ── PH Topology window ─────────────────────────────────────────────
+        if (this->scene.phState.windowsNeedRestore) {
+            ImGui::SetNextWindowPos(
+                ImVec2(scene.phState.topoWindowPos[0], scene.phState.topoWindowPos[1]),
+                ImGuiCond_Always);
+            ImGui::SetNextWindowSize(
+                ImVec2(scene.phState.topoWindowSize[0], scene.phState.topoWindowSize[1]),
+                ImGuiCond_Always);
+        } else {
+            ImGui::SetNextWindowPos(
+                ImVec2(scene.phState.topoWindowPos[0], scene.phState.topoWindowPos[1]),
+                ImGuiCond_FirstUseEver);
+            ImGui::SetNextWindowSize(
+                ImVec2(scene.phState.topoWindowSize[0], scene.phState.topoWindowSize[1]),
+                ImGuiCond_FirstUseEver);
+        }
+
+        if (ImGui::Begin("PH Topology", &scene.phState.topoWindowOpen)) {
+            scene.phState.topoWindowPos[0]  = ImGui::GetWindowPos().x;
+            scene.phState.topoWindowPos[1]  = ImGui::GetWindowPos().y;
+            scene.phState.topoWindowSize[0] = ImGui::GetWindowSize().x;
+            scene.phState.topoWindowSize[1] = ImGui::GetWindowSize().y;
+
+            int N = (int)scene.phState.cloudPoints.size();
+            ImGui::Text("Points: %d     r = %.2f", N, scene.phState.currentRadius);
+            ImGui::Separator();
+            ImGui::Text("Beta-0  (components): %d", scene.phState.beta0);
+            ImGui::Text("Beta-1  (1-cycles):   %d", scene.phState.beta1);
+            ImGui::Separator();
+            ImGui::Text("Edges:     %d", scene.phState.numEdges);
+            ImGui::Text("Triangles: %d", scene.phState.numTriangles);
+            ImGui::Separator();
+
+            float covR = scene.phState.coverageR;
+            ImGui::Text("Coverage r:  %.2f", covR);
+
+            if (covR > 0.001f) {
+                float progress = scene.phState.currentRadius / covR;
+                if (progress > 1.f) progress = 1.f;
+                char buf[32];
+                snprintf(buf, sizeof(buf), "%.1f%%", progress * 100.f);
+                ImGui::ProgressBar(progress, ImVec2(-1.f, 0.f), buf);
+            }
+
+            ImGui::Separator();
+            if (scene.phState.allConnected) {
+                ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.4f, 1.0f),
+                    "Connected! (beta0=1)");
+            } else if (!scene.timePaused) {
+                ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "Animating...");
+            } else {
+                ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Paused");
+            }
+
+            if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem))
+                blockMousePick = true;
+        }
+        ImGui::End();
+
+        // ── Sync radius to spheres when paused (e.g. slider drag) ─────────
+        if (scene.timePaused) {
+            float r = scene.phState.currentRadius;
+            if (scene.phState.radiusShared) *scene.phState.radiusShared = r;
+            // Sync currentTime so playback resumes smoothly from slider position
+            if (scene.phState.radiusSpeed > 0.f)
+                scene.currentTime = r / scene.phState.radiusSpeed;
+            // Update sphere scales directly
+            float scale = r < 0.001f ? 0.001f : r;
+            for (UINT id : scene.phState.sphereIds)
+                for (Primitive* p : scene.primitives)
+                    if (p->id == id) { p->SetScale(scale); break; }
+            scene.phState.ComputeTopology(r);
+        }
+
+        if (scene.phState.windowsNeedRestore)
+            scene.phState.windowsNeedRestore = false;
+    }
 
     // ── Navigation cube (rendered over the 3D viewport) ───────────────────
     bool navCubeHover = NavCube::Draw(

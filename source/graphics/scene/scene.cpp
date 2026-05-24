@@ -2,6 +2,8 @@
 #include "..\..\loaders\STLLoader.h"
 #include <fstream>
 #include <algorithm>
+#include <numeric>
+#include <cstdio>
 
 bool Scene::Initialize(ID3D11Device* device, ID3D11DeviceContext* deviceContext, std::wstring shadersPath, ID3D11DepthStencilView* dsView, ID3D11DepthStencilView* dsViewNoMSAA, ID3D11RenderTargetView* mainRTV, VertexShader* vs, int windowWidth, int windowHeight)
 {
@@ -442,7 +444,31 @@ void Scene::SaveScene(std::string name)
 		camRot.r[3].m128_f32[0], camRot.r[3].m128_f32[1], camRot.r[3].m128_f32[2], camRot.r[3].m128_f32[3]
 	};
 	scene["camera"]["camScale"] = camScale;
-	
+
+	scene["sceneType"] = (int)this->sceneType;
+	if (this->sceneType == SceneType::PersistentHomology) {
+		auto& ph = scene["phState"];
+		ph["pointCount"]    = phState.pointCount;
+		ph["bounds"]        = phState.bounds;
+		ph["distribType"]   = phState.distribType;
+		ph["gaussSigma"]    = phState.gaussSigma;
+		ph["sphereR"]       = phState.sphereR;
+		ph["radiusSpeed"]   = phState.radiusSpeed;
+		ph["currentRadius"] = phState.currentRadius;
+		ph["genWindowOpen"]    = phState.genWindowOpen;
+		ph["topoWindowOpen"]   = phState.topoWindowOpen;
+		ph["genWindowPos"]     = { phState.genWindowPos[0],  phState.genWindowPos[1]  };
+		ph["genWindowSize"]    = { phState.genWindowSize[0], phState.genWindowSize[1] };
+		ph["topoWindowPos"]    = { phState.topoWindowPos[0],  phState.topoWindowPos[1]  };
+		ph["topoWindowSize"]   = { phState.topoWindowSize[0], phState.topoWindowSize[1] };
+		for (int i = 0; i < (int)phState.cloudPoints.size(); ++i)
+			ph["cloudPoints"][i] = {
+				phState.cloudPoints[i].x,
+				phState.cloudPoints[i].y,
+				phState.cloudPoints[i].z
+			};
+	}
+
 	std::ofstream file(this->scenesPath + name);
 
 	if (file.is_open()) {
@@ -507,9 +533,64 @@ void Scene::LoadScene(std::string name)
 	this->camera.SetPosition(camPos);
 	this->UpdateLight();
 
+	this->currentTime = 0.0f;   // default; PH scene overrides below
+	this->sceneType = (SceneType)data.value("sceneType", 0);
+	if (this->sceneType == SceneType::PersistentHomology && data.contains("phState")) {
+		const auto& ph = data["phState"];
+		phState.pointCount    = ph.value("pointCount", 20);
+		phState.bounds        = ph.value("bounds", 200.0f);
+		phState.distribType   = ph.value("distribType", 0);
+		phState.gaussSigma    = ph.value("gaussSigma", 80.0f);
+		phState.sphereR       = ph.value("sphereR", 120.0f);
+		phState.radiusSpeed   = ph.value("radiusSpeed", 25.0f);
+		phState.currentRadius = ph.value("currentRadius", 0.0f);
+		phState.genWindowOpen    = ph.value("genWindowOpen", true);
+		phState.topoWindowOpen   = ph.value("topoWindowOpen", true);
+		if (ph.contains("genWindowPos")) {
+			phState.genWindowPos[0] = ph["genWindowPos"][0]; phState.genWindowPos[1] = ph["genWindowPos"][1];
+		}
+		if (ph.contains("genWindowSize")) {
+			phState.genWindowSize[0] = ph["genWindowSize"][0]; phState.genWindowSize[1] = ph["genWindowSize"][1];
+		}
+		if (ph.contains("topoWindowPos")) {
+			phState.topoWindowPos[0] = ph["topoWindowPos"][0]; phState.topoWindowPos[1] = ph["topoWindowPos"][1];
+		}
+		if (ph.contains("topoWindowSize")) {
+			phState.topoWindowSize[0] = ph["topoWindowSize"][0]; phState.topoWindowSize[1] = ph["topoWindowSize"][1];
+		}
+		phState.cloudPoints.clear();
+		if (ph.contains("cloudPoints"))
+			for (const auto& pt : ph["cloudPoints"])
+				phState.cloudPoints.push_back({ pt[0].get<float>(), pt[1].get<float>(), pt[2].get<float>() });
+
+		phState.RecomputeCoverageR();
+		phState.radiusShared = std::make_shared<float>(phState.currentRadius);
+		auto rPtr = phState.radiusShared;
+
+		phState.sphereIds.clear();
+		phState.pointIds.clear();
+		for (Primitive* p : this->primitives) {
+			if (p->name.size() > 7 && p->name.substr(0, 7) == "ph_sph_") {
+				phState.sphereIds.push_back(p->id);
+				p->SetUpdater([rPtr](Primitive& pp, float t, float dt) {
+					float r = *rPtr;
+					pp.SetScale(r < 0.001f ? 0.001f : r);
+				});
+			}
+			else if (p->name.size() > 6 && p->name.substr(0, 6) == "ph_pt_") {
+				phState.pointIds.push_back(p->id);
+			}
+		}
+		// Sync currentTime to saved radius so animation resumes smoothly
+		if (phState.radiusSpeed > 0.f)
+			this->currentTime = phState.currentRadius / phState.radiusSpeed;
+		phState.ComputeTopology(phState.currentRadius);
+		phState.windowsNeedRestore = true;
+	}
+
 	this->tpsTimer.Stop();
-	this->currentTime = 0.0f;
 	this->deltaTime = 0.0f;
+	this->timePaused = true;
 	this->tpsTimer.Start();
 }
 
@@ -535,6 +616,16 @@ void Scene::UpdateTime()
 		}
 	}
 
+	// ── PH scene: grow radius with time, stop when fully connected ───────────
+	if (this->sceneType == SceneType::PersistentHomology) {
+		phState.currentRadius = this->currentTime * phState.radiusSpeed;
+		if (phState.radiusShared) *phState.radiusShared = phState.currentRadius;
+
+		phState.ComputeTopology(phState.currentRadius);
+		if (phState.allConnected)
+			this->timePaused = true;
+	}
+
 	for (auto& prim : this->primitives)
 		prim->Update(this->currentTime, this->deltaTime);
 
@@ -555,8 +646,19 @@ void Scene::UpdateTime()
 void Scene::ResetTime()
 {
 	this->currentTime = 0.0f;
+	this->timePaused  = true;   // always pause on reset
 	this->tpsTimer.Restart();
 	this->ClearTrajectories();
+
+	if (this->sceneType == SceneType::PersistentHomology) {
+		phState.currentRadius = 0.0f;
+		phState.allConnected  = false;
+		if (phState.radiusShared) *phState.radiusShared = 0.0f;
+		for (UINT id : phState.sphereIds)
+			for (Primitive* p : this->primitives)
+				if (p->id == id) { p->SetScale(0.001f); break; }
+		phState.ComputeTopology(0.0f);
+	}
 }
 
 void Scene::ClearTrajectories()
@@ -1180,6 +1282,83 @@ UINT Scene::GetIdByPixel(int px, int py)
 	return id;
 }
 
+
+void Scene::LoadPersistentHomologyScene()
+{
+	for (Primitive* p : this->primitives) delete p;
+	this->primitives.clear();
+	this->orientationTransformer.SetTargetObject(nullptr);
+	this->ClearTrajectories();
+
+	this->sceneType = SceneType::PersistentHomology;
+	this->phState   = PHSceneState{};
+	this->phState.radiusShared = std::make_shared<float>(0.0f);
+	this->phState.GenerateRandom();
+	RegeneratePHCloud();
+	ResetTime();
+}
+
+void Scene::RegeneratePHCloud()
+{
+	// Remove old PH primitives
+	for (UINT id : phState.sphereIds) {
+		for (auto it = primitives.begin(); it != primitives.end(); ++it)
+			if ((*it)->id == id) { delete *it; primitives.erase(it); break; }
+	}
+	for (UINT id : phState.pointIds) {
+		for (auto it = primitives.begin(); it != primitives.end(); ++it)
+			if ((*it)->id == id) { delete *it; primitives.erase(it); break; }
+	}
+	phState.sphereIds.clear();
+	phState.pointIds.clear();
+
+	auto rPtr = phState.radiusShared;
+
+	for (int i = 0; i < (int)phState.cloudPoints.size(); ++i) {
+		XMFLOAT3 pos = phState.cloudPoints[i];
+
+		// Solid point marker
+		this->AddPoint(pos, XMFLOAT4(1.0f, 0.82f, 0.22f, 1.0f));
+		this->primitives.back()->name = "ph_pt_" + std::to_string(i);
+		phState.pointIds.push_back(this->primitives.back()->id);
+
+		// Semi-transparent sphere, scale driven by shared radius
+		this->AddSphere(1.0f, pos, 2, XMFLOAT4(0.28f, 0.62f, 1.0f, 0.20f));
+		this->primitives.back()->name = "ph_sph_" + std::to_string(i);
+		phState.sphereIds.push_back(this->primitives.back()->id);
+		this->primitives.back()->SetUpdater([rPtr](Primitive& p, float t, float dt) {
+			float r = *rPtr;
+			p.SetScale(r < 0.001f ? 0.001f : r);
+		});
+	}
+
+	phState.RecomputeCoverageR();
+	phState.allConnected = false;
+	if (rPtr) *rPtr = 0.0f;
+	this->UpdateLight();
+}
+
+bool Scene::ImportPHCloud(const char* path)
+{
+	std::ifstream f(path);
+	if (!f.is_open()) return false;
+
+	std::vector<XMFLOAT3> pts;
+	std::string line;
+	while (std::getline(f, line)) {
+		if (line.empty() || line[0] == '#') continue;
+		float x, y, z;
+		if (sscanf_s(line.c_str(), "%f,%f,%f", &x, &y, &z) == 3 ||
+		    sscanf_s(line.c_str(), "%f %f %f",  &x, &y, &z) == 3)
+			pts.push_back({ x, y, z });
+	}
+	if (pts.empty()) return false;
+
+	phState.cloudPoints = pts;
+	phState.pointCount  = (int)pts.size();
+	phState.RecomputeCoverageR();
+	return true;
+}
 
 void Scene::UpdateSavedScenes()
 {

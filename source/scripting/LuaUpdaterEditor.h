@@ -44,7 +44,9 @@ public:
     bool Draw(Primitive* selected, const std::vector<Primitive*>& allPrimitives);
 
     // Always-visible globals window. Returns true when hovered.
-    bool DrawGlobals();
+    // Pass phRadius/phRadiusMax to show PH radius slider at top.
+    // phPaused=true means the slider is interactive (otherwise read-only).
+    bool DrawGlobals(float* phRadius = nullptr, float phRadiusMax = 500.f, bool phPaused = true);
 
     // ── Global Lua variables ──────────────────────────────────────────────────
     struct LuaGlobal { std::string name; float value = 0.0f; };
@@ -100,10 +102,27 @@ private:
 // Implementation
 // ─────────────────────────────────────────────────────────────────────────────
 
-inline bool LuaUpdaterEditor::DrawGlobals() {
+inline bool LuaUpdaterEditor::DrawGlobals(float* phRadius, float phRadiusMax, bool phPaused) {
     ImGui::SetNextWindowSize(ImVec2(320, 200), ImGuiCond_FirstUseEver);
     ImGui::Begin("Lua Globals");
     bool blockPick = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+
+    // ── PH radius slider (shown only when PH scene is active) ─────────────────
+    if (phRadius) {
+        ImGui::TextUnformatted("PH Radius");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(130);
+        float rMax = phRadiusMax > 0.f ? phRadiusMax : 500.f;
+        if (phPaused) {
+            ImGui::SliderFloat("##phr", phRadius, 0.f, rMax, "%.1f");
+        } else {
+            ImGui::BeginDisabled();
+            float tmp = *phRadius;
+            ImGui::SliderFloat("##phr", &tmp, 0.f, rMax, "%.1f");
+            ImGui::EndDisabled();
+        }
+        ImGui::Separator();
+    }
 
     float childH = -ImGui::GetFrameHeightWithSpacing() - 4;
     ImGui::BeginChild("##glist", ImVec2(0, childH));

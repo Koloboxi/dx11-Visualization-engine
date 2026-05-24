@@ -9,9 +9,13 @@
 #include "..\imgui\imgui.h"
 #include "auxiliaryObjects.h"
 #include "..\..\utils\Timer.h"
+#include "PHSceneState.h"
 
 #include <unordered_map>
 #include <deque>
+#include <memory>
+
+enum class SceneType { Default, PersistentHomology };
 
 class Scene {
 public:
@@ -52,7 +56,12 @@ public:
 	void RemovePrimitive(Primitive* p);
 
 	void LoadNewtonDemo();
+	void LoadPersistentHomologyScene();
+	void RegeneratePHCloud();
+	bool ImportPHCloud(const char* path);
 
+	SceneType sceneType = SceneType::Default;
+	PHSceneState phState;
 
 	std::string scenesPath = "Data/Scenes/";
 	const std::vector<std::string>& GetSavedScenes() const;
