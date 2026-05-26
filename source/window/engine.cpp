@@ -32,26 +32,28 @@ void Engine::Update()
 	while (!keyboard.KeyBufferIsEmpty()) {
 		KeyboardEvent eve = keyboard.ReadKey();
 		unsigned char keycode = eve.GetKeyCode();
+		if (keycode == VK_DELETE && eve.IsPress() && !ImGui::GetIO().WantTextInput) {
+			for (Primitive* p : this->gfx.scene.primitives)
+				if (p->selected) this->gfx.luaEditor.OnPrimitiveRemoved(p);
+			this->gfx.scene.DeleteSelected();
+		}
 	}
 
 	while (!mouse.EventBufferIsEmpty()) {
 		MouseEvent me = mouse.ReadEvent();
-		/*if (me.GetType() == MouseEvent::EventType::Move) {
-			this->gfx.scene.HandleMouseMove(me.GetPosX(), me.GetPosY());
-		}*/
 		if (me.GetType() == MouseEvent::EventType::RAW_MOVE && this->mouse.IsRightDown()) {
 			XMMATRIX rotMatrix = XMMatrixRotationAxis(this->gfx.scene.camera.GetUpwardVector(), -0.003f * me.GetPosX());
 			rotMatrix *= XMMatrixRotationAxis(this->gfx.scene.camera.GetRightVector(), 0.003f * me.GetPosY());
 
 			this->gfx.scene.camera.AdjustRotation(rotMatrix);
 		}
-		if (me.GetType() == MouseEvent::EventType::WheelUp) {
+		if (me.GetType() == MouseEvent::EventType::WheelUp && !this->gfx.scene.blockMouseWheel) {
 			POINT point = { me.GetPosX(), me.GetPosY() };
 			ScreenToClient(this->render_window.GetHWND(), &point);
 			XMFLOAT2 scaleCenter = this->gfx.ScreenCoords2NDC(point.x, point.y);
 			this->gfx.scene.camera.AdjustScale(1.0f / 1.1f, scaleCenter);
 		}
-		if (me.GetType() == MouseEvent::EventType::WheelDown) {
+		if (me.GetType() == MouseEvent::EventType::WheelDown && !this->gfx.scene.blockMouseWheel) {
 			POINT point = { me.GetPosX(), me.GetPosY() };
 			ScreenToClient(this->render_window.GetHWND(), &point);
 			XMFLOAT2 scaleCenter = this->gfx.ScreenCoords2NDC(point.x, point.y);

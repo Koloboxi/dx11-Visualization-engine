@@ -29,78 +29,16 @@ bool Scene::Initialize(ID3D11Device* device, ID3D11DeviceContext* deviceContext,
 	this->camera.SetRotation(Projections::DIM);
 	this->camera.SetPosition(BaseVectors::ORIGIN);
 
-	// 1. Orbiting point
-	this->AddPoint(BaseVectors::ORIGIN, Colors::RED);
-	this->primitives.back()->name = "Point_orbit";
-	this->primitives.back()->luaScript =
-		"p.x=120*math.cos(t*2)\np.y=120*math.sin(t*2)\np.z=50*math.sin(t*3)";
-	this->primitives.back()->SetUpdater([](Primitive& p, float t, float dt) {
-		p.SetPosition(XMFLOAT3(120.f * cosf(t * 2.f), 120.f * sinf(t * 2.f), 50.f * sinf(t * 3.f)));
-	});
-
-	// 2. Orbiting sphere
-	this->AddSphere(40, XMFLOAT3(200, 0, 0), 2, XMFLOAT4(0.2f, 0.5f, 1.f, 1.f));
-	this->primitives.back()->name = "Sphere_orbit";
-	this->primitives.back()->luaScript =
-		"p.x=200*math.cos(t*0.7)\np.y=60*math.sin(t*1.2)\np.z=200*math.sin(t*0.7)";
-	this->primitives.back()->SetUpdater([](Primitive& p, float t, float dt) {
-		p.SetPosition(XMFLOAT3(200.f * cosf(t * 0.7f), 60.f * sinf(t * 1.2f), 200.f * sinf(t * 0.7f)));
-	});
-
-	// 3. Pulsing semi-transparent sphere at origin
-	this->AddSphere(80, BaseVectors::ORIGIN, 3, XMFLOAT4(1.f, 0.3f, 0.3f, 0.6f));
-	this->primitives.back()->name = "Sphere_pulse";
-	this->primitives.back()->luaScript =
-		"p.scale=1+0.4*math.sin(t*2.5)";
-	this->primitives.back()->SetUpdater([](Primitive& p, float t, float dt) {
-		p.SetScale(1.f + 0.4f * sinf(t * 2.5f));
-	});
-
-	// 4. Spinning arc ring
-	this->AddArc3d(150, 4, 360, BaseVectors::ORIGIN, 32, XMFLOAT4(0.9f, 0.8f, 0.1f, 1.f));
-	this->primitives.back()->name = "Ring_spin";
-	this->primitives.back()->luaScript =
-		"p.rx,p.ry,p.rz,p.rw=euler(t*0.3,t*0.5,0)";
-	this->primitives.back()->SetUpdater([](Primitive& p, float t, float dt) {
-		p.SetRotation(XMFLOAT3(t * 0.3f, t * 0.5f, 0));
-	});
-
-	// 5. Rotating + bobbing triangle
-	std::vector<XMFLOAT3> triPts = {
-		XMFLOAT3(100, 0, 0), XMFLOAT3(0, 100, 0), XMFLOAT3(0, 0, 100)
-	};
-	this->AddPolygon(triPts, XMFLOAT4(0.2f, 0.9f, 0.3f, 1.f));
-	this->primitives.back()->name = "Triangle_spin";
-	this->primitives.back()->luaScript =
-		"p.rx,p.ry,p.rz,p.rw=euler(0,0,-t)\np.z=100*math.sin(t*0.5)";
-	this->primitives.back()->SetUpdater([](Primitive& p, float t, float dt) {
-		p.SetRotation(XMFLOAT3(0, 0, -t));
-		p.SetPosition(XMFLOAT3(0, 0, 100.f * sinf(t * 0.5f)));
-	});
-
-	// 6. Rotating helix (Line3d)
-	{
-		std::vector<XMFLOAT3> helixPts;
-		for (int i = 0; i <= 20; ++i) {
-			float a = (float)i * (XM_2PI / 4.f);
-			helixPts.push_back(XMFLOAT3(60.f * cosf(a), 60.f * sinf(a), (float)(i - 10) * 12.f));
-		}
-		this->AddLine3d(5, helixPts, 6, XMFLOAT4(0.1f, 0.9f, 0.9f, 1.f));
-		this->primitives.back()->name = "Helix_spin";
-		this->primitives.back()->luaScript =
-			"p.rx,p.ry,p.rz,p.rw=euler(0,0,t*0.6)";
-		this->primitives.back()->SetUpdater([](Primitive& p, float t, float dt) {
-			p.SetRotation(XMFLOAT3(0, 0, t * 0.6f));
-		});
-	}
-		
-
 	this->orientationTransformer.Initialize(device, deviceContext);
 
 	this->UpdateLight();
 	this->UpdateSavedScenes();
 	this->tpsTimer.Start();
-		
+
+	this->RegisterSceneRebinders();
+
+	this->LoadPersistentHomologyScene();
+
 	return true;
 }
 
@@ -145,7 +83,6 @@ void Scene::Draw()
 
 		this->deviceContext->RSSetState(this->rasterizerSolid.Get());
 
-
 		this->deviceContext->OMSetRenderTargets(1, this->rtvIDs, this->dsViewNoMSAA);
 		this->deviceContext->PSSetShader(this->pixelShaderWriteIDs.GetShader(), NULL, 0);
 		this->deviceContext->PSSetConstantBuffers(1, 1, this->cb_ps_id.GetAddressOf());
@@ -155,7 +92,6 @@ void Scene::Draw()
 
 		this->deviceContext->OMSetRenderTargets(1, this->rtvsMain, this->dsView);
 		this->deviceContext->PSSetShader(this->pixelShaderMain.GetShader(), NULL, 0);
-
 
 		if (dim < 2) {
 			XMFLOAT4 col = p->GetColor();
@@ -175,7 +111,6 @@ void Scene::Draw()
 
 			bool transparent = p->GetTransparent();
 			if (transparent) this->deviceContext->OMSetDepthStencilState(this->dsStateDepthNoWrite.Get(), 0);
-			
 
 			if (this->outlineThroughObjets && p->selected){
 				this->deviceContext->OMSetRenderTargets(3, this->rtvsMask, this->dsView);
@@ -217,37 +152,34 @@ void Scene::Draw()
 			p->SetIlluminationCapability(illumination);
 		}
 	}
-	// ── Trajectories ─────────────────────────────────────────────────────────
+
 	DrawTrajectories();
 
-	// ── Velocity arrow for selected primitive ────────────────────────────────
 	{
-		Primitive* sel = nullptr;
-		for (Primitive* p : this->primitives) if (p->selected) { sel = p; break; }
-		if (sel) {
+		for (Primitive* sel : this->primitives) {
+			if (!sel->selected) continue;
 			XMFLOAT3 v = sel->velocity;
 			float len2 = v.x*v.x + v.y*v.y + v.z*v.z;
-			if (len2 > 0.01f) {
-				float len = sqrtf(len2);
-				float headLen   = (len * 0.15f < 40.0f) ? len * 0.15f : 40.0f;
-				float headRad   = headLen * 0.4f;
-				float shaftRad  = (headRad * 0.3f > 1.0f) ? headRad * 0.3f : 1.0f;
-				XMFLOAT3 pos = sel->GetPosition();
-				XMFLOAT3 tip = { pos.x + v.x, pos.y + v.y, pos.z + v.z };
-				Primitive* arrow = PrimitiveConstructor::Arrow3d(shaftRad, headRad, headLen, pos, tip, 8,
-					XMFLOAT4(1.0f, 0.95f, 0.1f, 1.0f), 0);
-				if (arrow) {
-					arrow->SetLighting(this->ambient, this->intensity, this->shininess);
-					this->deviceContext->IASetInputLayout(this->vsMain->GetInputLayout());
-					this->deviceContext->VSSetShader(this->vsMain->GetShader(), NULL, 0);
-					this->deviceContext->PSSetShader(this->pixelShaderMain.GetShader(), NULL, 0);
-					this->deviceContext->GSSetShader(nullptr, NULL, 0);
-					this->deviceContext->RSSetState(this->rasterizerSolid.Get());
-					this->deviceContext->OMSetDepthStencilState(this->dsStateDepth.Get(), 0);
-					this->deviceContext->OMSetRenderTargets(1, this->rtvsMain, this->dsView);
-					arrow->Draw(this->camera.GetViewMatrix(), this->camera.GetProjectionMatrix());
-					delete arrow;
-				}
+			if (len2 <= 0.01f) continue;
+			float len = sqrtf(len2);
+			float headLen  = (len * 0.15f < 40.0f) ? len * 0.15f : 40.0f;
+			float headRad  = headLen * 0.4f;
+			float shaftRad = (headRad * 0.3f > 1.0f) ? headRad * 0.3f : 1.0f;
+			XMFLOAT3 pos = sel->GetPosition();
+			XMFLOAT3 tip = { pos.x + v.x, pos.y + v.y, pos.z + v.z };
+			Primitive* arrow = PrimitiveConstructor::Arrow3d(shaftRad, headRad, headLen, pos, tip, 8,
+				XMFLOAT4(1.0f, 0.95f, 0.1f, 1.0f), 0);
+			if (arrow) {
+				arrow->SetLighting(this->ambient, this->intensity, this->shininess);
+				this->deviceContext->IASetInputLayout(this->vsMain->GetInputLayout());
+				this->deviceContext->VSSetShader(this->vsMain->GetShader(), NULL, 0);
+				this->deviceContext->PSSetShader(this->pixelShaderMain.GetShader(), NULL, 0);
+				this->deviceContext->GSSetShader(nullptr, NULL, 0);
+				this->deviceContext->RSSetState(this->rasterizerSolid.Get());
+				this->deviceContext->OMSetDepthStencilState(this->dsStateDepth.Get(), 0);
+				this->deviceContext->OMSetRenderTargets(1, this->rtvsMain, this->dsView);
+				arrow->Draw(this->camera.GetViewMatrix(), this->camera.GetProjectionMatrix());
+				delete arrow;
 			}
 		}
 	}
@@ -268,7 +200,6 @@ void Scene::Draw()
 
 	this->deviceContext->ClearRenderTargetView(this->outlinesRTV.Get(), Colors::clearColor);
 	this->RenderOutline();
-
 
 	this->deviceContext->OMSetDepthStencilState(this->dsStateNoDepth.Get(), 0);
 	this->deviceContext->GSSetShader(nullptr, NULL, 0);
@@ -292,23 +223,46 @@ void Scene::Draw()
 
 void Scene::HandleSelection(Primitive* primitiveClicked)
 {
+	bool shiftHeld = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+	bool ctrlHeld  = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+
 	if (!primitiveClicked) {
-		for (Primitive* p : this->primitives) {
-			p->selected = false;
-		}
-		this->orientationTransformer.SetTargetObject(nullptr);
+		for (Primitive* p : this->primitives) p->selected = false;
+		this->orientationTransformer.SetTargetObjects({});
+		lastSelectedIdx = -1;
 		return;
 	}
-	primitiveClicked->selected = !primitiveClicked->selected;
-	if (primitiveClicked->selected) this->orientationTransformer.SetTargetObject(primitiveClicked);
-	else this->orientationTransformer.SetTargetObject(nullptr);
 
-	if (!(GetAsyncKeyState(VK_SHIFT) & 0x8000)) {
-		for (Primitive* p : this->primitives) {
-			if (p == primitiveClicked) continue;
-			p->selected = false;
+	if (ctrlHeld) {
+		primitiveClicked->selected = !primitiveClicked->selected;
+	} else if (shiftHeld) {
+		primitiveClicked->selected = true;
+	} else {
+		for (Primitive* p : this->primitives) p->selected = false;
+		primitiveClicked->selected = true;
+	}
+
+	std::vector<Primitive*> sel;
+	for (Primitive* p : this->primitives) if (p->selected) sel.push_back(p);
+	this->orientationTransformer.SetTargetObjects(sel);
+}
+
+void Scene::DeleteSelected()
+{
+	if (this->orientationTransformer.HasActiveObject())
+		this->orientationTransformer.HandleObjRelease();
+	this->orientationTransformer.SetTargetObjects({});
+
+	auto it = this->primitives.begin();
+	while (it != this->primitives.end()) {
+		if ((*it)->selected) {
+			delete *it;
+			it = this->primitives.erase(it);
+		} else {
+			++it;
 		}
 	}
+	lastSelectedIdx = -1;
 }
 
 void Scene::HandleLMouse(int px, int py, bool tPressfRelease)
@@ -320,7 +274,6 @@ void Scene::HandleLMouse(int px, int py, bool tPressfRelease)
 
 		UINT id = this->GetIdByPixel(px, py);
 
-		// Pick mode: capture one click for "pick vector" feature
 		if (!tPressfRelease && this->pickModeActive) {
 			this->pickModeActive = false;
 			this->pickedPrimId = id;
@@ -404,7 +357,7 @@ void Scene::RemovePrimitive(Primitive* p)
 	if (this->orientationTransformer.HasActiveObject())
 		this->orientationTransformer.HandleObjRelease();
 
-	this->orientationTransformer.SetTargetObject(nullptr);
+	this->orientationTransformer.SetTargetObjects({});
 	this->primitives.erase(it);
 	delete p;
 }
@@ -431,13 +384,13 @@ void Scene::SaveScene(std::string name)
 		Primitive* p = this->primitives[i];
 		jsonSaver::to_json(scene["primitives"][i], *p);
 	}
-	
+
 	XMFLOAT3 camPos = this->camera.GetPositionFloat3();
 	XMMATRIX camRot = this->camera.GetRotMatrix();
 	float camScale	= this->camera.GetScale();
 
 	scene["camera"]["camPos"] = { camPos.x, camPos.y, camPos.z };
-	scene["camera"]["camRot"] = { 
+	scene["camera"]["camRot"] = {
 		camRot.r[0].m128_f32[0], camRot.r[0].m128_f32[1], camRot.r[0].m128_f32[2], camRot.r[0].m128_f32[3],
 		camRot.r[1].m128_f32[0], camRot.r[1].m128_f32[1], camRot.r[1].m128_f32[2], camRot.r[1].m128_f32[3],
 		camRot.r[2].m128_f32[0], camRot.r[2].m128_f32[1], camRot.r[2].m128_f32[2], camRot.r[2].m128_f32[3],
@@ -445,28 +398,26 @@ void Scene::SaveScene(std::string name)
 	};
 	scene["camera"]["camScale"] = camScale;
 
-	scene["sceneType"] = (int)this->sceneType;
-	if (this->sceneType == SceneType::PersistentHomology) {
-		auto& ph = scene["phState"];
-		ph["pointCount"]    = phState.pointCount;
-		ph["bounds"]        = phState.bounds;
-		ph["distribType"]   = phState.distribType;
-		ph["gaussSigma"]    = phState.gaussSigma;
-		ph["sphereR"]       = phState.sphereR;
-		ph["radiusSpeed"]   = phState.radiusSpeed;
-		ph["currentRadius"] = phState.currentRadius;
-		ph["genWindowOpen"]    = phState.genWindowOpen;
-		ph["topoWindowOpen"]   = phState.topoWindowOpen;
-		ph["genWindowPos"]     = { phState.genWindowPos[0],  phState.genWindowPos[1]  };
-		ph["genWindowSize"]    = { phState.genWindowSize[0], phState.genWindowSize[1] };
-		ph["topoWindowPos"]    = { phState.topoWindowPos[0],  phState.topoWindowPos[1]  };
-		ph["topoWindowSize"]   = { phState.topoWindowSize[0], phState.topoWindowSize[1] };
-		for (int i = 0; i < (int)phState.cloudPoints.size(); ++i)
-			ph["cloudPoints"][i] = {
-				phState.cloudPoints[i].x,
-				phState.cloudPoints[i].y,
-				phState.cloudPoints[i].z
-			};
+	scene["currentSceneId"] = this->currentSceneId;
+	scene["sceneData"]      = this->sceneData;
+	scene["currentTime"]    = this->currentTime;
+	{
+		json arr = json::array();
+		for (const auto& w : this->sceneWindows) {
+			arr.push_back({
+				{"id",   w.id},
+				{"open", w.open},
+				{"pos",  { w.pos[0],  w.pos[1]  }},
+				{"size", { w.size[0], w.size[1] }}
+			});
+		}
+		scene["sceneWindows"] = arr;
+	}
+	{
+		json obj = json::object();
+		for (const auto& [k, v] : this->sceneFloats)
+			if (v) obj[k] = *v;
+		scene["sceneFloats"] = obj;
 	}
 
 	std::ofstream file(this->scenesPath + name);
@@ -485,10 +436,27 @@ void Scene::SaveScene(std::string name)
 
 void Scene::ClearScene()
 {
+	if (this->orientationTransformer.HasActiveObject())
+		this->orientationTransformer.HandleObjRelease();
+	this->orientationTransformer.SetTargetObjects({});
+	lastSelectedIdx = -1;
+
 	for (Primitive* p : this->primitives)
 		delete p;
 	this->primitives.clear();
 	this->ClearTrajectories();
+	this->ClearSceneCustomState();
+}
+
+void Scene::ClearSceneCustomState()
+{
+	this->sceneData    = nlohmann::json::object();
+	this->sceneFloats.clear();
+	this->sceneWindows.clear();
+	this->sceneSliders.clear();
+	this->sceneTick    = nullptr;
+	this->sceneReset   = nullptr;
+	this->currentSceneId.clear();
 }
 
 void Scene::LoadScene(std::string name)
@@ -520,7 +488,6 @@ void Scene::LoadScene(std::string name)
 		this->primitives.push_back(p);
 	}
 
-	// Advance nextId past any restored IDs
 	for (Primitive* p : this->primitives)
 		if (p->id >= this->nextId) this->nextId = p->id + 1;
 
@@ -533,59 +500,35 @@ void Scene::LoadScene(std::string name)
 	this->camera.SetPosition(camPos);
 	this->UpdateLight();
 
-	this->currentTime = 0.0f;   // default; PH scene overrides below
-	this->sceneType = (SceneType)data.value("sceneType", 0);
-	if (this->sceneType == SceneType::PersistentHomology && data.contains("phState")) {
-		const auto& ph = data["phState"];
-		phState.pointCount    = ph.value("pointCount", 20);
-		phState.bounds        = ph.value("bounds", 200.0f);
-		phState.distribType   = ph.value("distribType", 0);
-		phState.gaussSigma    = ph.value("gaussSigma", 80.0f);
-		phState.sphereR       = ph.value("sphereR", 120.0f);
-		phState.radiusSpeed   = ph.value("radiusSpeed", 25.0f);
-		phState.currentRadius = ph.value("currentRadius", 0.0f);
-		phState.genWindowOpen    = ph.value("genWindowOpen", true);
-		phState.topoWindowOpen   = ph.value("topoWindowOpen", true);
-		if (ph.contains("genWindowPos")) {
-			phState.genWindowPos[0] = ph["genWindowPos"][0]; phState.genWindowPos[1] = ph["genWindowPos"][1];
-		}
-		if (ph.contains("genWindowSize")) {
-			phState.genWindowSize[0] = ph["genWindowSize"][0]; phState.genWindowSize[1] = ph["genWindowSize"][1];
-		}
-		if (ph.contains("topoWindowPos")) {
-			phState.topoWindowPos[0] = ph["topoWindowPos"][0]; phState.topoWindowPos[1] = ph["topoWindowPos"][1];
-		}
-		if (ph.contains("topoWindowSize")) {
-			phState.topoWindowSize[0] = ph["topoWindowSize"][0]; phState.topoWindowSize[1] = ph["topoWindowSize"][1];
-		}
-		phState.cloudPoints.clear();
-		if (ph.contains("cloudPoints"))
-			for (const auto& pt : ph["cloudPoints"])
-				phState.cloudPoints.push_back({ pt[0].get<float>(), pt[1].get<float>(), pt[2].get<float>() });
+	this->ClearSceneCustomState();
+	this->currentTime = data.value("currentTime", 0.0f);
 
-		phState.RecomputeCoverageR();
-		phState.radiusShared = std::make_shared<float>(phState.currentRadius);
-		auto rPtr = phState.radiusShared;
+	if (data.contains("sceneData"))      this->sceneData      = data["sceneData"];
+	if (data.contains("currentSceneId")) this->currentSceneId = data["currentSceneId"].get<std::string>();
 
-		phState.sphereIds.clear();
-		phState.pointIds.clear();
-		for (Primitive* p : this->primitives) {
-			if (p->name.size() > 7 && p->name.substr(0, 7) == "ph_sph_") {
-				phState.sphereIds.push_back(p->id);
-				p->SetUpdater([rPtr](Primitive& pp, float t, float dt) {
-					float r = *rPtr;
-					pp.SetScale(r < 0.001f ? 0.001f : r);
-				});
-			}
-			else if (p->name.size() > 6 && p->name.substr(0, 6) == "ph_pt_") {
-				phState.pointIds.push_back(p->id);
+	if (data.contains("sceneFloats") && data["sceneFloats"].is_object()) {
+		for (auto it = data["sceneFloats"].begin(); it != data["sceneFloats"].end(); ++it)
+			this->sceneFloats[it.key()] = std::make_shared<float>(it.value().get<float>());
+	}
+
+	if (!this->currentSceneId.empty()) {
+		auto it = this->sceneRebinders.find(this->currentSceneId);
+		if (it != this->sceneRebinders.end() && it->second)
+			it->second(*this);
+	}
+
+	if (data.contains("sceneWindows") && data["sceneWindows"].is_array()) {
+		for (const auto& wj : data["sceneWindows"]) {
+			std::string id = wj.value("id", "");
+			for (auto& w : this->sceneWindows) {
+				if (w.id != id) continue;
+				w.open    = wj.value("open", true);
+				if (wj.contains("pos"))  { w.pos[0]  = wj["pos"][0];  w.pos[1]  = wj["pos"][1];  }
+				if (wj.contains("size")) { w.size[0] = wj["size"][0]; w.size[1] = wj["size"][1]; }
+				w.needRestore = true;
+				break;
 			}
 		}
-		// Sync currentTime to saved radius so animation resumes smoothly
-		if (phState.radiusSpeed > 0.f)
-			this->currentTime = phState.currentRadius / phState.radiusSpeed;
-		phState.ComputeTopology(phState.currentRadius);
-		phState.windowsNeedRestore = true;
 	}
 
 	this->tpsTimer.Stop();
@@ -599,44 +542,37 @@ void Scene::UpdateTime()
 	float dtSec = this->tpsTimer.GetMillisecondsElapsed() * 0.001f;
 	this->tpsTimer.Restart();
 
-	if (this->timePaused) {
-		this->orientationTransformer.Update();
-		return;
-	}
+	if (!this->timePaused) {
+		this->deltaTime = dtSec * this->timeSpeed;
+		this->currentTime += this->deltaTime;
 
-	this->deltaTime = dtSec * this->timeSpeed;
-	this->currentTime += this->deltaTime;
-
-	if (this->timeMax > 0.0f && this->currentTime >= this->timeMax) {
-		if (this->timeLoop)
-			this->currentTime = fmodf(this->currentTime, this->timeMax);
-		else {
-			this->currentTime = this->timeMax;
-			this->timePaused = true;
+		if (this->timeMax > 0.0f && this->currentTime >= this->timeMax) {
+			if (this->timeLoop)
+				this->currentTime = fmodf(this->currentTime, this->timeMax);
+			else {
+				this->currentTime = this->timeMax;
+				this->timePaused = true;
+			}
 		}
+	} else {
+		this->deltaTime = 0.0f;
 	}
 
-	// ── PH scene: grow radius with time, stop when fully connected ───────────
-	if (this->sceneType == SceneType::PersistentHomology) {
-		phState.currentRadius = this->currentTime * phState.radiusSpeed;
-		if (phState.radiusShared) *phState.radiusShared = phState.currentRadius;
+	if (this->sceneTick)
+		this->sceneTick(*this, this->currentTime, this->deltaTime, this->timePaused);
 
-		phState.ComputeTopology(phState.currentRadius);
-		if (phState.allConnected)
-			this->timePaused = true;
-	}
+	if (!this->timePaused) {
+		for (auto& prim : this->primitives)
+			prim->Update(this->currentTime, this->deltaTime);
 
-	for (auto& prim : this->primitives)
-		prim->Update(this->currentTime, this->deltaTime);
-
-	// Record trajectory positions after updaters ran
-	if (this->showTrajectories) {
-		for (Primitive* p : this->primitives) {
-			if (!p->HasUpdater()) continue;
-			auto& traj = this->trajectoryData[p->id];
-			traj.push_back(p->GetPosition());
-			if (this->trajectoryMaxLen > 0 && (int)traj.size() > this->trajectoryMaxLen)
-				traj.pop_front();
+		if (this->showTrajectories) {
+			for (Primitive* p : this->primitives) {
+				if (!p->HasUpdater()) continue;
+				auto& traj = this->trajectoryData[p->id];
+				traj.push_back(p->GetPosition());
+				if (this->trajectoryMaxLen > 0 && (int)traj.size() > this->trajectoryMaxLen)
+					traj.pop_front();
+			}
 		}
 	}
 
@@ -646,19 +582,11 @@ void Scene::UpdateTime()
 void Scene::ResetTime()
 {
 	this->currentTime = 0.0f;
-	this->timePaused  = true;   // always pause on reset
+	this->timePaused  = true;
 	this->tpsTimer.Restart();
 	this->ClearTrajectories();
 
-	if (this->sceneType == SceneType::PersistentHomology) {
-		phState.currentRadius = 0.0f;
-		phState.allConnected  = false;
-		if (phState.radiusShared) *phState.radiusShared = 0.0f;
-		for (UINT id : phState.sphereIds)
-			for (Primitive* p : this->primitives)
-				if (p->id == id) { p->SetScale(0.001f); break; }
-		phState.ComputeTopology(0.0f);
-	}
+	if (this->sceneReset) this->sceneReset(*this);
 }
 
 void Scene::ClearTrajectories()
@@ -670,19 +598,17 @@ void Scene::DrawTrajectories()
 {
 	if (!showTrajectories || trajectoryData.empty()) return;
 
-	// Use geometry shader for thickness and proper blend setup
 	this->deviceContext->GSSetShader(this->geometryshaderthickness.GetShader(), NULL, 0);
 	this->deviceContext->RSSetState(this->rasterizerSolid.Get());
 	this->deviceContext->OMSetDepthStencilState(this->dsStateDepth.Get(), 0);
 	this->deviceContext->OMSetRenderTargets(1, this->rtvsMain, this->dsView);
 	this->deviceContext->PSSetShader(this->pixelShaderMain.GetShader(), NULL, 0);
 
-	const int NUM_SEGS = 6;  // alpha segments: older→dimmer, newer→brighter
+	const int NUM_SEGS = 6;
 
 	for (auto& [id, dq] : this->trajectoryData) {
 		if (dq.size() < 2) continue;
 
-		// Get base color from corresponding primitive
 		XMFLOAT4 col = { 1.f, 1.f, 1.f, 1.f };
 		for (Primitive* p : this->primitives)
 			if (p->id == id) { col = p->GetColor(); break; }
@@ -693,7 +619,7 @@ void Scene::DrawTrajectories()
 		for (int seg = 0; seg < NUM_SEGS; seg++) {
 			int start = seg * segPts;
 			if (start >= N) break;
-			int end = (start + segPts + 1 < N) ? start + segPts + 1 : N;  // +1 overlap
+			int end = (start + segPts + 1 < N) ? start + segPts + 1 : N;
 
 			float alpha = (float)(seg + 1) / NUM_SEGS * 0.9f;
 			XMFLOAT4 sc = { col.x, col.y, col.z, alpha };
@@ -714,149 +640,6 @@ void Scene::DrawTrajectories()
 	}
 }
 
-void Scene::LoadNewtonDemo()
-{
-	for (Primitive* p : this->primitives) delete p;
-	this->primitives.clear();
-	this->orientationTransformer.SetTargetObject(nullptr);
-	this->ClearTrajectories();
-
-	struct BodyDef { XMFLOAT3 pos; XMFLOAT3 vel; float mass; float radius; XMFLOAT4 col; const char* name; };
-	BodyDef bodies[5] = {
-		{ {  0,   0,   0}, {  0,   0,   0}, 1000.f, 30.f, {1.0f,0.8f,0.2f,1.0f}, "Star"     },
-		{ {200,   0,   0}, {  0,  72,   0},    5.f, 12.f, {0.2f,0.5f,1.0f,1.0f}, "Planet_1" },
-		{ {  0, 280,   0}, {-62,   0,  10},    3.f,  9.f, {0.3f,0.9f,0.3f,1.0f}, "Planet_2" },
-		{ {-160,  0,  60}, {  0, -79,  15},    8.f, 11.f, {0.9f,0.3f,0.3f,1.0f}, "Planet_3" },
-		{ {100,-100,  80}, { 40,  40, -30},    1.f,  7.f, {0.8f,0.5f,1.0f,1.0f}, "Comet"    },
-	};
-
-	for (auto& b : bodies) {
-		this->AddSphere(b.radius, b.pos, 2, b.col);
-		this->primitives.back()->mass = b.mass;
-		this->primitives.back()->name = b.name;
-	}
-
-	// Shared physics state: coordinator writes curPos[], each body's updater reads its own slot
-	struct NBodyShared {
-		std::array<XMFLOAT3, 5> vel;
-		std::array<XMFLOAT3, 5> curPos;
-		std::array<XMFLOAT3, 5> initVel;
-		std::array<XMFLOAT3, 5> initPos;
-		std::array<float,    5> masses;
-		float prevT = -1.0f;
-	};
-	auto nbody = std::make_shared<NBodyShared>();
-	for (int i = 0; i < 5; i++) {
-		nbody->vel[i]     = nbody->initVel[i] = bodies[i].vel;
-		nbody->initPos[i] = nbody->curPos[i]  = bodies[i].pos;
-		nbody->masses[i]  = bodies[i].mass;
-	}
-
-	Primitive* prims[5];
-	for (int i = 0; i < 5; i++)
-		prims[i] = this->primitives[this->primitives.size() - 5 + i];
-
-	// Star: runs full N-body physics, stores results in curPos[], sets only its own position
-	prims[0]->SetUpdater([nbody](Primitive& self, float t, float dt) {
-		if (t < nbody->prevT - 0.001f) {
-			for (int i = 0; i < 5; i++) {
-				nbody->curPos[i] = nbody->initPos[i];
-				nbody->vel[i]    = nbody->initVel[i];
-			}
-		}
-		nbody->prevT = t;
-
-		XMFLOAT3 forces[5] = {};
-		for (int i = 0; i < 5; i++) {
-			for (int j = i + 1; j < 5; j++) {
-				float dx = nbody->curPos[j].x - nbody->curPos[i].x;
-				float dy = nbody->curPos[j].y - nbody->curPos[i].y;
-				float dz = nbody->curPos[j].z - nbody->curPos[i].z;
-				float r2 = dx*dx + dy*dy + dz*dz + 15.f*15.f;
-				float r  = sqrtf(r2);
-				float f  = 1000.f * nbody->masses[i] * nbody->masses[j] / r2;
-				float fx = f*dx/r, fy = f*dy/r, fz = f*dz/r;
-				forces[i].x += fx; forces[i].y += fy; forces[i].z += fz;
-				forces[j].x -= fx; forces[j].y -= fy; forces[j].z -= fz;
-			}
-		}
-		for (int i = 0; i < 5; i++) {
-			float mi = nbody->masses[i];
-			nbody->vel[i].x    += forces[i].x / mi * dt;
-			nbody->vel[i].y    += forces[i].y / mi * dt;
-			nbody->vel[i].z    += forces[i].z / mi * dt;
-			nbody->curPos[i].x += nbody->vel[i].x * dt;
-			nbody->curPos[i].y += nbody->vel[i].y * dt;
-			nbody->curPos[i].z += nbody->vel[i].z * dt;
-		}
-		self.SetPosition(nbody->curPos[0]);
-	});
-
-	// Each planet reads its own pre-computed position — updater modifies only itself
-	for (int i = 1; i < 5; i++) {
-		prims[i]->SetUpdater([nbody, i](Primitive& self, float t, float dt) {
-			self.SetPosition(nbody->curPos[i]);
-		});
-	}
-
-	// ── Lua scripts for JSON serialization ──────────────────────────────────
-	// Coordinator on Star: stores physics state in _nv, updates only p (self)
-	prims[0]->luaScript = R"(
--- N-body coordinator on Star (body 1); stores state in _nv for others to read
-if _nv_t and t < _nv_t - 0.001 then _nv = nil end
-_nv_t = t
-if not _nv then
-  _nv = {
-    {vx=0,   vy=0,  vz=0,  px=0,    py=0,   pz=0  },
-    {vx=0,   vy=72, vz=0,  px=200,  py=0,   pz=0  },
-    {vx=-62, vy=0,  vz=10, px=0,    py=280, pz=0  },
-    {vx=0,   vy=-79,vz=15, px=-160, py=0,   pz=60 },
-    {vx=40,  vy=40, vz=-30,px=100,  py=-100,pz=80 }
-  }
-end
-local Nv, soft = 5, 15
-if not scene[Nv] then return end
-local Gv = (type(G)=="number") and G or 1000
-local fx, fy, fz = {}, {}, {}
-for i=1,Nv do fx[i]=0; fy[i]=0; fz[i]=0 end
-for i=1,Nv do
-  for j=i+1,Nv do
-    local dx=_nv[j].px-_nv[i].px
-    local dy=_nv[j].py-_nv[i].py
-    local dz=_nv[j].pz-_nv[i].pz
-    local r2=dx*dx+dy*dy+dz*dz+soft*soft
-    local r=math.sqrt(r2)
-    local f=Gv*scene[i].mass*scene[j].mass/r2
-    local ex,ey,ez=f*dx/r, f*dy/r, f*dz/r
-    fx[i]=fx[i]+ex; fy[i]=fy[i]+ey; fz[i]=fz[i]+ez
-    fx[j]=fx[j]-ex; fy[j]=fy[j]-ey; fz[j]=fz[j]-ez
-  end
-end
-for i=1,Nv do
-  local mi=scene[i].mass
-  _nv[i].vx=_nv[i].vx+fx[i]/mi*dt
-  _nv[i].vy=_nv[i].vy+fy[i]/mi*dt
-  _nv[i].vz=_nv[i].vz+fz[i]/mi*dt
-  _nv[i].px=_nv[i].px+_nv[i].vx*dt
-  _nv[i].py=_nv[i].py+_nv[i].vy*dt
-  _nv[i].pz=_nv[i].pz+_nv[i].vz*dt
-end
-p.x=_nv[1].px; p.y=_nv[1].py; p.z=_nv[1].pz)";
-
-	// Each planet reads its slot from _nv (written by coordinator on Star)
-	for (int i = 1; i < 5; i++) {
-		int li = i + 1;
-		prims[i]->luaScript =
-			"if _nv and _nv[" + std::to_string(li) + "] then "
-			"p.x=_nv[" + std::to_string(li) + "].px; "
-			"p.y=_nv[" + std::to_string(li) + "].py; "
-			"p.z=_nv[" + std::to_string(li) + "].pz end";
-	}
-
-	this->UpdateLight();
-	this->ResetTime();
-}
-
 bool Scene::InitializeDirectX()
 {
 	if (!this->geometryshaderpoints.Initialize(this->device, this->shadersPath + L"geometryshaderpoints.cso"))
@@ -867,7 +650,7 @@ bool Scene::InitializeDirectX()
 
 	try {
 		HRESULT hr{};
-		{ // RASTERIZER STATES
+		{
 			CD3D11_RASTERIZER_DESC rasterizerDesc(D3D11_DEFAULT);
 			rasterizerDesc.CullMode = D3D11_CULL_BACK;
 			rasterizerDesc.FillMode = D3D11_FILL_SOLID;
@@ -880,8 +663,7 @@ bool Scene::InitializeDirectX()
 			COM_ERROR_IF_FAILED(hr, "Failed to create rasterizer state.");
 		}
 
-
-		{ // DEPTH STENCIL STATES
+		{
 			CD3D11_DEPTH_STENCIL_DESC depthStencilStateDesc(D3D11_DEFAULT);
 			depthStencilStateDesc.DepthFunc = D3D11_COMPARISON_FUNC::D3D11_COMPARISON_LESS_EQUAL;
 			hr = this->device->CreateDepthStencilState(&depthStencilStateDesc, this->dsStateDepth.GetAddressOf());
@@ -896,8 +678,7 @@ bool Scene::InitializeDirectX()
 			hr = this->device->CreateDepthStencilState(&depthStencilStateDesc, this->dsStateDepthNoWrite.GetAddressOf());
 		}
 
-
-		{ // SAMPLER STATE
+		{
 			D3D11_SAMPLER_DESC sampDesc = {};
 			sampDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
 			sampDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
@@ -907,12 +688,10 @@ bool Scene::InitializeDirectX()
 			this->deviceContext->PSSetSamplers(0, 1, this->samplerState.GetAddressOf());
 		}
 
-
 		hr = CreateResources();
 		COM_ERROR_IF_FAILED(hr, "Failed to create resources.");
 
-
-		{ // SHADERS AND CONSTANT BUFFERS
+		{
 			if (!this->vsFSQuad.Initialize(this->device, this->shadersPath + L"vertexshaderFSQuad.cso", nullptr, NULL))
 				return false;
 			if (!this->pixelShaderMain.Initialize(this->device, this->shadersPath + L"pixelshader.cso"))
@@ -923,7 +702,6 @@ bool Scene::InitializeDirectX()
 				return false;
 			if (!this->pixelShaderWriteIDs.Initialize(this->device, this->shadersPath + L"pixelshaderwriteids.cso"))
 				return false;
-
 
 			hr = this->cb_ps_outline.Initialize(this->device, this->deviceContext);
 			COM_ERROR_IF_FAILED(hr, "Failed to create cb ps outline.");
@@ -962,7 +740,6 @@ HRESULT Scene::CreateResources()
 		this->outlinesSRV.Reset();
 		this->sceneSRV.Reset();
 
-
 		CD3D11_TEXTURE2D_DESC maskDesc(
 			DXGI_FORMAT_R8_UNORM,
 			this->width,
@@ -981,7 +758,6 @@ HRESULT Scene::CreateResources()
 		hr = this->device->CreateTexture2D(&maskDesc, nullptr, this->geometryPresenceMaskResolved.GetAddressOf());
 		COM_ERROR_IF_FAILED(hr, "Failed to create texture for mask.");
 
-
 		maskDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
 		maskDesc.BindFlags = D3D11_BIND_RENDER_TARGET;
 		maskDesc.SampleDesc.Count = 8;
@@ -994,7 +770,6 @@ HRESULT Scene::CreateResources()
 		COM_ERROR_IF_FAILED(hr, "Failed to create texture for outlines.");
 		hr = this->device->CreateTexture2D(&maskDesc, nullptr, this->mainRTVTextureResolved.GetAddressOf());
 		COM_ERROR_IF_FAILED(hr, "Failed to create texture for main RTV.");
-
 
 		maskDesc.Format = DXGI_FORMAT_R32_UINT;
 		maskDesc.BindFlags = D3D11_BIND_RENDER_TARGET;
@@ -1009,7 +784,6 @@ HRESULT Scene::CreateResources()
 		hr = this->device->CreateTexture2D(&maskDesc, nullptr, this->primitivesIDsTextureStaging.GetAddressOf());
 		COM_ERROR_IF_FAILED(hr, "Failed to create texture for staging ids RTV.");
 
-
 		hr = this->device->CreateRenderTargetView(this->geometryPresenceMask.Get(), nullptr, this->maskRTV.GetAddressOf());
 		COM_ERROR_IF_FAILED(hr, "Failed to create mask RTV.");
 		hr = this->device->CreateRenderTargetView(this->outlinesTexture.Get(), nullptr, this->outlinesRTV.GetAddressOf());
@@ -1017,7 +791,6 @@ HRESULT Scene::CreateResources()
 		hr = this->device->CreateRenderTargetView(this->primitivesIDsTexture.Get(), nullptr, this->primitivesIDsRTV.GetAddressOf());
 		COM_ERROR_IF_FAILED(hr, "Failed to create ids RTV.");
 		this->UpdateRTVs();
-
 
 		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
 		srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -1090,44 +863,46 @@ void Scene::SetOutlineResources()
 
 void Scene::DrawGrid()
 {
+	this->deviceContext->OMSetRenderTargets(1, this->rtvsMain, this->dsView);
+
+	if (!showGrid && !showAxes) return;
+
 	this->deviceContext->GSSetShader(this->geometryshaderthickness.GetShader(), NULL, 0);
 
 	const float baseGridSize = 128.f;
-	const int linesNum = 40;
-	const float logStep = 2.0f;
+	const int   linesNum     = 40;
+	const float logStep      = 2.0f;
 
-	auto scale = this->camera.GetScale();
+	float camScale = this->camera.GetScale();
 
-	float logScale = std::log(scale) / std::log(logStep);
-	float levelF = std::floor(logScale);
+	float logScale = std::log(camScale) / std::log(logStep);
+	float levelF   = std::floor(logScale);
 	float fraction = logScale - levelF;
 
 	float step0 = baseGridSize * std::pow(logStep, levelF);
 	float step1 = baseGridSize * std::pow(logStep, levelF + 1.f);
 
-	float alpha0 = 1.0f - fraction;
-	float alpha1 = fraction;
+	if (showGrid) {
+		float alpha0 = 1.0f - fraction;
+		float alpha1 = fraction;
+		float extent = linesNum * step1 / 2.f;
 
-	auto drawGrid = [&](float gridSize, float alpha)
-		{
+		auto drawGrid = [&](float gridSize, float alpha) {
 			if (alpha <= 0.01f) return;
-
 			XMFLOAT4 color = { Colors::GRAY.x, Colors::GRAY.y, Colors::GRAY.z, Colors::GRAY.w * alpha };
-
-			for (float x = -20; x <= 20; x += 1)
-			{
+			int lineCount = (int)(extent / gridSize);
+			for (int ix = -lineCount; ix <= lineCount; ix++) {
+				float x = (float)ix * gridSize;
 				std::vector<XMFLOAT3> poses = {
-					XMFLOAT3(x * gridSize,  linesNum * gridSize / 2.f, 0),
-					XMFLOAT3(x * gridSize, -linesNum * gridSize / 2.f, 0)
+					XMFLOAT3(x,  extent, 0),
+					XMFLOAT3(x, -extent, 0)
 				};
 				auto p1 = PrimitiveConstructor::Line(poses, color, 0);
-
 				poses = {
-					XMFLOAT3(linesNum * gridSize / 2.f, x * gridSize, 0),
-					XMFLOAT3(-linesNum * gridSize / 2.f, x * gridSize, 0)
+					XMFLOAT3( extent, x, 0),
+					XMFLOAT3(-extent, x, 0)
 				};
 				auto p2 = PrimitiveConstructor::Line(poses, color, 0);
-
 				p1->Draw(this->camera.GetViewMatrix(), this->camera.GetProjectionMatrix());
 				p2->Draw(this->camera.GetViewMatrix(), this->camera.GetProjectionMatrix());
 				delete p1;
@@ -1135,24 +910,26 @@ void Scene::DrawGrid()
 			}
 		};
 
-	drawGrid(step0, alpha0);
-	drawGrid(step1, alpha1);
+		drawGrid(step0, alpha0);
+		drawGrid(step1, alpha1);
+	}
 
-	float axisLen = step1;
+	if (showAxes) {
+		float axisLen = step1;
 
-	struct AxisLine { XMFLOAT3 from; XMFLOAT3 to; XMFLOAT4 color; };
-	AxisLine axes[] = {
-		{ XMFLOAT3(0, 0, 0), XMFLOAT3(axisLen, 0,       0), Colors::RED   },
-		{ XMFLOAT3(0, 0, 0), XMFLOAT3(0,       axisLen, 0), Colors::GREEN },
-		{ XMFLOAT3(0, 0, 0), XMFLOAT3(0,       0,       axisLen), Colors::BLUE  },
-	};
+		struct AxisLine { XMFLOAT3 from; XMFLOAT3 to; XMFLOAT4 color; };
+		AxisLine axes[] = {
+			{ XMFLOAT3(0, 0, 0), XMFLOAT3(axisLen, 0,       0), Colors::RED   },
+			{ XMFLOAT3(0, 0, 0), XMFLOAT3(0,       axisLen, 0), Colors::GREEN },
+			{ XMFLOAT3(0, 0, 0), XMFLOAT3(0,       0,       axisLen), Colors::BLUE  },
+		};
 
-	for (auto& axis : axes)
-	{
-		std::vector<XMFLOAT3> poses = { axis.from, axis.to };
-		auto line = PrimitiveConstructor::Line(poses, axis.color, 0);
-		line->Draw(this->camera.GetViewMatrix(), this->camera.GetProjectionMatrix());
-		delete line;
+		for (auto& axis : axes) {
+			std::vector<XMFLOAT3> poses = { axis.from, axis.to };
+			auto line = PrimitiveConstructor::Line(poses, axis.color, 0);
+			line->Draw(this->camera.GetViewMatrix(), this->camera.GetProjectionMatrix());
+			delete line;
+		}
 	}
 }
 
@@ -1168,7 +945,6 @@ std::vector<Primitive*>& Scene::GetPrimitivesSorted()
 	std::vector<std::pair<Primitive*, float>> nonSelTransparent;
 	std::vector<std::pair<Primitive*, float>> selTransparent;
 
-	
 	XMVECTOR camPosV = this->camera.GetPositionVector();
 	XMVECTOR camForward = this->camera.GetForwardVector();
 
@@ -1196,7 +972,6 @@ std::vector<Primitive*>& Scene::GetPrimitivesSorted()
 	std::sort(nonSelTransparent.begin(), nonSelTransparent.end(), cmp);
 	std::sort(selTransparent.begin(), selTransparent.end(), cmp);
 
-
 	primitivesOrdered.insert(primitivesOrdered.end(), nonSelOpaque.begin(), nonSelOpaque.end());
 	primitivesOrdered.insert(primitivesOrdered.end(), selOpaque.begin(), selOpaque.end());
 	for (auto& pr : nonSelTransparent) primitivesOrdered.push_back(pr.first);
@@ -1204,7 +979,6 @@ std::vector<Primitive*>& Scene::GetPrimitivesSorted()
 
 	return primitivesOrdered;
 }
-
 
 void Scene::SetOutline(const XMFLOAT4& col, const float outlineScale)
 {
@@ -1282,84 +1056,6 @@ UINT Scene::GetIdByPixel(int px, int py)
 	return id;
 }
 
-
-void Scene::LoadPersistentHomologyScene()
-{
-	for (Primitive* p : this->primitives) delete p;
-	this->primitives.clear();
-	this->orientationTransformer.SetTargetObject(nullptr);
-	this->ClearTrajectories();
-
-	this->sceneType = SceneType::PersistentHomology;
-	this->phState   = PHSceneState{};
-	this->phState.radiusShared = std::make_shared<float>(0.0f);
-	this->phState.GenerateRandom();
-	RegeneratePHCloud();
-	ResetTime();
-}
-
-void Scene::RegeneratePHCloud()
-{
-	// Remove old PH primitives
-	for (UINT id : phState.sphereIds) {
-		for (auto it = primitives.begin(); it != primitives.end(); ++it)
-			if ((*it)->id == id) { delete *it; primitives.erase(it); break; }
-	}
-	for (UINT id : phState.pointIds) {
-		for (auto it = primitives.begin(); it != primitives.end(); ++it)
-			if ((*it)->id == id) { delete *it; primitives.erase(it); break; }
-	}
-	phState.sphereIds.clear();
-	phState.pointIds.clear();
-
-	auto rPtr = phState.radiusShared;
-
-	for (int i = 0; i < (int)phState.cloudPoints.size(); ++i) {
-		XMFLOAT3 pos = phState.cloudPoints[i];
-
-		// Solid point marker
-		this->AddPoint(pos, XMFLOAT4(1.0f, 0.82f, 0.22f, 1.0f));
-		this->primitives.back()->name = "ph_pt_" + std::to_string(i);
-		phState.pointIds.push_back(this->primitives.back()->id);
-
-		// Semi-transparent sphere, scale driven by shared radius
-		this->AddSphere(1.0f, pos, 2, XMFLOAT4(0.28f, 0.62f, 1.0f, 0.20f));
-		this->primitives.back()->name = "ph_sph_" + std::to_string(i);
-		phState.sphereIds.push_back(this->primitives.back()->id);
-		this->primitives.back()->SetUpdater([rPtr](Primitive& p, float t, float dt) {
-			float r = *rPtr;
-			p.SetScale(r < 0.001f ? 0.001f : r);
-		});
-	}
-
-	phState.RecomputeCoverageR();
-	phState.allConnected = false;
-	if (rPtr) *rPtr = 0.0f;
-	this->UpdateLight();
-}
-
-bool Scene::ImportPHCloud(const char* path)
-{
-	std::ifstream f(path);
-	if (!f.is_open()) return false;
-
-	std::vector<XMFLOAT3> pts;
-	std::string line;
-	while (std::getline(f, line)) {
-		if (line.empty() || line[0] == '#') continue;
-		float x, y, z;
-		if (sscanf_s(line.c_str(), "%f,%f,%f", &x, &y, &z) == 3 ||
-		    sscanf_s(line.c_str(), "%f %f %f",  &x, &y, &z) == 3)
-			pts.push_back({ x, y, z });
-	}
-	if (pts.empty()) return false;
-
-	phState.cloudPoints = pts;
-	phState.pointCount  = (int)pts.size();
-	phState.RecomputeCoverageR();
-	return true;
-}
-
 void Scene::UpdateSavedScenes()
 {
 	std::vector<std::string> files;
@@ -1378,8 +1074,6 @@ void Scene::UpdateSavedScenes()
 	} while (FindNextFileA(h_find, &file_data) != 0);
 
 	FindClose(h_find);
-	
+
 	this->savedScenes = files;
 }
-
-

@@ -14,20 +14,20 @@ const std::vector<XMFLOAT3> Yposes = { XMFLOAT3(0.0f, 0.0f, 0.0f), yDir * axisLe
 const std::vector<XMFLOAT3> Zposes = { XMFLOAT3(0.0f, 0.0f, 0.0f), zDir * axisLength };
 
 constexpr UINT auxObjectsIDs[] = {
-		MAXUINT,
-		MAXUINT - 1,
-		MAXUINT - 2,
-		MAXUINT - 3,
-		MAXUINT - 4,
-		MAXUINT - 5,
-		MAXUINT - 6
+	MAXUINT,
+	MAXUINT - 1,
+	MAXUINT - 2,
+	MAXUINT - 3,
+	MAXUINT - 4,
+	MAXUINT - 5,
+	MAXUINT - 6
 };
 
 void OrientationTransformer::Initialize(ID3D11Device* device, ID3D11DeviceContext* deviceContext)
 {
 	this->device = device;
 	this->deviceContext = deviceContext;
-	
+
 	this->xAx = PrimitiveConstructor::Line3d(axisRadius, Xposes, 12, Colors::RED, auxObjectsIDs[0]);
 	this->yAx = PrimitiveConstructor::Line3d(axisRadius, Yposes, 12, Colors::GREEN, auxObjectsIDs[1]);
 	this->zAx = PrimitiveConstructor::Line3d(axisRadius, Zposes, 12, Colors::BLUE, auxObjectsIDs[2]);
@@ -37,7 +37,7 @@ void OrientationTransformer::Initialize(ID3D11Device* device, ID3D11DeviceContex
 	this->yRot = PrimitiveConstructor::Arc3d(axisLength * .75f, axisRadius, 90.f, BaseVectors::ORIGIN, 32, Colors::GREEN, auxObjectsIDs[5]);
 	this->yRot->SetRotationZero({ XM_PIDIV2, 0, 0 });
 	this->zRot = PrimitiveConstructor::Arc3d(axisLength * .75f, axisRadius, 90.f, BaseVectors::ORIGIN, 32, Colors::BLUE, auxObjectsIDs[6]);
-	
+
 	this->auxObjects = std::vector<Primitive*>{
 		this->xAx,
 		this->yAx,
@@ -49,10 +49,15 @@ void OrientationTransformer::Initialize(ID3D11Device* device, ID3D11DeviceContex
 	};
 }
 
-void OrientationTransformer::SetTargetObject(Primitive* obj)
+void OrientationTransformer::SetTargetObjects(const std::vector<Primitive*>& objs)
 {
-	this->targetObject = obj;
+	this->targetObjects = objs;
 	this->Update();
+}
+
+bool OrientationTransformer::HasTargets() const
+{
+	return !this->targetObjects.empty();
 }
 
 std::vector<UINT> OrientationTransformer::GetAuxiliaryObjectsIDs() const
@@ -75,8 +80,8 @@ void OrientationTransformer::UpdateLighting(const float ambient, const float int
 
 void OrientationTransformer::Draw(const XMMATRIX& viewMatrix, const XMMATRIX& projectionMatrix, const float scale)
 {
-	if (!this->targetObject) return;
-	
+	if (targetObjects.empty()) return;
+
 	for (Primitive* obj : this->auxObjects) {
 		obj->SetScale(scale);
 		obj->Draw(viewMatrix, projectionMatrix);
@@ -85,7 +90,7 @@ void OrientationTransformer::Draw(const XMMATRIX& viewMatrix, const XMMATRIX& pr
 
 void OrientationTransformer::DrawID(const XMMATRIX& viewMatrix, const XMMATRIX& projectionMatrix, const float scale, const UINT id)
 {
-	if (!this->targetObject) return;
+	if (targetObjects.empty()) return;
 
 	for (Primitive* obj : this->auxObjects) {
 		if (obj->id == id) {
@@ -111,32 +116,41 @@ void OrientationTransformer::HandleObjPress(UINT id)
 		case auxObjectsIDs[1]: case auxObjectsIDs[5]: activeObjectDir = yDir; break;
 		case auxObjectsIDs[2]: case auxObjectsIDs[6]: activeObjectDir = zDir; break;
 		}
-		XMVECTOR vv = XMLoadFloat3(&activeObjectDir);
-		XMFLOAT4 rpy = this->targetObject->GetRotation();
-		XMMATRIX m = XMMatrixRotationQuaternion(XMLoadFloat4(&rpy));
-		XMStoreFloat3(&this->activeObjectActionAxis, XMVector3Normalize(XMVector3TransformCoord(vv, m)));
+
+		if (targetObjects.size() == 1) {
+			XMVECTOR vv = XMLoadFloat3(&activeObjectDir);
+			XMFLOAT4 rpy = targetObjects[0]->GetRotation();
+			XMMATRIX m = XMMatrixRotationQuaternion(XMLoadFloat4(&rpy));
+			XMStoreFloat3(&this->activeObjectActionAxis, XMVector3Normalize(XMVector3TransformCoord(vv, m)));
+		} else {
+			this->activeObjectActionAxis = activeObjectDir;
+		}
 		return;
 	}
 }
+
 static XMFLOAT2 prevActionPointNdc{};
+
 void OrientationTransformer::HandleObjMove(XMFLOAT2& actionAxisScreen, XMFLOAT2& actionPointNdc, const XMMATRIX& vm, const XMMATRIX& pm, const float cameraScale)
 {
-	if (this->activeObject->id > auxObjectsIDs[3]){
-		XMVECTOR activeObjectActionAxis = XMLoadFloat3(&this->activeObjectActionAxis);
-		XMVECTOR activeObjectActionAxisScreen = XMVector3TransformNormal(activeObjectActionAxis, vm);
+	if (this->activeObject->id > auxObjectsIDs[3]) {
+		XMVECTOR activeAxis = XMLoadFloat3(&this->activeObjectActionAxis);
+		XMVECTOR activeAxisScreen = XMVector3TransformNormal(activeAxis, vm);
 
-		activeObjectActionAxisScreen = XMVectorSetZ(activeObjectActionAxisScreen, 0.0f);
-		XMVECTOR activeObjectActionAxisScreenNorm = XMVector3Normalize(activeObjectActionAxisScreen);
+		activeAxisScreen = XMVectorSetZ(activeAxisScreen, 0.0f);
+		XMVECTOR activeAxisScreenNorm = XMVector3Normalize(activeAxisScreen);
 
 		XMVECTOR actionAxisScreenVec = XMVectorSet(actionAxisScreen.x, actionAxisScreen.y, 0.0f, 0.0f);
 
-		float dot = XMVectorGetX(XMVector3Dot(actionAxisScreenVec, activeObjectActionAxisScreenNorm));
-		float ActiveObjectActionAxisScreenLength = XMVectorGetX(XMVector3Length(activeObjectActionAxisScreen));
-		float invActiveObjectActionAxisScreenLength = ActiveObjectActionAxisScreenLength != 0.0f ? (1.f / ActiveObjectActionAxisScreenLength) : 0.0f;
+		float dot = XMVectorGetX(XMVector3Dot(actionAxisScreenVec, activeAxisScreenNorm));
+		float axisScreenLen = XMVectorGetX(XMVector3Length(activeAxisScreen));
+		float invLen = axisScreenLen != 0.0f ? (1.f / axisScreenLen) : 0.0f;
 
 		XMFLOAT3 offset;
-		XMStoreFloat3(&offset, activeObjectActionAxis * dot * invActiveObjectActionAxisScreenLength * cameraScale * .2625f);
-		this->targetObject->AdjustPosition(offset);
+		XMStoreFloat3(&offset, activeAxis * dot * invLen * cameraScale * .2625f);
+
+		for (Primitive* target : targetObjects)
+			target->AdjustPosition(offset);
 	}
 	else if (this->activeObject->id == auxObjectsIDs[3]) {
 		XMFLOAT3 actionAxisScreen3 = XMFLOAT3(actionAxisScreen.x, actionAxisScreen.y, 0.0f);
@@ -144,7 +158,9 @@ void OrientationTransformer::HandleObjMove(XMFLOAT2& actionAxisScreen, XMFLOAT2&
 		XMVECTOR actionAxisWorldVec = XMVector3TransformNormal(actionAxisScreenVec, XMMatrixInverse(nullptr, vm));
 		XMFLOAT3 offset;
 		XMStoreFloat3(&offset, actionAxisWorldVec * cameraScale * .25f);
-		this->targetObject->AdjustPosition(offset);
+
+		for (Primitive* target : targetObjects)
+			target->AdjustPosition(offset);
 	}
 	else if (this->activeObject->id < auxObjectsIDs[3]) {
 		if (prevActionPointNdc.x == 0.0f && prevActionPointNdc.y == 0.0f) {
@@ -152,7 +168,7 @@ void OrientationTransformer::HandleObjMove(XMFLOAT2& actionAxisScreen, XMFLOAT2&
 			return;
 		}
 
-		XMVECTOR objWorld = XMLoadFloat3(&this->targetObject->GetPosition());
+		XMVECTOR objWorld = XMLoadFloat3(&centroid);
 		XMVECTOR objClip = XMVector3TransformCoord(objWorld, XMMatrixMultiply(vm, pm));
 		XMFLOAT2 objNdc = {
 			XMVectorGetX(objClip),
@@ -188,7 +204,18 @@ void OrientationTransformer::HandleObjMove(XMFLOAT2& actionAxisScreen, XMFLOAT2&
 		XMVECTOR axis3d = XMLoadFloat3(&this->activeObjectActionAxis);
 		if (XMVectorGetX(XMVector3Dot(axis3d, camForward)) > 0.0f) angle = -angle;
 
-		this->targetObject->RotateAroundAxis(axis3d, angle);
+		XMVECTOR center = XMLoadFloat3(&centroid);
+		XMVECTOR rotQuat = XMQuaternionRotationAxis(axis3d, angle);
+
+		for (Primitive* target : targetObjects) {
+			XMVECTOR pos = XMLoadFloat3(&target->GetPosition());
+			XMVECTOR rel = pos - center;
+			XMFLOAT3 newPos;
+			XMStoreFloat3(&newPos, center + XMVector3Rotate(rel, rotQuat));
+			target->SetPosition(newPos);
+			target->RotateAroundAxis(axis3d, angle);
+		}
+
 		prevActionPointNdc = actionPointNdc;
 	}
 
@@ -207,11 +234,22 @@ void OrientationTransformer::HandleObjRelease()
 
 void OrientationTransformer::Update()
 {
-	if (!this->targetObject) return;
+	if (targetObjects.empty()) return;
 
-	for (Primitive* obj : this->auxObjects) {
-		obj->SetPosition(this->targetObject->GetPosition());
-		obj->SetRotation(this->targetObject->GetRotation());
+	XMFLOAT3 sum{};
+	for (Primitive* p : targetObjects) {
+		XMFLOAT3 pos = p->GetPosition();
+		sum.x += pos.x; sum.y += pos.y; sum.z += pos.z;
+	}
+	float n = (float)targetObjects.size();
+	centroid = { sum.x / n, sum.y / n, sum.z / n };
+
+	XMFLOAT4 rot = (targetObjects.size() == 1)
+		? targetObjects[0]->GetRotation()
+		: XMFLOAT4(0, 0, 0, 1);
+
+	for (Primitive* obj : auxObjects) {
+		obj->SetPosition(centroid);
+		obj->SetRotation(rot);
 	}
 }
-

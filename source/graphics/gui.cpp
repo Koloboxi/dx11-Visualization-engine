@@ -1,76 +1,77 @@
 #include "graphics.h"
-#include <fstream>
 
-// ─── helpers ──────────────────────────────────────────────────────────────────
+#include "gui/LayoutState.h"
+#include "gui/GuiIcons.h"
+#include "gui/TopStripWindow.h"
+#include "gui/TimeControlWindow.h"
+#include "gui/PrimitivesWindow.h"
 
-static Primitive* FindSelected(const std::vector<Primitive*>& prims) {
-    for (Primitive* p : prims)
-        if (p->selected) return p;
-    return nullptr;
-}
+static LayoutState s_layout;
 
-// ─── "Add primitive" popup state ──────────────────────────────────────────────
+static const char* s_activeSplitter = nullptr;
 
-struct AddPrimState {
-    int type = 0;  // 0=Point 1=Line 2=Polygon 3=Sphere 4=Line3d 5=Arc3d 6=STL 7=Arrow3d
+static void DrawSplitters(LayoutState& lay, float wW, float wH, bool& blockMousePick) {
+    float conY  = wH - lay.consoleH;
+    float panH  = conY - LayoutState::STRIP_H;
+    ImVec2 mp   = ImGui::GetMousePos();
+    bool anyAct = ImGui::IsAnyItemActive();
 
-    // shared
-    float color[4] = { 0.6f, 0.6f, 0.9f, 1.0f };
+    auto* fdl = ImGui::GetForegroundDrawList();
+    ImU32 sc  = IM_COL32(55, 62, 82, 200);
 
-    // Point / Line / Polygon – up to 16 points
-    float pts[16][3] = {};
-    int   ptCount = 1;
+    fdl->AddLine({lay.panelW, LayoutState::STRIP_H}, {lay.panelW, wH},    sc, 1.f);
+    fdl->AddLine({lay.colW,   LayoutState::STRIP_H}, {lay.colW,   conY},   sc, 1.f);
+    fdl->AddLine({0,          conY},                  {lay.panelW, conY},   sc, 1.f);
+    fdl->AddLine({0,    LayoutState::STRIP_H + lay.timeH}, {lay.colW,  LayoutState::STRIP_H + lay.timeH}, sc, 1.f);
+    fdl->AddLine({lay.colW, LayoutState::STRIP_H + lay.luaH}, {lay.panelW, LayoutState::STRIP_H + lay.luaH}, sc, 1.f);
 
-    // Sphere
-    float sRadius = 100.0f;
-    int   sSubdiv = 2;
-    float sPos[3] = {};
+    float tol = 5.f;
 
-    // Line3d / Arc3d
-    float l3Radius   = 5.0f;
-    int   l3Subdiv   = 8;
-
-    // Arc3d
-    float arcRadius  = 75.0f;
-    float arcAngle   = 90.0f;
-    float arcCenter[3] = {};
-
-    // STL
-    char  stlPath[512] = {};
-
-    // Arrow3d
-    float arrShaftR  = 3.0f;
-    float arrHeadR   = 8.0f;
-    float arrHeadLen = 20.0f;
-    float arrFrom[3] = {};
-    float arrTo[3]   = { 0, 100, 0 };
-    int   arrSides   = 8;
-};
-
-static AddPrimState s_add;
-
-static void AddPointsEditor(int& count, float pts[][3], int maxPts,
-                             const char* btnLabel = "+ Point")
-{
-    for (int i = 0; i < count; ++i) {
-        std::string lbl = "##pt" + std::to_string(i);
-        ImGui::PushItemWidth(180);
-        ImGui::InputFloat3(lbl.c_str(), pts[i]);
-        ImGui::PopItemWidth();
-        if (count > 1) {
-            ImGui::SameLine();
-            if (ImGui::SmallButton(("x##" + std::to_string(i)).c_str())) {
-                for (int j = i; j < count - 1; ++j)
-                    memcpy(pts[j], pts[j + 1], sizeof(float) * 3);
-                --count; --i;
-            }
+    auto vCheck = [&](const char* id, float* val, float y0, float y1, float vmin, float vmax) {
+        bool over = (s_activeSplitter == id) || (!anyAct && s_activeSplitter == nullptr &&
+                    mp.x >= *val-tol && mp.x <= *val+tol && mp.y >= y0 && mp.y <= y1);
+        if (over || s_activeSplitter == id) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+        if (over && ImGui::IsMouseClicked(0)) s_activeSplitter = id;
+        if (s_activeSplitter == id) {
+            blockMousePick = true;
+            if (ImGui::IsMouseDown(0)) {
+                *val += ImGui::GetIO().MouseDelta.x;
+                if (*val < vmin) *val = vmin;
+                if (*val > vmax) *val = vmax;
+            } else s_activeSplitter = nullptr;
         }
-    }
-    if (count < maxPts && ImGui::SmallButton(btnLabel))
-        ++count;
-}
+    };
 
-// ─── GUI main ─────────────────────────────────────────────────────────────────
+    auto hCheck = [&](const char* id, float* val, float x0, float x1, float vmin, float vmax) {
+        bool over = (s_activeSplitter == id) || (!anyAct && s_activeSplitter == nullptr &&
+                    mp.y >= *val-tol && mp.y <= *val+tol && mp.x >= x0 && mp.x <= x1);
+        if (over || s_activeSplitter == id) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+        if (over && ImGui::IsMouseClicked(0)) s_activeSplitter = id;
+        if (s_activeSplitter == id) {
+            blockMousePick = true;
+            if (ImGui::IsMouseDown(0)) {
+                *val += ImGui::GetIO().MouseDelta.y;
+                if (*val < vmin) *val = vmin;
+                if (*val > vmax) *val = vmax;
+            } else s_activeSplitter = nullptr;
+        }
+    };
+
+    vCheck("##sp_panel", &lay.panelW, LayoutState::STRIP_H, wH,  200.f, wW - 200.f);
+    vCheck("##sp_col",   &lay.colW,   LayoutState::STRIP_H, conY, 80.f,  lay.panelW - 80.f);
+
+    float mConY = conY;
+    hCheck("##sp_con", &mConY, 0.f, lay.panelW, LayoutState::STRIP_H + 100.f, wH - 60.f);
+    lay.consoleH = wH - mConY;
+
+    float timeAbsY = LayoutState::STRIP_H + lay.timeH;
+    hCheck("##sp_time", &timeAbsY, 0.f, lay.colW, LayoutState::STRIP_H + 60.f, conY - 60.f);
+    lay.timeH = timeAbsY - LayoutState::STRIP_H;
+
+    float luaAbsY = LayoutState::STRIP_H + lay.luaH;
+    hCheck("##sp_lua", &luaAbsY, lay.colW, lay.panelW, LayoutState::STRIP_H + 60.f, conY - 60.f);
+    lay.luaH = luaAbsY - LayoutState::STRIP_H;
+}
 
 void Graphics::Gui()
 {
@@ -78,7 +79,6 @@ void Graphics::Gui()
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
 
-    // FPS counter
     static int fpsCounter = 0;
     static std::string fpsStr;
     ++fpsCounter;
@@ -89,496 +89,115 @@ void Graphics::Gui()
     }
     ImGui::GetBackgroundDrawList()->AddText(ImVec2(0, 0), ImColor(0, 255, 0), fpsStr.c_str());
 
-    bool blockMousePick = false;
+    float wW = (float)windowWidth;
+    float wH = (float)windowHeight;
+    s_layout.Validate(wW, wH);
 
-    // ── Parameters panel ──────────────────────────────────────────────────────
-    ImGui::Begin("Parameters");
-    if (ImGui::BeginTabBar("Panels")) {
+    float panelH = wH - LayoutState::STRIP_H - s_layout.consoleH;
+    float conY   = wH - s_layout.consoleH;
 
-        // ── View tab ──────────────────────────────────────────────────────────
-        if (ImGui::BeginTabItem("View")) {
-            if (ImGui::Button("Reset Pos"))
-                this->scene.camera.SetPosition(BaseVectors::ORIGIN);
-            ImGui::SameLine();
-            if (ImGui::Button("Reset Scale"))
-                this->scene.camera.SetScale(1);
+    bool blockMousePick  = false;
+    bool blockMouseWheel = false;
 
-            ImGui::Separator();
-            ImGui::Checkbox("Fill",            &this->scene.rsSolid);
-            ImGui::Checkbox("Wireframe",       &this->scene.rsWireframe);
-            ImGui::Checkbox("Outline through", &this->scene.outlineThroughObjets);
-            ImGui::EndTabItem();
-        }
+    ImGuiWindowFlags fixedFlags =
+        ImGuiWindowFlags_NoMove        | ImGuiWindowFlags_NoResize    |
+        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus |
+        ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoCollapse;
 
-        // ── Scenes tab ────────────────────────────────────────────────────────
-        if (ImGui::BeginTabItem("Scenes")) {
-            static std::string name;
-            if (ImGui::Button("Save"))
-                this->scene.SaveScene(name + ".json");
-            ImGui::SameLine();
-            if (ImGui::Button("Clear")) {
-                for (Primitive* p : this->scene.primitives)
-                    this->luaEditor.OnPrimitiveRemoved(p);
-                this->scene.ClearScene();
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Newton demo")) {
-                for (Primitive* p : this->scene.primitives)
-                    this->luaEditor.OnPrimitiveRemoved(p);
-                this->scene.LoadNewtonDemo();
-                this->luaEditor.globals = { { "G", 1000.f } };
-            }
-            if (ImGui::Button("PH Demo")) {
-                for (Primitive* p : this->scene.primitives)
-                    this->luaEditor.OnPrimitiveRemoved(p);
-                this->scene.LoadPersistentHomologyScene();
-            }
-            ImGui::InputText("Scene name", &name);
+    // 1. Time Control
+    TimeControlWindow::Draw(s_layout, wH, scene, blockMousePick, fixedFlags);
 
-            const auto& saved = this->scene.GetSavedScenes();
-            if (!saved.empty()) {
-                static int selIdx = 0;
-                if (selIdx >= (int)saved.size()) selIdx = 0;
-                if (ImGui::BeginCombo("Saved scenes", saved[selIdx].c_str())) {
-                    for (int i = 0; i < (int)saved.size(); ++i) {
-                        bool isSel = (selIdx == i);
-                        if (ImGui::Selectable(saved[i].c_str(), isSel)) {
-                            selIdx = i;
-                            for (Primitive* p : this->scene.primitives)
-                                this->luaEditor.OnPrimitiveRemoved(p);
-                            this->scene.LoadScene(saved[i]);
-                            // Re-apply Lua scripts that were stored in primitives
-                            this->luaEditor.ReApplyAll(this->scene.primitives);
-                        }
-                        if (isSel) ImGui::SetItemDefaultFocus();
-                    }
-                    ImGui::EndCombo();
-                }
-            }
-            else {
-                ImGui::TextDisabled("No saved scenes");
-            }
-            ImGui::EndTabItem();
-        }
+    // 2. Primitives + Scenes
+    PrimitivesWindow::Draw(s_layout, wH, scene, luaEditor, blockMousePick, blockMouseWheel, fixedFlags);
 
-        // ── Light tab ─────────────────────────────────────────────────────────
-        if (ImGui::BeginTabItem("Light")) {
-            bool changed = false;
-            changed |= ImGui::DragFloat("Ambient",   &this->scene.ambient,   0.05f, 0.0f, 1.0f,  "%.2f");
-            changed |= ImGui::DragFloat("Intensity", &this->scene.intensity, 0.05f, 0.0f, 1.0f,  "%.2f");
-            changed |= ImGui::DragFloat("Shininess", &this->scene.shininess, 0.1f,  0.0f, 100.0f,"%.1f");
-            changed |= ImGui::Checkbox("Smooth shade", &this->scene.smoothShade);
-            if (changed) 
-                this->scene.UpdateLight();
-            ImGui::EndTabItem();
-        }
-
-        ImGui::EndTabBar();
-    }
-    if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem))
-        blockMousePick = true;
-    ImGui::End();
-
-    // ── Primitives panel ──────────────────────────────────────────────────────
-    ImGui::Begin("Primitives");
-
-    // Add (+) and Remove (-) buttons
-    if (ImGui::Button("+")) ImGui::OpenPopup("AddPrimitive");
-    ImGui::SameLine();
-    if (ImGui::Button("-")) {
-        Primitive* sel = FindSelected(this->scene.primitives);
-        if (sel) {
-            this->luaEditor.OnPrimitiveRemoved(sel);
-            this->scene.RemovePrimitive(sel);
-        }
-    }
-    ImGui::Separator();
-
-    // ── "Add Primitive" popup ─────────────────────────────────────────────
-    ImGui::SetNextWindowSize(ImVec2(380, 0), ImGuiCond_Always);
-    if (ImGui::BeginPopupModal("AddPrimitive", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        static const char* types[] = { "Point","Line","Polygon","Sphere","Line3d","Arc3d","STL","Arrow3d" };
-        ImGui::Combo("Type", &s_add.type, types, IM_ARRAYSIZE(types));
-        ImGui::Separator();
-
-        switch (s_add.type) {
-        case 0: // Point
-            ImGui::InputFloat3("Position", s_add.pts[0]);
-            break;
-        case 1: // Line
-            AddPointsEditor(s_add.ptCount, s_add.pts, 16);
-            break;
-        case 2: // Polygon
-            AddPointsEditor(s_add.ptCount, s_add.pts, 16);
-            break;
-        case 3: // Sphere
-            ImGui::DragFloat("Radius",       &s_add.sRadius, 1.0f, 0.1f, 5000.0f);
-            ImGui::InputFloat3("Centre",     s_add.sPos);
-            ImGui::SliderInt("Subdivisions", &s_add.sSubdiv, 0, 5);
-            break;
-        case 4: // Line3d
-            ImGui::DragFloat("Tube radius",  &s_add.l3Radius, 0.1f, 0.1f, 500.0f);
-            ImGui::SliderInt("Sides",        &s_add.l3Subdiv, 3, 24);
-            AddPointsEditor(s_add.ptCount, s_add.pts, 16);
-            break;
-        case 5: // Arc3d
-            ImGui::DragFloat("Arc radius",   &s_add.arcRadius, 1.0f, 0.1f, 5000.0f);
-            ImGui::DragFloat("Tube radius",  &s_add.l3Radius,  0.1f, 0.1f, 500.0f);
-            ImGui::DragFloat("Angle (deg)",  &s_add.arcAngle,  1.0f, 1.0f, 360.0f);
-            ImGui::InputFloat3("Centre",     s_add.arcCenter);
-            ImGui::SliderInt("Subdivisions", &s_add.l3Subdiv, 3, 64);
-            break;
-        case 6: // STL
-            ImGui::InputText("File path", s_add.stlPath, sizeof(s_add.stlPath));
-            break;
-        case 7: // Arrow3d
-            ImGui::DragFloat("Shaft radius",  &s_add.arrShaftR,  0.1f, 0.1f, 500.f);
-            ImGui::DragFloat("Head radius",   &s_add.arrHeadR,   0.1f, 0.1f, 500.f);
-            ImGui::DragFloat("Head length",   &s_add.arrHeadLen, 0.5f, 0.5f, 1000.f);
-            ImGui::SliderInt("Sides",         &s_add.arrSides, 3, 24);
-            ImGui::InputFloat3("From",        s_add.arrFrom);
-            ImGui::InputFloat3("To",          s_add.arrTo);
-            break;
-        }
-
-        ImGui::Separator();
-        ImGui::ColorEdit4("Color", s_add.color, ImGuiColorEditFlags_AlphaBar);
-        ImGui::Separator();
-
-        XMFLOAT4 col(s_add.color[0], s_add.color[1], s_add.color[2], s_add.color[3]);
-
-        if (ImGui::Button("Add", ImVec2(80, 0))) {
-            switch (s_add.type) {
-            case 0:
-                this->scene.AddPoint({ s_add.pts[0][0], s_add.pts[0][1], s_add.pts[0][2] }, col);
-                break;
-            case 1: {
-                std::vector<XMFLOAT3> poses(s_add.ptCount);
-                for (int i = 0; i < s_add.ptCount; ++i)
-                    poses[i] = { s_add.pts[i][0], s_add.pts[i][1], s_add.pts[i][2] };
-                this->scene.AddLine(poses, col);
-                break;
-            }
-            case 2: {
-                std::vector<XMFLOAT3> poses(s_add.ptCount);
-                for (int i = 0; i < s_add.ptCount; ++i)
-                    poses[i] = { s_add.pts[i][0], s_add.pts[i][1], s_add.pts[i][2] };
-                this->scene.AddPolygon(poses, col);
-                break;
-            }
-            case 3:
-                this->scene.AddSphere(
-                    s_add.sRadius,
-                    { s_add.sPos[0], s_add.sPos[1], s_add.sPos[2] },
-                    s_add.sSubdiv, col);
-                break;
-            case 4: {
-                std::vector<XMFLOAT3> poses(s_add.ptCount);
-                for (int i = 0; i < s_add.ptCount; ++i)
-                    poses[i] = { s_add.pts[i][0], s_add.pts[i][1], s_add.pts[i][2] };
-                this->scene.AddLine3d(s_add.l3Radius, poses, s_add.l3Subdiv, col);
-                break;
-            }
-            case 5:
-                this->scene.AddArc3d(
-                    s_add.arcRadius, s_add.l3Radius, s_add.arcAngle,
-                    { s_add.arcCenter[0], s_add.arcCenter[1], s_add.arcCenter[2] },
-                    s_add.l3Subdiv, col);
-                break;
-            case 6:
-                this->scene.AddFromSTL(s_add.stlPath, col);
-                break;
-            case 7:
-                this->scene.AddArrow3d(
-                    s_add.arrShaftR, s_add.arrHeadR, s_add.arrHeadLen,
-                    { s_add.arrFrom[0], s_add.arrFrom[1], s_add.arrFrom[2] },
-                    { s_add.arrTo[0],   s_add.arrTo[1],   s_add.arrTo[2]   },
-                    s_add.arrSides, col);
-                break;
-            }
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel", ImVec2(80, 0)))
-            ImGui::CloseCurrentPopup();
-
-        ImGui::EndPopup();
-    }
-
-    // ── Primitive list ────────────────────────────────────────────────────
-    if (ImGui::BeginChild("PrimList", ImVec2(0, 0), false)) {
-        for (UINT i = 0; i < this->scene.primitives.size(); ++i) {
-            Primitive* prim = this->scene.primitives[i];
-            UCHAR dim = prim->GetDimension();
-            const char* dimSuffix = (dim == 0) ? "p" : (dim == 1 ? "l" : "t");
-
-            std::string label;
-            if (!prim->name.empty())
-                label = prim->name;
-            else
-                label = std::to_string(i) + dimSuffix;
-
-            if (prim->HasUpdater())
-                label += " *";
-
-            if (ImGui::Selectable(label.c_str(), prim->selected))
-                this->scene.HandleSelection(prim);
-
-        }
-    }
-    ImGui::EndChild();
-
-    if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem))
-        blockMousePick = true;
-    ImGui::End();
-
-    // ── Time Control window ───────────────────────────────────────────────
+    // 3. Lua Globals
     {
-        ImGui::SetNextWindowSize(ImVec2(300, 200), ImGuiCond_FirstUseEver);
-        ImGui::Begin("Time Control");
-        ImGui::Text("t = %.3f", this->scene.currentTime);
-        if (this->scene.timePaused) {
-            if (ImGui::Button("Play "))  this->scene.timePaused = false;
-        } else {
-            if (ImGui::Button("Pause")) this->scene.timePaused = true;
+        float luaH = s_layout.luaH > 0.f ? s_layout.luaH : panelH * .33f;
+        ImGui::SetNextWindowPos({s_layout.colW, LayoutState::STRIP_H}, ImGuiCond_Always);
+        ImGui::SetNextWindowSize({s_layout.panelW - s_layout.colW, luaH}, ImGuiCond_Always);
+        bool global_changed = false;
+        if (luaEditor.DrawGlobals(&scene.sceneSliders, &scene.primitives, scene.currentTime,
+                                  &global_changed, &blockMouseWheel, fixedFlags))
+            blockMousePick = true;
+        if (global_changed) luaEditor.ReApplyAll(scene.primitives);
+    }
+
+    // 4. Scene windows area (right column bottom)
+    {
+        float luaH  = s_layout.luaH > 0.f ? s_layout.luaH : panelH * .33f;
+        float swY   = LayoutState::STRIP_H + luaH;
+        float swH   = panelH - luaH;
+        float swW   = s_layout.panelW - s_layout.colW;
+        ImGui::SetNextWindowPos({s_layout.colW, swY}, ImGuiCond_Always);
+        ImGui::SetNextWindowSize({swW, swH}, ImGuiCond_Always);
+        ImGui::Begin("##scenearea", nullptr, fixedFlags | ImGuiWindowFlags_NoTitleBar);
+        for (SceneWindow& w : scene.sceneWindows) {
+            if (!w.open || !w.drawContent) continue;
+            ImGui::PushID(w.id.c_str());
+            if (ImGui::CollapsingHeader(w.title.c_str(), ImGuiTreeNodeFlags_DefaultOpen))
+                w.drawContent(w);
+            ImGui::PopID();
         }
-        ImGui::SameLine();
-        if (ImGui::Button("Reset")) this->scene.ResetTime();
-        ImGui::DragFloat("Speed",    &this->scene.timeSpeed, 0.01f, 0.0f, 20.0f, "%.2f");
-        ImGui::DragFloat("Max time", &this->scene.timeMax,   0.5f,  0.0f, 10000.f,
-            this->scene.timeMax < 0.01f ? "unlimited" : "%.1f s");
-        ImGui::Checkbox("Loop", &this->scene.timeLoop);
-
-        ImGui::Separator();
-        ImGui::Text("Trajectories");
-        ImGui::Checkbox("Show##traj", &this->scene.showTrajectories);
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Clear##traj")) this->scene.ClearTrajectories();
-        ImGui::SetNextItemWidth(140);
-        ImGui::DragInt("Max len##traj", &this->scene.trajectoryMaxLen, 10, 0, 1000000,
-            this->scene.trajectoryMaxLen <= 0 ? "unlimited" : "%d pts");
-        if (this->scene.trajectoryMaxLen < 0) this->scene.trajectoryMaxLen = 0;
-
         if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem))
             blockMousePick = true;
         ImGui::End();
     }
 
-    // ── Lua updater editor window (shows when a primitive is selected) ─────
-    Primitive* sel = FindSelected(this->scene.primitives);
-    if (sel) {
-        bool luaBlock = this->luaEditor.Draw(sel, this->scene.primitives);
-        if (luaBlock) blockMousePick = true;
-    }
-
-    // ── Pick-vector handler ────────────────────────────────────────────────
-    if (this->luaEditor.awaitingVectorPick)
-        this->scene.pickModeActive = true;
-
-    if (this->luaEditor.awaitingVectorPick && this->scene.pickedPrimId != 0) {
-        Primitive* from = sel;
-        UINT to_id = this->scene.pickedPrimId;
-
-        // Find 1-based vector index (what Lua scene[] uses), NOT the primitive .id field
-        int toIdx = -1;
-        std::string tname;
-        for (int k = 0; k < (int)this->scene.primitives.size(); k++) {
-            if (this->scene.primitives[k]->id == to_id) {
-                toIdx = k + 1;  // 1-based Lua index
-                tname = this->scene.primitives[k]->name.empty()
-                    ? ("p" + std::to_string(to_id))
-                    : this->scene.primitives[k]->name;
-                break;
-            }
-        }
-
-        if (from && toIdx > 0) {
-            std::string idx = std::to_string(toIdx);
-            std::string snip =
-                "local vec_to_" + tname +
-                " = {x=scene[" + idx + "].x-p.x" +
-                ", y=scene[" + idx + "].y-p.y" +
-                ", z=scene[" + idx + "].z-p.z}\n";
-            from->luaScript.insert(0, snip);
-        }
-        this->luaEditor.awaitingVectorPick = false;
-        this->scene.pickedPrimId = 0;
-    }
-
-    // ── Lua Globals window ────────────────────────────────────────────────
+    // 5. Console (always visible at bottom of panel)
     {
-        float* phR      = nullptr;
-        float  phMax    = 500.f;
-        bool   phPaused = true;
-        if (this->scene.sceneType == SceneType::PersistentHomology && this->scene.phState.radiusShared) {
-            phR      = &this->scene.phState.currentRadius;
-            phMax    = this->scene.phState.coverageR * 3.f + 60.f;
-            phPaused = this->scene.timePaused;
-        }
-        if (this->luaEditor.DrawGlobals(phR, phMax, phPaused)) blockMousePick = true;
+        std::vector<Primitive*> selPrims;
+        for (Primitive* p : scene.primitives) if (p->selected) selPrims.push_back(p);
+
+        ImGui::SetNextWindowPos({0.f, conY}, ImGuiCond_Always);
+        ImGui::SetNextWindowSize({s_layout.panelW, s_layout.consoleH}, ImGuiCond_Always);
+        if (luaEditor.DrawConsole(selPrims, scene.primitives, scene, &blockMouseWheel, nullptr, fixedFlags))
+            blockMousePick = true;
     }
 
-    // ── PH scene windows ──────────────────────────────────────────────────
-    if (this->scene.sceneType == SceneType::PersistentHomology) {
+    // Pick mode vector insertion
+    if (luaEditor.awaitingVectorPick)
+        scene.pickModeActive = true;
 
-        // ── PH Generator window ───────────────────────────────────────────
-        if (this->scene.phState.windowsNeedRestore) {
-            ImGui::SetNextWindowPos(
-                ImVec2(scene.phState.genWindowPos[0], scene.phState.genWindowPos[1]),
-                ImGuiCond_Always);
-            ImGui::SetNextWindowSize(
-                ImVec2(scene.phState.genWindowSize[0], scene.phState.genWindowSize[1]),
-                ImGuiCond_Always);
-        } else {
-            ImGui::SetNextWindowPos(
-                ImVec2(scene.phState.genWindowPos[0], scene.phState.genWindowPos[1]),
-                ImGuiCond_FirstUseEver);
-            ImGui::SetNextWindowSize(
-                ImVec2(scene.phState.genWindowSize[0], scene.phState.genWindowSize[1]),
-                ImGuiCond_FirstUseEver);
-        }
-
-        if (ImGui::Begin("PH Generator", &scene.phState.genWindowOpen)) {
-            scene.phState.genWindowPos[0]  = ImGui::GetWindowPos().x;
-            scene.phState.genWindowPos[1]  = ImGui::GetWindowPos().y;
-            scene.phState.genWindowSize[0] = ImGui::GetWindowSize().x;
-            scene.phState.genWindowSize[1] = ImGui::GetWindowSize().y;
-
-            ImGui::SetNextItemWidth(55);
-            ImGui::DragInt("##phN", &scene.phState.pointCount, 1, 3, 300);
-            ImGui::SameLine(); ImGui::TextUnformatted("pts");
-            ImGui::SameLine();
-            ImGui::SetNextItemWidth(75);
-            ImGui::DragFloat("##phB", &scene.phState.bounds, 2.f, 10.f, 5000.f, "b=%.0f");
-
-            static const char* distribNames[] = { "Uniform", "Gaussian", "Sphere surf" };
-            ImGui::SetNextItemWidth(110);
-            ImGui::Combo("Distrib##ph", &scene.phState.distribType, distribNames, 3);
-            if (scene.phState.distribType == 1) {
-                ImGui::SameLine(); ImGui::SetNextItemWidth(65);
-                ImGui::DragFloat("σ##phG", &scene.phState.gaussSigma, 1.f, 1.f, 3000.f, "%.0f");
-            }
-            if (scene.phState.distribType == 2) {
-                ImGui::SameLine(); ImGui::SetNextItemWidth(65);
-                ImGui::DragFloat("R##phS", &scene.phState.sphereR, 1.f, 10.f, 3000.f, "%.0f");
-            }
-
-            if (ImGui::Button("Generate Random##ph")) {
-                scene.phState.GenerateRandom();
-                scene.RegeneratePHCloud();
-                scene.ResetTime();
-            }
-
-            ImGui::Separator();
-            ImGui::TextUnformatted("Import cloud (x,y,z per line):");
-            static char importPath[512] = {};
-            ImGui::SetNextItemWidth(160);
-            ImGui::InputText("##phpath", importPath, sizeof(importPath));
-            ImGui::SameLine();
-            if (ImGui::Button("Import##ph")) {
-                if (scene.ImportPHCloud(importPath)) {
-                    scene.RegeneratePHCloud();
-                    scene.ResetTime();
+    if (luaEditor.awaitingVectorPick && scene.pickedPrimId != 0) {
+        Primitive* from = luaEditor.activeEditorPrim;
+        UINT to_id = scene.pickedPrimId;
+        if (from) {
+            int toIdx = -1; std::string tname;
+            for (int k = 0; k < (int)scene.primitives.size(); k++) {
+                if (scene.primitives[k]->id == to_id) {
+                    toIdx = k + 1;
+                    tname = scene.primitives[k]->name.empty()
+                        ? ("p" + std::to_string(to_id)) : scene.primitives[k]->name;
+                    break;
                 }
             }
-
-            ImGui::Separator();
-            ImGui::SetNextItemWidth(100);
-            ImGui::DragFloat("Radius speed##ph", &scene.phState.radiusSpeed,
-                0.5f, 0.1f, 2000.f, "%.1f u/s");
-            ImGui::Text("Coverage r: %.2f", scene.phState.coverageR);
-
-            if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem))
-                blockMousePick = true;
-        }
-        ImGui::End();
-
-        // ── PH Topology window ─────────────────────────────────────────────
-        if (this->scene.phState.windowsNeedRestore) {
-            ImGui::SetNextWindowPos(
-                ImVec2(scene.phState.topoWindowPos[0], scene.phState.topoWindowPos[1]),
-                ImGuiCond_Always);
-            ImGui::SetNextWindowSize(
-                ImVec2(scene.phState.topoWindowSize[0], scene.phState.topoWindowSize[1]),
-                ImGuiCond_Always);
-        } else {
-            ImGui::SetNextWindowPos(
-                ImVec2(scene.phState.topoWindowPos[0], scene.phState.topoWindowPos[1]),
-                ImGuiCond_FirstUseEver);
-            ImGui::SetNextWindowSize(
-                ImVec2(scene.phState.topoWindowSize[0], scene.phState.topoWindowSize[1]),
-                ImGuiCond_FirstUseEver);
-        }
-
-        if (ImGui::Begin("PH Topology", &scene.phState.topoWindowOpen)) {
-            scene.phState.topoWindowPos[0]  = ImGui::GetWindowPos().x;
-            scene.phState.topoWindowPos[1]  = ImGui::GetWindowPos().y;
-            scene.phState.topoWindowSize[0] = ImGui::GetWindowSize().x;
-            scene.phState.topoWindowSize[1] = ImGui::GetWindowSize().y;
-
-            int N = (int)scene.phState.cloudPoints.size();
-            ImGui::Text("Points: %d     r = %.2f", N, scene.phState.currentRadius);
-            ImGui::Separator();
-            ImGui::Text("Beta-0  (components): %d", scene.phState.beta0);
-            ImGui::Text("Beta-1  (1-cycles):   %d", scene.phState.beta1);
-            ImGui::Separator();
-            ImGui::Text("Edges:     %d", scene.phState.numEdges);
-            ImGui::Text("Triangles: %d", scene.phState.numTriangles);
-            ImGui::Separator();
-
-            float covR = scene.phState.coverageR;
-            ImGui::Text("Coverage r:  %.2f", covR);
-
-            if (covR > 0.001f) {
-                float progress = scene.phState.currentRadius / covR;
-                if (progress > 1.f) progress = 1.f;
-                char buf[32];
-                snprintf(buf, sizeof(buf), "%.1f%%", progress * 100.f);
-                ImGui::ProgressBar(progress, ImVec2(-1.f, 0.f), buf);
+            if (toIdx > 0) {
+                std::string idx  = std::to_string(toIdx);
+                std::string snip = "local vec_to_" + tname +
+                    " = {x=scene[" + idx + "].x-p.x" +
+                    ", y=scene[" + idx + "].y-p.y" +
+                    ", z=scene[" + idx + "].z-p.z}\n";
+                from->luaScript.insert(0, snip);
             }
-
-            ImGui::Separator();
-            if (scene.phState.allConnected) {
-                ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.4f, 1.0f),
-                    "Connected! (beta0=1)");
-            } else if (!scene.timePaused) {
-                ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "Animating...");
-            } else {
-                ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Paused");
-            }
-
-            if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem))
-                blockMousePick = true;
         }
-        ImGui::End();
-
-        // ── Sync radius to spheres when paused (e.g. slider drag) ─────────
-        if (scene.timePaused) {
-            float r = scene.phState.currentRadius;
-            if (scene.phState.radiusShared) *scene.phState.radiusShared = r;
-            // Sync currentTime so playback resumes smoothly from slider position
-            if (scene.phState.radiusSpeed > 0.f)
-                scene.currentTime = r / scene.phState.radiusSpeed;
-            // Update sphere scales directly
-            float scale = r < 0.001f ? 0.001f : r;
-            for (UINT id : scene.phState.sphereIds)
-                for (Primitive* p : scene.primitives)
-                    if (p->id == id) { p->SetScale(scale); break; }
-            scene.phState.ComputeTopology(r);
-        }
-
-        if (scene.phState.windowsNeedRestore)
-            scene.phState.windowsNeedRestore = false;
+        luaEditor.awaitingVectorPick = false;
+        scene.pickedPrimId = 0;
     }
 
-    // ── Navigation cube (rendered over the 3D viewport) ───────────────────
+    // 6. Top strip (drawn late to sit above panel content)
+    TopStripWindow::Draw(wW, scene, blockMousePick);
+
+    // 7. Splitter overlay (drawn last so it can override cursor)
+    DrawSplitters(s_layout, wW, wH, blockMousePick);
+
+    // 8. NavCube
     bool navCubeHover = NavCube::Draw(
-        ImVec2((float)this->windowWidth, (float)this->windowHeight),
-        this->scene.camera
-    );
+        ImVec2(wW, wH), scene.camera,
+        LayoutState::STRIP_H, scene.rsSolid, scene.rsWireframe);
     if (navCubeHover) blockMousePick = true;
 
-    this->scene.blockMousePick = blockMousePick;
+    scene.blockMousePick  = blockMousePick;
+    scene.blockMouseWheel = blockMouseWheel;
 
     ImGui::Render();
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());

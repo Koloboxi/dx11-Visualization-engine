@@ -1,16 +1,21 @@
 #include "Camera.h"
+#include <algorithm>
+
+static constexpr float SCALE_MIN = 0.0001f;
+static constexpr float SCALE_MAX = 100000.f;
 
 Camera::Camera() {
 	this->pos = XMFLOAT3(0.0f, 0.0f, 0.0f);
 	this->posVector = XMLoadFloat3(&this->pos);
 	UpdateViewMatrix();
 }
+
 void Camera::SetProjectionValues(float viewWidth, float viewHeight, float nearZ, float farZ) {
 	this->baseViewWidth = viewWidth;
 	this->baseViewHeight = viewHeight;
 	this->nearZ = nearZ;
 	this->farZ = farZ;
-	this->projectionMatrix = XMMatrixOrthographicRH(this->baseViewWidth, this->baseViewHeight, this->nearZ, this->farZ);
+	this->projectionMatrix = XMMatrixOrthographicRH(this->baseViewWidth * this->scale, this->baseViewHeight * this->scale, this->nearZ, this->farZ);
 }
 
 const XMVECTOR& Camera::GetForwardVector()
@@ -34,7 +39,6 @@ const XMVECTOR& Camera::GetUpwardVector()
 {
 	return this->vec_upward;
 }
-
 
 const XMMATRIX& Camera::GetViewMatrix() const {
 	return this->viewMatrix;
@@ -64,20 +68,26 @@ const float Camera::GetScale() const
 
 void Camera::SetScale(const float& scaleFactor)
 {
-	this->scale = scaleFactor;
-	this->SetProjectionValues(this->baseViewWidth, this->baseViewHeight, this->nearZ, this->farZ);
+	this->scale = std::clamp(scaleFactor, SCALE_MIN, SCALE_MAX);
+	this->projectionMatrix = XMMatrixOrthographicRH(
+		this->baseViewWidth  * this->scale,
+		this->baseViewHeight * this->scale,
+		this->nearZ, this->farZ);
+	UpdateViewMatrix();
 }
 
 void Camera::AdjustScale(const float& scaleFactor, XMFLOAT2 scaleCenterNDC)
 {
-	this->scale *= scaleFactor;
+	float newScale = std::clamp(this->scale * scaleFactor, SCALE_MIN, SCALE_MAX);
+	float actualFactor = newScale / this->scale;
+	this->scale = newScale;
 
-	float oldWidth = baseViewWidth * (scale / scaleFactor);
-	float oldHeight = baseViewHeight * (scale / scaleFactor);
-	float newWidth = baseViewWidth * scale;
-	float newHeight = baseViewHeight * scale;
+	float oldWidth  = baseViewWidth  * (this->scale / actualFactor);
+	float oldHeight = baseViewHeight * (this->scale / actualFactor);
+	float newWidth  = baseViewWidth  * this->scale;
+	float newHeight = baseViewHeight * this->scale;
 
-	float dx = (oldWidth - newWidth) * 0.5f * scaleCenterNDC.x;
+	float dx = (oldWidth  - newWidth)  * 0.5f * scaleCenterNDC.x;
 	float dy = (oldHeight - newHeight) * 0.5f * scaleCenterNDC.y;
 
 	XMVECTOR dPos = this->vec_left * dx + this->vec_upward * dy;
@@ -123,11 +133,11 @@ void Camera::UpdateViewMatrix() {
 	XMVECTOR camTarget = XMVector3TransformCoord(this->DEFAULT_FORWARD_VECTOR, this->rotMatrix);
 	camTarget += this->posVector;
 
-	this->vec_upward = XMVector3TransformCoord(this->DEFAULT_UP_VECTOR, this->rotMatrix);
-	this->vec_left = XMVector3TransformCoord(this->DEFAULT_LEFT_VECTOR, this->rotMatrix);
-	this->vec_right = XMVector3TransformCoord(this->DEFAULT_RIGHT_VECTOR, this->rotMatrix);
-	this->vec_forward = XMVector3TransformCoord(this->DEFAULT_FORWARD_VECTOR, this->rotMatrix);
-	this->vec_backward = XMVector3TransformCoord(this->DEFAULT_BACKWARD_VECTOR, this->rotMatrix);
-		
+	this->vec_upward  = XMVector3TransformCoord(this->DEFAULT_UP_VECTOR,       this->rotMatrix);
+	this->vec_left    = XMVector3TransformCoord(this->DEFAULT_LEFT_VECTOR,     this->rotMatrix);
+	this->vec_right   = XMVector3TransformCoord(this->DEFAULT_RIGHT_VECTOR,    this->rotMatrix);
+	this->vec_forward = XMVector3TransformCoord(this->DEFAULT_FORWARD_VECTOR,  this->rotMatrix);
+	this->vec_backward= XMVector3TransformCoord(this->DEFAULT_BACKWARD_VECTOR, this->rotMatrix);
+
 	this->viewMatrix = XMMatrixLookAtRH(this->posVector, camTarget, this->vec_upward);
 }

@@ -9,13 +9,36 @@
 #include "..\imgui\imgui.h"
 #include "auxiliaryObjects.h"
 #include "..\..\utils\Timer.h"
-#include "PHSceneState.h"
+#include "..\..\external\json.hpp"
 
 #include <unordered_map>
 #include <deque>
 #include <memory>
+#include <functional>
+#include <string>
+#include <vector>
 
-enum class SceneType { Default, PersistentHomology };
+class Scene;
+
+struct SceneWindow {
+    std::string id;
+    std::string title;
+    bool open = true;
+    float pos[2]  = {  50.f,  50.f };
+    float size[2] = { 300.f, 200.f };
+    bool needRestore = false;
+    std::function<void(SceneWindow&)> drawContent;
+};
+
+struct GlobalSlider {
+    std::string label;
+    std::string luaGlobalName;
+    float* valuePtr = nullptr;
+    float min = 0.f;
+    float max = 1.f;
+    std::function<bool()> readOnly;
+    std::function<void()> onChange;
+};
 
 class Scene {
 public:
@@ -29,7 +52,10 @@ public:
 
 	void HandleSelection(Primitive* primitiveClicked);
 	void HandleLMouse(int px, int py, bool tPressfRelease);
+	void DeleteSelected();
 	bool blockMousePick = false;
+	bool blockMouseWheel = false;
+	int lastSelectedIdx = -1;
 
 	bool rsSolid = true;
 	bool rsWireframe = false;
@@ -41,6 +67,9 @@ public:
 	void UpdateLight();
 
 	bool outlineThroughObjets = true;
+
+	bool showGrid = true;
+	bool showAxes = true;
 
 	std::vector<Primitive*> primitives;
 
@@ -57,11 +86,19 @@ public:
 
 	void LoadNewtonDemo();
 	void LoadPersistentHomologyScene();
-	void RegeneratePHCloud();
-	bool ImportPHCloud(const char* path);
+	void LoadGRScene();
 
-	SceneType sceneType = SceneType::Default;
-	PHSceneState phState;
+	nlohmann::json sceneData;
+	std::unordered_map<std::string, std::shared_ptr<float>> sceneFloats;
+	std::vector<SceneWindow>  sceneWindows;
+	std::vector<GlobalSlider> sceneSliders;
+	std::function<void(Scene&, float t, float dt, bool paused)> sceneTick;
+	std::function<void(Scene&)> sceneReset;
+	std::string currentSceneId;
+	std::unordered_map<std::string, std::function<void(Scene&)>> sceneRebinders;
+
+	void RegisterSceneRebinders();
+	void ClearSceneCustomState();
 
 	std::string scenesPath = "Data/Scenes/";
 	const std::vector<std::string>& GetSavedScenes() const;
@@ -69,21 +106,18 @@ public:
 	void ClearScene();
 	void LoadScene(std::string name);
 
-	// ── Time control ─────────────────────────────────────────────────────────
 	float currentTime = 0.0f;
 	float deltaTime   = 0.0f;
 	float timeSpeed   = 1.0f;
 	bool  timePaused  = false;
-	float timeMax     = 0.0f;   // 0 = unlimited
+	float timeMax     = 0.0f;
 	bool  timeLoop    = false;
 	void  ResetTime();
 
-	// ── Trajectories ─────────────────────────────────────────────────────────
 	bool showTrajectories  = false;
-	int  trajectoryMaxLen  = 1000;  // 0 = unlimited
+	int  trajectoryMaxLen  = 1000;
 	void ClearTrajectories();
 
-	// ── Pick mode (used by Lua editor's "pick vector" feature) ────────────────
 	bool pickModeActive = false;
 	UINT pickedPrimId   = 0;
 
@@ -116,7 +150,7 @@ private:
 
 	Microsoft::WRL::ComPtr<ID3D11Texture2D> outlinesTexture;
 	Microsoft::WRL::ComPtr<ID3D11Texture2D> outlinesTextureResolved;
-	
+
 	Microsoft::WRL::ComPtr<ID3D11Resource> mainRTVTexture;
 	Microsoft::WRL::ComPtr<ID3D11Texture2D> mainRTVTextureResolved;
 
@@ -161,7 +195,6 @@ private:
 	void SetMainResources();
 	void SetOutlineResources();
 
-
 	void DrawGrid();
 
 	std::vector<Primitive*>& GetPrimitivesSorted();
@@ -180,4 +213,3 @@ private:
 	std::vector<std::string> savedScenes;
 	void UpdateSavedScenes();
 };
-

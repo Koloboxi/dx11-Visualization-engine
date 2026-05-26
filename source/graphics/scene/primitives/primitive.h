@@ -24,6 +24,9 @@ public:
 	UINT id{};
 	std::string name;
 
+	Primitive* parent = nullptr;
+	std::vector<Primitive*> children;
+
 	void Draw(const XMMATRIX& viewMatrix, const XMMATRIX& projectionMatrix);
 	bool selected = false;
 
@@ -61,7 +64,6 @@ public:
 
 	std::string luaScript;
 
-	float mass = 1.0f;
 	XMFLOAT3 velocity{};
 
 	using Updater = std::function<void(Primitive&, float t, float dt)>;

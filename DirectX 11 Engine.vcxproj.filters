@@ -70,6 +70,11 @@
     <ClInclude Include="source\external\lua\lua.hpp" />
     <ClInclude Include="source\external\lua\luaconf.h" />
     <ClInclude Include="source\external\lua\lualib.h" />
+    <ClInclude Include="source\graphics\gui\GuiIcons.h" />
+    <ClInclude Include="source\graphics\gui\LayoutState.h" />
+    <ClInclude Include="source\graphics\gui\PrimitivesWindow.h" />
+    <ClInclude Include="source\graphics\gui\TimeControlWindow.h" />
+    <ClInclude Include="source\graphics\gui\TopStripWindow.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="source\graphics\imgui\imgui.cpp" />
@@ -94,6 +99,9 @@
     <ClCompile Include="source\utils\Timer.cpp" />
     <ClCompile Include="source\window\windowContainer.cpp" />
     <ClCompile Include="source\graphics\scene\scene.cpp" />
+    <ClCompile Include="source\graphics\scene\loaders\scene_newton.cpp" />
+    <ClCompile Include="source\graphics\scene\loaders\scene_ph.cpp" />
+    <ClCompile Include="source\graphics\scene\loaders\scene_gr.cpp" />
     <ClCompile Include="source\main.cpp" />
     <ClCompile Include="source\graphics\imgui\implot.cpp" />
     <ClCompile Include="source\graphics\imgui\implot_items.cpp" />
