@@ -3,259 +3,121 @@
 #include <array>
 #include <algorithm>
 
-namespace {
+static const char* GR_BODY_LUA_0 = R"lua(
+if _gr_t and t < _gr_t - 0.001 then _gr = nil end
+_gr_t = t
+local GM = gr_GM or 10000
+local c2 = gr_c2 or 2000
+local Rs = 2*GM/c2
+local soft2 = (Rs*0.5)*(Rs*0.5)
+if not _gr then
+  _gr = {
+    {px=200, py=0,  pz=0,  vx=0, vy=7.0,  vz=0},
+    {px=120, py=0,  pz=0,  vx=0, vy=10.5, vz=0},
+    {px=350, py=0,  pz=50, vx=0, vy=5.0,  vz=2.0}
+  }
+end
+for i=1,3 do
+  local b=_gr[i]
+  local rx,ry,rz=b.px,b.py,b.pz
+  local vx,vy,vz=b.vx,b.vy,b.vz
+  local r2=rx*rx+ry*ry+rz*rz+soft2
+  local r=math.sqrt(r2)
+  local r3=r2*r
+  local v2=vx*vx+vy*vy+vz*vz
+  local rdotv=rx*vx+ry*vy+rz*vz
+  local newt=GM/r3
+  local pnC=GM/(c2*r3)
+  local pnA=4*GM/r-v2
+  local ax=-newt*rx+pnC*(pnA*rx+4*rdotv*vx)
+  local ay=-newt*ry+pnC*(pnA*ry+4*rdotv*vy)
+  local az=-newt*rz+pnC*(pnA*rz+4*rdotv*vz)
+  b.vx=b.vx+ax*dt; b.vy=b.vy+ay*dt; b.vz=b.vz+az*dt
+  b.px=b.px+b.vx*dt; b.py=b.py+b.vy*dt; b.pz=b.pz+b.vz*dt
+end
+p.x=_gr[1].px; p.y=_gr[1].py; p.z=_gr[1].pz
+)lua";
 
-struct GRShared {
-    struct Body {
-        XMFLOAT3 pos{};
-        XMFLOAT3 vel{};
-        XMFLOAT3 initPos{};
-        XMFLOAT3 initVel{};
-        double   tauAccum = 0.0;
-        float    tauRate  = 1.0f;
-        const char* name  = "";
-    };
-    static constexpr int N = 3;
-    std::array<Body, N> bodies{};
-    std::shared_ptr<float> GMptr;
-    std::shared_ptr<float> c2ptr;
-    float prevT = -1.0f;
-};
+static const char* GR_TICK = R"lua(
+local GM = gr_GM or 10000
+local c2 = gr_c2 or 2000
+local Rs = 2*GM/c2
+for i=1,#scene do
+  local n = scene[i].name
+  if n == "gr_bh"     then scene[i].scale = math.max(Rs,     0.001) end
+  if n == "gr_photon" then scene[i].scale = math.max(1.5*Rs, 0.001) end
+  if n == "gr_isco"   then scene[i].scale = math.max(3.0*Rs, 0.001) end
+end
+)lua";
 
-inline float Len(const XMFLOAT3& v) {
-    return sqrtf(v.x*v.x + v.y*v.y + v.z*v.z);
-}
+static const char* GR_DRAW_ORBITS = R"lua(
+local GM = gr_GM or 10000
+local c2 = gr_c2 or 2000
+local Rs = 2*GM/c2
+local ISCO = 3*Rs
+local labels = {"Mercury","Venus","Comet"}
+imgui_text(string.format("%-8s  %6s  %6s  %8s", "Body","r","|v|","dt/dt"))
+imgui_separator()
+if not _gr then imgui_text("(initializing...)"); return end
+local anyInside = false
+for i=1,3 do
+  local b = _gr[i]
+  local r  = math.sqrt(b.px*b.px + b.py*b.py + b.pz*b.pz)
+  local v2 = b.vx*b.vx + b.vy*b.vy + b.vz*b.vz
+  local v  = math.sqrt(v2)
+  local darg = 1 - Rs/math.max(r,0.001) - v2/math.max(c2,1e-9)
+  if darg < 0 then darg = 0 end
+  local tau = math.sqrt(darg)
+  local inside = r < ISCO
+  if inside then anyInside = true end
+  local star = inside and "*" or " "
+  imgui_text(string.format("%-8s  %6.1f  %6.2f  %8.5f %s", labels[i], r, v, tau, star))
+end
+imgui_separator()
+imgui_text(string.format("Coord. time: %.3f", t))
+if anyInside then
+  imgui_text_colored(1, 0.35, 0.35, 1, string.format("* r < ISCO (%.1f)", ISCO))
+end
+)lua";
 
-} // anonymous namespace
-
-void BindGRScene(Scene& s)
-{
-    auto ensureFloat = [&](const char* key, float def) {
-        if (!s.sceneFloats.count(key))
-            s.sceneFloats[key] = std::make_shared<float>(def);
-    };
-    ensureFloat("gr_GM", 10000.f);
-    ensureFloat("gr_c2",  2000.f);
-
-    s.sceneSliders.clear();
-    {
-        struct SD { const char* label; const char* key; const char* lua; float mn, mx; };
-        const SD defs[] = {
-            {"GM", "gr_GM", "gr_GM", 1000.f, 50000.f},
-            {"c²", "gr_c2", "gr_c2",  100.f, 20000.f},
-        };
-        for (auto& d : defs) {
-            GlobalSlider sl;
-            sl.label         = d.label;
-            sl.luaGlobalName = d.lua;
-            sl.valuePtr      = s.sceneFloats[d.key].get();
-            sl.min = d.mn; sl.max = d.mx;
-            s.sceneSliders.push_back(sl);
-        }
-    }
-
-    auto gr = std::make_shared<GRShared>();
-    gr->GMptr = s.sceneFloats["gr_GM"];
-    gr->c2ptr = s.sceneFloats["gr_c2"];
-
-    if (s.sceneData.contains("gr_bodies") && s.sceneData["gr_bodies"].is_array()) {
-        auto& bd = s.sceneData["gr_bodies"];
-        for (int i = 0; i < GRShared::N && i < (int)bd.size(); i++) {
-            auto& b = gr->bodies[i];
-            b.initPos = { bd[i]["ip"][0], bd[i]["ip"][1], bd[i]["ip"][2] };
-            b.initVel = { bd[i]["iv"][0], bd[i]["iv"][1], bd[i]["iv"][2] };
-        }
-    }
-    gr->bodies[0].name = "Mercury";
-    gr->bodies[1].name = "Venus";
-    gr->bodies[2].name = "Comet";
-    for (auto& b : gr->bodies) { b.pos = b.initPos; b.vel = b.initVel; }
-
-    Primitive* grbody[GRShared::N] = {};
-    Primitive* grbh = nullptr;
-    for (Primitive* p : s.primitives) {
-        if (p->name == "gr_bh") { grbh = p; continue; }
-        for (int i = 0; i < GRShared::N; i++)
-            if (p->name == "gr_body_" + std::to_string(i))
-                grbody[i] = p;
-    }
-
-    if (grbody[0]) {
-        grbody[0]->SetUpdater([gr](Primitive& self, float t, float dt) {
-            if (gr->prevT > 0.f && t < gr->prevT - 0.001f) {
-                for (auto& b : gr->bodies) {
-                    b.pos = b.initPos; b.vel = b.initVel;
-                    b.tauAccum = 0.0;
-                }
-                gr->prevT = -1.f;
-            }
-            gr->prevT = t;
-
-            float GM = *gr->GMptr;
-            float c2 = *gr->c2ptr;
-            float Rs = 2.f * GM / c2;
-            float softR = Rs * 0.5f;
-            float soft2 = softR * softR;
-
-            for (int i = 0; i < GRShared::N; i++) {
-                auto& b = gr->bodies[i];
-                float rx = b.pos.x, ry = b.pos.y, rz = b.pos.z;
-                float vx = b.vel.x, vy = b.vel.y, vz = b.vel.z;
-                float r2     = rx*rx + ry*ry + rz*rz + soft2;
-                float r      = sqrtf(r2);
-                float r3     = r2 * r;
-                float v2     = vx*vx + vy*vy + vz*vz;
-                float rdotv  = rx*vx + ry*vy + rz*vz;
-
-                float newt   = GM / r3;
-                float pnCoef = GM / (c2 * r3);
-                float pnA    = 4.f * GM / r - v2;
-
-                float ax = -newt*rx + pnCoef*(pnA*rx + 4.f*rdotv*vx);
-                float ay = -newt*ry + pnCoef*(pnA*ry + 4.f*rdotv*vy);
-                float az = -newt*rz + pnCoef*(pnA*rz + 4.f*rdotv*vz);
-
-                b.vel.x += ax * dt; b.vel.y += ay * dt; b.vel.z += az * dt;
-                b.pos.x += b.vel.x * dt; b.pos.y += b.vel.y * dt; b.pos.z += b.vel.z * dt;
-
-                float rTrue  = sqrtf(b.pos.x*b.pos.x + b.pos.y*b.pos.y + b.pos.z*b.pos.z);
-                float v2new  = b.vel.x*b.vel.x + b.vel.y*b.vel.y + b.vel.z*b.vel.z;
-                float dilArg = 1.f - Rs / (rTrue > 0.001f ? rTrue : 0.001f) - v2new / c2;
-                if (dilArg < 0.f) dilArg = 0.f;
-                b.tauRate   = sqrtf(dilArg);
-                b.tauAccum += (double)b.tauRate * dt;
-            }
-            self.SetPosition(gr->bodies[0].pos);
-        });
-    }
-
-    for (int i = 1; i < GRShared::N; i++) {
-        if (grbody[i]) {
-            grbody[i]->SetUpdater([gr, i](Primitive& self, float t, float dt) {
-                self.SetPosition(gr->bodies[i].pos);
-            });
-        }
-    }
-
-    s.sceneTick = [gr](Scene& sc, float t, float dt, bool paused) {
-        float GM = *gr->GMptr, c2 = *gr->c2ptr;
-        float Rs = 2.f * GM / c2;
-        for (Primitive* p : sc.primitives) {
-            if (p->name == "gr_bh")          p->SetScale(Rs > 0.001f ? Rs : 0.001f);
-            else if (p->name == "gr_photon") p->SetScale(1.5f * Rs > 0.001f ? 1.5f * Rs : 0.001f);
-            else if (p->name == "gr_isco")   p->SetScale(3.f  * Rs > 0.001f ? 3.f  * Rs : 0.001f);
-        }
-    };
-
-    s.sceneReset = [gr](Scene& sc) {
-        for (auto& b : gr->bodies) {
-            b.pos = b.initPos; b.vel = b.initVel;
-            b.tauAccum = 0.0;
-        }
-        gr->prevT = -1.f;
-    };
-
-    s.sceneWindows.clear();
-
-    SceneWindow orbWin;
-    orbWin.id    = "gr_orbits";
-    orbWin.title = "GR Orbits";
-    orbWin.pos[0]  = 50.f;   orbWin.pos[1]  = 380.f;
-    orbWin.size[0] = 430.f;  orbWin.size[1] = 175.f;
-    orbWin.drawContent = [gr, &s](SceneWindow&) {
-        float GM = *gr->GMptr, c2 = *gr->c2ptr;
-        float Rs   = 2.f * GM / c2;
-        float ISCO = 3.f * Rs;
-
-        if (ImGui::BeginTable("##grorb", 5,
-            ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit))
-        {
-            ImGui::TableSetupColumn("Body",   ImGuiTableColumnFlags_WidthFixed, 64.f);
-            ImGui::TableSetupColumn("r",      ImGuiTableColumnFlags_WidthFixed, 56.f);
-            ImGui::TableSetupColumn("|v|",    ImGuiTableColumnFlags_WidthFixed, 52.f);
-            ImGui::TableSetupColumn("d\xCF\x84/dt", ImGuiTableColumnFlags_WidthFixed, 68.f);
-            ImGui::TableSetupColumn("\xCF\x84 acc.", ImGuiTableColumnFlags_WidthFixed, 72.f);
-            ImGui::TableHeadersRow();
-
-            for (int i = 0; i < GRShared::N; i++) {
-                auto& b  = gr->bodies[i];
-                float r  = Len(b.pos);
-                float v  = Len(b.vel);
-                bool inside = r < ISCO;
-                ImGui::TableNextRow();
-                ImGui::TableSetColumnIndex(0);
-                if (inside)
-                    ImGui::TextColored({1.f,0.35f,0.35f,1.f}, "%s*", b.name);
-                else
-                    ImGui::TextUnformatted(b.name);
-                ImGui::TableSetColumnIndex(1); ImGui::Text("%.1f", r);
-                ImGui::TableSetColumnIndex(2); ImGui::Text("%.2f", v);
-                ImGui::TableSetColumnIndex(3); ImGui::Text("%.5f", b.tauRate);
-                ImGui::TableSetColumnIndex(4); ImGui::Text("%.3f", (float)b.tauAccum);
-            }
-            ImGui::EndTable();
-        }
-        bool anyInside = false;
-        for (auto& b : gr->bodies) if (Len(b.pos) < ISCO) { anyInside = true; break; }
-        if (anyInside)
-            ImGui::TextColored({1.f,0.35f,0.35f,1.f}, "* r < ISCO (%.1f)", ISCO);
-        ImGui::Text("Coord. time: %.3f", s.currentTime);
-    };
-    s.sceneWindows.push_back(orbWin);
-
-    SceneWindow infoWin;
-    infoWin.id    = "gr_info";
-    infoWin.title = "GR Parameters";
-    infoWin.pos[0]  = 490.f;  infoWin.pos[1]  = 380.f;
-    infoWin.size[0] = 320.f;  infoWin.size[1] = 270.f;
-    infoWin.drawContent = [gr, &s](SceneWindow&) {
-        float GM = *gr->GMptr, c2 = *gr->c2ptr;
-        float c  = sqrtf(c2);
-        float Rs = 2.f * GM / c2;
-
-        ImGui::Text("GM:                    %.1f", GM);
-        ImGui::Text("c (speed of light):    %.2f u/s", c);
-        ImGui::Separator();
-        ImGui::Text("Schwarzschild radius Rs: %.2f", Rs);
-        ImGui::Text("Photon sphere:           %.2f", 1.5f * Rs);
-        ImGui::Text("ISCO (innermost stable): %.2f", 3.f  * Rs);
-        ImGui::Separator();
-
-        ImGui::TextUnformatted("1PN precession estimate:");
-        for (int i = 0; i < GRShared::N; i++) {
-            auto& b  = gr->bodies[i];
-            float r  = Len(b.pos);
-            if (r < 0.001f) continue;
-            float vcirc = sqrtf(GM / r);
-            float T_approx = 2.f * 3.14159265f * r / (vcirc > 0.001f ? vcirc : 0.001f);
-            float precRad  = 6.f * 3.14159265f * GM / (c2 * r);
-            float precDeg  = precRad * 180.f / 3.14159265f;
-            ImGui::Text("  %-7s ~%.1f deg/orbit  T~%.1f", b.name, precDeg, T_approx);
-        }
-        ImGui::Separator();
-
-        float minTau = 1e10f, maxTau = 0.f;
-        for (auto& b : gr->bodies) {
-            float tau = (float)b.tauAccum;
-            minTau = std::min(minTau, tau);
-            maxTau = std::max(maxTau, tau);
-        }
-        if (s.currentTime > 0.01f)
-            ImGui::Text("Clock desync (orbits): %.4f", maxTau - minTau);
-        else
-            ImGui::TextDisabled("Clock desync: n/a (t=0)");
-    };
-    s.sceneWindows.push_back(infoWin);
-}
+static const char* GR_DRAW_INFO = R"lua(
+local GM = gr_GM or 10000
+local c2 = gr_c2 or 2000
+local c  = math.sqrt(c2)
+local Rs = 2*GM/c2
+imgui_text(string.format("GM:                    %.1f", GM))
+imgui_text(string.format("c (speed of light):    %.2f u/s", c))
+imgui_separator()
+imgui_text(string.format("Schwarzschild radius Rs: %.2f", Rs))
+imgui_text(string.format("Photon sphere:           %.2f", 1.5*Rs))
+imgui_text(string.format("ISCO:                    %.2f", 3.0*Rs))
+imgui_separator()
+local labels = {"Mercury","Venus","Comet"}
+imgui_text("1PN precession estimate:")
+if _gr then
+  for i=1,3 do
+    local b = _gr[i]
+    local r = math.sqrt(b.px*b.px + b.py*b.py + b.pz*b.pz)
+    if r > 0.001 then
+      local vcirc = math.sqrt(GM/r)
+      local T = 2*math.pi*r/math.max(vcirc,0.001)
+      local prec_deg = 6*math.pi*GM/(c2*r) * 180/math.pi
+      imgui_text(string.format("  %-7s ~%.1f deg/orbit  T~%.1f", labels[i], prec_deg, T))
+    end
+  end
+end
+)lua";
 
 void Scene::LoadGRScene()
 {
     for (Primitive* p : this->primitives) delete p;
     this->primitives.clear();
+    root.children.clear();
     this->orientationTransformer.SetTargetObjects({});
     this->ClearTrajectories();
     this->ClearSceneCustomState();
-    this->currentSceneId = "gr";
+    this->sceneName = "GR Demo";
+    root.name = sceneName;
 
     this->sceneFloats["gr_GM"] = std::make_shared<float>(10000.f);
     this->sceneFloats["gr_c2"] = std::make_shared<float>(2000.f);
@@ -264,20 +126,12 @@ void Scene::LoadGRScene()
     float Rs = 2.f * GM / c2;
 
     struct BodyDef { XMFLOAT3 pos; XMFLOAT3 vel; float radius; XMFLOAT4 col; const char* name; };
-    BodyDef bodyDefs[GRShared::N] = {
+    static constexpr int N = 3;
+    BodyDef bodyDefs[N] = {
         { {200.f,  0.f,  0.f}, {0.f,  7.0f,  0.f}, 8.f,  {0.5f,0.7f,1.0f,1.0f}, "gr_body_0" },
         { {120.f,  0.f,  0.f}, {0.f, 10.5f,  0.f}, 6.f,  {1.0f,0.7f,0.3f,1.0f}, "gr_body_1" },
         { {350.f,  0.f, 50.f}, {0.f,  5.0f,  2.0f},7.f,  {0.6f,1.0f,0.6f,1.0f}, "gr_body_2" },
     };
-
-    this->sceneData["gr_bodies"] = nlohmann::json::array();
-    for (int i = 0; i < GRShared::N; i++) {
-        auto& d = bodyDefs[i];
-        this->sceneData["gr_bodies"].push_back({
-            {"ip", {d.pos.x, d.pos.y, d.pos.z}},
-            {"iv", {d.vel.x, d.vel.y, d.vel.z}}
-        });
-    }
 
     this->AddSphere(1.0f, {0,0,0}, 2, {0.08f, 0.04f, 0.02f, 1.0f});
     this->primitives.back()->name = "gr_bh";
@@ -291,13 +145,43 @@ void Scene::LoadGRScene()
     this->primitives.back()->name = "gr_isco";
     this->primitives.back()->SetScale(3.f * Rs);
 
-    for (int i = 0; i < GRShared::N; i++) {
+    Primitive* grbody[N] = {};
+    for (int i = 0; i < N; i++) {
         auto& d = bodyDefs[i];
         this->AddSphere(d.radius, d.pos, 2, d.col);
         this->primitives.back()->name = d.name;
+        grbody[i] = this->primitives.back();
     }
 
-    BindGRScene(*this);
+    if (grbody[0]) grbody[0]->luaScript = GR_BODY_LUA_0;
+    for (int i = 1; i < N; i++) {
+        if (!grbody[i]) continue;
+        int li = i + 1;
+        grbody[i]->luaScript =
+            "if _gr and _gr[" + std::to_string(li) + "] then "
+            "p.x=_gr[" + std::to_string(li) + "].px; "
+            "p.y=_gr[" + std::to_string(li) + "].py; "
+            "p.z=_gr[" + std::to_string(li) + "].pz end";
+    }
+
+    auto* ctrl = new SceneController();
+    ctrl->SetScript("tick",           GR_TICK);
+    ctrl->SetScript("draw_gr_orbits", GR_DRAW_ORBITS);
+    ctrl->SetScript("draw_gr_info",   GR_DRAW_INFO);
+
+    ctrl->sliderDefs = {
+        {"GM", "gr_GM", 1000.f, 50000.f},
+        {"c²", "gr_c2",  100.f, 20000.f},
+    };
+
+    ctrl->windowDefs = {
+        {"gr_orbits", "GR Orbits",     {50.f,  380.f}, {400.f, 150.f}, {}},
+        {"gr_info",   "GR Parameters", {460.f, 380.f}, {320.f, 210.f}, {}},
+    };
+
+    SetController(ctrl);
+
+    if (luaReApplyCallback) luaReApplyCallback(this->primitives);
 
     this->UpdateLight();
     this->ResetTime();

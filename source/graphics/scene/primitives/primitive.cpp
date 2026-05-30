@@ -31,6 +31,11 @@ void Primitive::Draw(const XMMATRIX& viewMatrix, const XMMATRIX& projectionMatri
 	this->cb_vs_vertexshader.ApplyChanges();
 
 	this->deviceContext->VSSetConstantBuffers(0, 1, this->cb_vs_vertexshader.GetAddressOf());
+
+	if (this->psCBDirty) {
+		this->cb_ps_pixelshader.ApplyChanges();
+		this->psCBDirty = false;
+	}
 	this->deviceContext->PSSetConstantBuffers(0, 1, this->cb_ps_pixelshader.GetAddressOf());
 
 	UINT offset = 0;
@@ -65,16 +70,15 @@ void Primitive::SetColor(const XMFLOAT4& col)
 	this->cb_ps_pixelshader.data.color[1] = col.y;
 	this->cb_ps_pixelshader.data.color[2] = col.z;
 	this->cb_ps_pixelshader.data.color[3] = col.w;
-	this->cb_ps_pixelshader.ApplyChanges();
-
+	this->psCBDirty = true;
 	this->transparent = (col.w < 1.0f);
-}	
+}
 
 void Primitive::SetIlluminationCapability(const bool l)
 {
 	this->illuminationCapability = l;
 	this->cb_ps_pixelshader.data.illuminated = l;
-	this->cb_ps_pixelshader.ApplyChanges();
+	this->psCBDirty = true;
 }
 
 void Primitive::SetLighting(const float ambient, const float intensity, const float shininess)
@@ -82,7 +86,7 @@ void Primitive::SetLighting(const float ambient, const float intensity, const fl
 	this->cb_ps_pixelshader.data.ambient = ambient;
 	this->cb_ps_pixelshader.data.intensity = intensity;
 	this->cb_ps_pixelshader.data.shininess = shininess;
-	this->cb_ps_pixelshader.ApplyChanges();
+	this->psCBDirty = true;
 }
 
 void Primitive::SetSmoothShading(const bool sh)

@@ -339,6 +339,7 @@
     <ClCompile Include="source\graphics\scene\loaders\scene_newton.cpp" />
     <ClCompile Include="source\graphics\scene\loaders\scene_ph.cpp" />
     <ClCompile Include="source\graphics\scene\loaders\scene_gr.cpp" />
+    <ClCompile Include="source\graphics\scene\loaders\scene_gas.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

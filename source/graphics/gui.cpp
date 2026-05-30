@@ -87,11 +87,14 @@ void Graphics::Gui()
         fpsStr = std::format("{}", fpsCounter);
         fpsCounter = 0;
     }
-    ImGui::GetBackgroundDrawList()->AddText(ImVec2(0, 0), ImColor(0, 255, 0), fpsStr.c_str());
 
     float wW = (float)windowWidth;
     float wH = (float)windowHeight;
     s_layout.Validate(wW, wH);
+
+    luaEditor.sceneFloatMap = &scene.sceneFloats;
+    if (!scene.luaReApplyCallback)
+        luaEditor.BindToScene(scene);
 
     float panelH = wH - LayoutState::STRIP_H - s_layout.consoleH;
     float conY   = wH - s_layout.consoleH;
@@ -122,7 +125,8 @@ void Graphics::Gui()
         if (global_changed) luaEditor.ReApplyAll(scene.primitives);
     }
 
-    // 4. Scene windows area (right column bottom)
+    // 4. Scene windows area (right column bottom) — all scene windows live here
+    //    (C++ SceneWindow lambdas + declarative SceneController Lua draw scripts)
     {
         float luaH  = s_layout.luaH > 0.f ? s_layout.luaH : panelH * .33f;
         float swY   = LayoutState::STRIP_H + luaH;
@@ -131,13 +135,7 @@ void Graphics::Gui()
         ImGui::SetNextWindowPos({s_layout.colW, swY}, ImGuiCond_Always);
         ImGui::SetNextWindowSize({swW, swH}, ImGuiCond_Always);
         ImGui::Begin("##scenearea", nullptr, fixedFlags | ImGuiWindowFlags_NoTitleBar);
-        for (SceneWindow& w : scene.sceneWindows) {
-            if (!w.open || !w.drawContent) continue;
-            ImGui::PushID(w.id.c_str());
-            if (ImGui::CollapsingHeader(w.title.c_str(), ImGuiTreeNodeFlags_DefaultOpen))
-                w.drawContent(w);
-            ImGui::PopID();
-        }
+        luaEditor.DrawControllerWindows(scene, &blockMousePick);
         if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem))
             blockMousePick = true;
         ImGui::End();
@@ -185,7 +183,7 @@ void Graphics::Gui()
     }
 
     // 6. Top strip (drawn late to sit above panel content)
-    TopStripWindow::Draw(wW, scene, blockMousePick);
+    TopStripWindow::Draw(wW, scene, blockMousePick, fpsStr.c_str());
 
     // 7. Splitter overlay (drawn last so it can override cursor)
     DrawSplitters(s_layout, wW, wH, blockMousePick);

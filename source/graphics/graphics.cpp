@@ -11,13 +11,18 @@ bool Graphics::Initialize(HWND hwnd, int width, int height) {
 		return false;
 
 	if (!this->scene.Initialize(this->device.Get(), this->deviceContext.Get(), this->shadersPath, this->depthStencilView.Get(), this->depthStencilViewNoMSAA.Get(), this->renderTargetView.Get(), &this->vertexshader, this->windowWidth, this->windowHeight))
-		return false;	
+		return false;
 
+	luaEditor.sceneFloatMap = &this->scene.sceneFloats;
+	// Registers the Lua scene/ImGui API, wires all scene callbacks (reapply, controller
+	// compile, save/restore state). Must run before the first scene is loaded so its
+	// controller compiles and its Lua actions (generate, etc.) are available.
+	luaEditor.BindToScene(this->scene);
+	this->scene.LoadNewtonDemo();
 
 	ID3D11RenderTargetView* rtvs[] = { this->renderTargetView.Get(), this->scene.GetMaskRTV() };
 	this->deviceContext->OMSetRenderTargets(2, rtvs, this->depthStencilView.Get());
 
-	//IMGUI
 	IMGUI_CHECKVERSION();
 	ImGui::CreateContext();
 	ImPlot::CreateContext();

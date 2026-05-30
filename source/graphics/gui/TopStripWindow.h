@@ -9,7 +9,7 @@ static bool   s_lightOpen   = false;
 static ImVec2 s_lightBtnMin = {};
 static ImVec2 s_lightBtnMax = {};
 
-inline void Draw(float windowW, Scene& scene, bool& blockMousePick) {
+inline void Draw(float windowW, Scene& scene, bool& blockMousePick, const char* fpsText = nullptr) {
     constexpr float SH = LayoutState::STRIP_H;
     float btnSz = SH - 8.f;
 
@@ -39,6 +39,15 @@ inline void Draw(float windowW, Scene& scene, bool& blockMousePick) {
     GuiIcons::ToggleIconButton("##light",   &s_lightOpen,                btnSz, GuiIcons::LightbulbIcon);
     s_lightBtnMin = ImGui::GetItemRectMin();
     s_lightBtnMax = ImGui::GetItemRectMax();
+
+    if (fpsText && fpsText[0]) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "FPS: %s", fpsText);
+        float tw = ImGui::CalcTextSize(buf).x;
+        ImGui::SameLine(windowW - tw - 10.f);
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "%s", buf);
+    }
 
     if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem))
         blockMousePick = true;

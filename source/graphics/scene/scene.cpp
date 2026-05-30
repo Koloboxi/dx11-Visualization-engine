@@ -35,9 +35,9 @@ bool Scene::Initialize(ID3D11Device* device, ID3D11DeviceContext* deviceContext,
 	this->UpdateSavedScenes();
 	this->tpsTimer.Start();
 
-	this->RegisterSceneRebinders();
-
-	this->LoadPersistentHomologyScene();
+	this->root.name = "";
+	// NB: the initial demo scene is loaded by Graphics::Initialize AFTER BindToScene,
+	// so the controller can compile and its Lua actions (e.g. generate) are available.
 
 	return true;
 }
@@ -68,9 +68,12 @@ ID3D11RenderTargetView* Scene::GetMaskRTV() const
 void Scene::Draw()
 {
 	DrawGrid();
-	std::vector<Primitive*> primitivesOrdered = GetPrimitivesSorted();
+	const std::vector<Primitive*>& primitivesOrdered = GetPrimitivesSorted();
 
-	this->deviceContext->ClearRenderTargetView(this->primitivesIDsRTV.Get(), Colors::clearColor);
+	const bool doIDPass = !this->blockMousePick && this->idPassNeeded;
+	if (doIDPass)
+		this->deviceContext->ClearRenderTargetView(this->primitivesIDsRTV.Get(), Colors::clearColor);
+
 	for (Primitive* p : primitivesOrdered) {
 		UCHAR dim = p->GetDimension();
 		switch (dim) {
@@ -83,12 +86,13 @@ void Scene::Draw()
 
 		this->deviceContext->RSSetState(this->rasterizerSolid.Get());
 
-		this->deviceContext->OMSetRenderTargets(1, this->rtvIDs, this->dsViewNoMSAA);
-		this->deviceContext->PSSetShader(this->pixelShaderWriteIDs.GetShader(), NULL, 0);
-		this->deviceContext->PSSetConstantBuffers(1, 1, this->cb_ps_id.GetAddressOf());
-		this->SetIDToWrite(p->id);
-
-		p->Draw(this->camera.GetViewMatrix(), projectionMatrix);
+		if (doIDPass) {
+			this->deviceContext->OMSetRenderTargets(1, this->rtvIDs, this->dsViewNoMSAA);
+			this->deviceContext->PSSetShader(this->pixelShaderWriteIDs.GetShader(), NULL, 0);
+			this->deviceContext->PSSetConstantBuffers(1, 1, this->cb_ps_id.GetAddressOf());
+			this->SetIDToWrite(p->id);
+			p->Draw(this->camera.GetViewMatrix(), projectionMatrix);
+		}
 
 		this->deviceContext->OMSetRenderTargets(1, this->rtvsMain, this->dsView);
 		this->deviceContext->PSSetShader(this->pixelShaderMain.GetShader(), NULL, 0);
@@ -205,14 +209,16 @@ void Scene::Draw()
 	this->deviceContext->GSSetShader(nullptr, NULL, 0);
 	this->orientationTransformer.Draw(this->camera.GetViewMatrix(), this->camera.GetProjectionMatrix(), this->camera.GetScale());
 
-	this->deviceContext->OMSetRenderTargets(1, this->rtvIDs, this->dsViewNoMSAA);
-	this->deviceContext->PSSetShader(this->pixelShaderWriteIDs.GetShader(), NULL, 0);
-	this->deviceContext->PSSetConstantBuffers(1, 1, this->cb_ps_id.GetAddressOf());
-	std::vector<UINT> idsAux = this->orientationTransformer.GetAuxiliaryObjectsIDs();
-
-	for (UINT id : idsAux) {
-		this->SetIDToWrite(id);
-		this->orientationTransformer.DrawID(this->camera.GetViewMatrix(), this->camera.GetProjectionMatrix(), this->camera.GetScale(), id);
+	if (doIDPass) {
+		this->deviceContext->OMSetRenderTargets(1, this->rtvIDs, this->dsViewNoMSAA);
+		this->deviceContext->PSSetShader(this->pixelShaderWriteIDs.GetShader(), NULL, 0);
+		this->deviceContext->PSSetConstantBuffers(1, 1, this->cb_ps_id.GetAddressOf());
+		std::vector<UINT> idsAux = this->orientationTransformer.GetAuxiliaryObjectsIDs();
+		for (UINT id : idsAux) {
+			this->SetIDToWrite(id);
+			this->orientationTransformer.DrawID(this->camera.GetViewMatrix(), this->camera.GetProjectionMatrix(), this->camera.GetScale(), id);
+		}
+		this->idPassNeeded = false;
 	}
 
 	this->SetMainResources();
@@ -226,10 +232,11 @@ void Scene::HandleSelection(Primitive* primitiveClicked)
 	bool shiftHeld = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
 	bool ctrlHeld  = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
 
+	this->controllerSelected = false;
+
 	if (!primitiveClicked) {
 		for (Primitive* p : this->primitives) p->selected = false;
 		this->orientationTransformer.SetTargetObjects({});
-		lastSelectedIdx = -1;
 		return;
 	}
 
@@ -255,14 +262,20 @@ void Scene::DeleteSelected()
 
 	auto it = this->primitives.begin();
 	while (it != this->primitives.end()) {
-		if ((*it)->selected) {
-			delete *it;
+		Primitive* p = *it;
+		if (p->selected) {
+			// Unlink from the scene tree before freeing, else dangling pointers remain
+			// in parent/root children lists (the tree walk would then crash).
+			for (SceneNode* ch : p->children) { ch->parent = &root; root.children.push_back(ch); }
+			p->children.clear();
+			if (p->parent) p->parent->RemoveChild(p);
+			delete p;
 			it = this->primitives.erase(it);
 		} else {
 			++it;
 		}
 	}
-	lastSelectedIdx = -1;
+	m_sortedDirty = true;
 }
 
 void Scene::HandleLMouse(int px, int py, bool tPressfRelease)
@@ -303,40 +316,88 @@ void Scene::HandleLMouse(int px, int py, bool tPressfRelease)
 	}
 }
 
+void Scene::SetController(SceneController* ctrl)
+{
+	if (controller) {
+		root.RemoveChild(controller);
+		delete controller;
+	}
+	controller = ctrl;
+	if (controller) {
+		root.AddChild(controller);
+		if (luaCompileControllerCallback) luaCompileControllerCallback(*controller);
+		if (controller->compiledTick)  sceneTick  = controller->compiledTick;
+		if (controller->compiledReset) sceneReset = controller->compiledReset;
+		sceneSliders.clear();
+		for (auto& sd : controller->sliderDefs) {
+			auto it = sceneFloats.find(sd.luaGlobal);
+			if (it == sceneFloats.end()) {
+				sceneFloats[sd.luaGlobal] = std::make_shared<float>(0.f);
+				it = sceneFloats.find(sd.luaGlobal);
+			}
+			GlobalSlider sl;
+			sl.label         = sd.label;
+			sl.luaGlobalName = sd.luaGlobal;
+			sl.valuePtr      = it->second.get();
+			sl.min           = sd.min;
+			sl.max           = sd.max;
+			sceneSliders.push_back(sl);
+		}
+	}
+}
+
 void Scene::AddPoint(const XMFLOAT3& pos, const XMFLOAT4& col)
 {
-	this->primitives.push_back(PrimitiveConstructor::Point(pos, col, NextId()));
+	auto* p = PrimitiveConstructor::Point(pos, col, NextId());
+	this->primitives.push_back(p);
+	root.AddChild(p);
+	m_sortedDirty = true;
 }
 
 void Scene::AddLine(const std::vector<XMFLOAT3>& poses, const XMFLOAT4& col)
 {
-	this->primitives.push_back(PrimitiveConstructor::Line(poses, col, NextId()));
+	auto* p = PrimitiveConstructor::Line(poses, col, NextId());
+	this->primitives.push_back(p);
+	root.AddChild(p);
+	m_sortedDirty = true;
 }
 
 void Scene::AddPolygon(const std::vector<XMFLOAT3>& poses, const XMFLOAT4& col)
 {
-	this->primitives.push_back(PrimitiveConstructor::Polygon(poses, col, NextId()));
+	auto* p = PrimitiveConstructor::Polygon(poses, col, NextId());
+	this->primitives.push_back(p);
+	root.AddChild(p);
+	m_sortedDirty = true;
 }
 
 void Scene::AddSphere(float radius, const XMFLOAT3& pos, const UINT numSubdivides, const XMFLOAT4& col)
 {
-	this->primitives.push_back(PrimitiveConstructor::Sphere(radius, pos, numSubdivides, col, NextId()));
+	auto* p = PrimitiveConstructor::Sphere(radius, pos, numSubdivides, col, NextId());
+	this->primitives.push_back(p);
+	root.AddChild(p);
+	m_sortedDirty = true;
 }
 
 void Scene::AddLine3d(float radius, std::vector<XMFLOAT3>& poses, const UINT numSubdivides, const XMFLOAT4& col)
 {
-	this->primitives.push_back(PrimitiveConstructor::Line3d(radius, poses, numSubdivides, col, NextId()));
+	auto* p = PrimitiveConstructor::Line3d(radius, poses, numSubdivides, col, NextId());
+	this->primitives.push_back(p);
+	root.AddChild(p);
+	m_sortedDirty = true;
 }
 
 void Scene::AddArc3d(float arcRadius, float lineRadius, float angleDeg, const XMFLOAT3& center, const UINT numSubdivides, const XMFLOAT4& col)
 {
-	this->primitives.push_back(PrimitiveConstructor::Arc3d(arcRadius, lineRadius, angleDeg, center, numSubdivides, col, NextId()));
+	auto* p = PrimitiveConstructor::Arc3d(arcRadius, lineRadius, angleDeg, center, numSubdivides, col, NextId());
+	this->primitives.push_back(p);
+	root.AddChild(p);
+	m_sortedDirty = true;
 }
 
 void Scene::AddArrow3d(float shaftRadius, float headRadius, float headLength, const XMFLOAT3& from, const XMFLOAT3& to, UINT sides, const XMFLOAT4& col)
 {
 	Primitive* p = PrimitiveConstructor::Arrow3d(shaftRadius, headRadius, headLength, from, to, sides, col, NextId());
-	if (p) this->primitives.push_back(p);
+	if (p) { this->primitives.push_back(p); root.AddChild(p); m_sortedDirty = true; }
 }
 
 void Scene::AddFromSTL(const std::string& path, const XMFLOAT4& col, const std::string& name)
@@ -345,7 +406,40 @@ void Scene::AddFromSTL(const std::string& path, const XMFLOAT4& col, const std::
 	if (!p) return;
 	if (!name.empty()) p->name = name;
 	this->primitives.push_back(p);
+	root.AddChild(p);
+	m_sortedDirty = true;
 	this->UpdateLight();
+}
+
+void Scene::AddCubeWireframe(float halfSize, const XMFLOAT3& center, const XMFLOAT4& col)
+{
+	Primitive* p = PrimitiveConstructor::CubeWireframe(halfSize, center, col, NextId());
+	if (p) { this->primitives.push_back(p); root.AddChild(p); m_sortedDirty = true; }
+}
+
+void Scene::AddCubeSolid(float halfSize, const XMFLOAT3& center, const XMFLOAT4& col)
+{
+	Primitive* p = PrimitiveConstructor::CubeSolid(halfSize, center, col, NextId());
+	if (p) { this->primitives.push_back(p); root.AddChild(p); m_sortedDirty = true; }
+}
+
+void Scene::RemovePrimitivesByPrefix(const std::string& prefix)
+{
+	if (orientationTransformer.HasActiveObject()) orientationTransformer.HandleObjRelease();
+	orientationTransformer.SetTargetObjects({});
+
+	auto it = this->primitives.begin();
+	while (it != this->primitives.end()) {
+		Primitive* p = *it;
+		if (p->name.rfind(prefix, 0) == 0) {
+			for (SceneNode* ch : p->children) { ch->parent = &root; root.children.push_back(ch); }
+			p->children.clear();
+			if (p->parent) p->parent->RemoveChild(p);
+			delete p;
+			it = this->primitives.erase(it);
+		} else ++it;
+	}
+	m_sortedDirty = true;
 }
 
 void Scene::RemovePrimitive(Primitive* p)
@@ -358,7 +452,11 @@ void Scene::RemovePrimitive(Primitive* p)
 		this->orientationTransformer.HandleObjRelease();
 
 	this->orientationTransformer.SetTargetObjects({});
+	for (SceneNode* ch : p->children) { ch->parent = &root; root.children.push_back(ch); }
+	p->children.clear();
+	if (p->parent) p->parent->RemoveChild(p);
 	this->primitives.erase(it);
+	m_sortedDirty = true;
 	delete p;
 }
 
@@ -383,6 +481,8 @@ void Scene::SaveScene(std::string name)
 	for (size_t i = 0; i < this->primitives.size(); ++i) {
 		Primitive* p = this->primitives[i];
 		jsonSaver::to_json(scene["primitives"][i], *p);
+		if (p->parent && p->parent->IsPrimitive())
+			scene["primitives"][i]["parentId"] = static_cast<Primitive*>(p->parent)->id;
 	}
 
 	XMFLOAT3 camPos = this->camera.GetPositionFloat3();
@@ -398,27 +498,19 @@ void Scene::SaveScene(std::string name)
 	};
 	scene["camera"]["camScale"] = camScale;
 
-	scene["currentSceneId"] = this->currentSceneId;
-	scene["sceneData"]      = this->sceneData;
-	scene["currentTime"]    = this->currentTime;
-	{
-		json arr = json::array();
-		for (const auto& w : this->sceneWindows) {
-			arr.push_back({
-				{"id",   w.id},
-				{"open", w.open},
-				{"pos",  { w.pos[0],  w.pos[1]  }},
-				{"size", { w.size[0], w.size[1] }}
-			});
-		}
-		scene["sceneWindows"] = arr;
-	}
+	scene["sceneName"]   = this->sceneName;
+	scene["sceneData"]   = this->sceneData;
+	scene["currentTime"] = this->currentTime;
 	{
 		json obj = json::object();
 		for (const auto& [k, v] : this->sceneFloats)
 			if (v) obj[k] = *v;
 		scene["sceneFloats"] = obj;
 	}
+	if (controller)
+		scene["controller"] = controller->ToJson();
+	if (luaSaveStateCallback)
+		scene["luaState"] = luaSaveStateCallback();
 
 	std::ofstream file(this->scenesPath + name);
 
@@ -439,11 +531,11 @@ void Scene::ClearScene()
 	if (this->orientationTransformer.HasActiveObject())
 		this->orientationTransformer.HandleObjRelease();
 	this->orientationTransformer.SetTargetObjects({});
-	lastSelectedIdx = -1;
 
-	for (Primitive* p : this->primitives)
-		delete p;
+	for (Primitive* p : this->primitives) delete p;
 	this->primitives.clear();
+	root.children.clear();
+	m_sortedDirty = true;
 	this->ClearTrajectories();
 	this->ClearSceneCustomState();
 }
@@ -452,11 +544,16 @@ void Scene::ClearSceneCustomState()
 {
 	this->sceneData    = nlohmann::json::object();
 	this->sceneFloats.clear();
-	this->sceneWindows.clear();
 	this->sceneSliders.clear();
 	this->sceneTick    = nullptr;
 	this->sceneReset   = nullptr;
-	this->currentSceneId.clear();
+	this->sceneName.clear();
+	this->controllerSelected = false;
+	if (controller) {
+		root.RemoveChild(controller);
+		delete controller;
+		controller = nullptr;
+	}
 }
 
 void Scene::LoadScene(std::string name)
@@ -486,7 +583,9 @@ void Scene::LoadScene(std::string name)
 		if (!jsonSaver::from_json(j, *p)) { delete p; continue; }
 		if (p->id == 0) p->id = NextId();
 		this->primitives.push_back(p);
+		root.AddChild(p);
 	}
+	m_sortedDirty = true;
 
 	for (Primitive* p : this->primitives)
 		if (p->id >= this->nextId) this->nextId = p->id + 1;
@@ -503,36 +602,60 @@ void Scene::LoadScene(std::string name)
 	this->ClearSceneCustomState();
 	this->currentTime = data.value("currentTime", 0.0f);
 
-	if (data.contains("sceneData"))      this->sceneData      = data["sceneData"];
-	if (data.contains("currentSceneId")) this->currentSceneId = data["currentSceneId"].get<std::string>();
+	if (data.contains("sceneData")) this->sceneData = data["sceneData"];
+	if (data.contains("sceneName")) this->sceneName  = data["sceneName"].get<std::string>();
 
 	if (data.contains("sceneFloats") && data["sceneFloats"].is_object()) {
 		for (auto it = data["sceneFloats"].begin(); it != data["sceneFloats"].end(); ++it)
 			this->sceneFloats[it.key()] = std::make_shared<float>(it.value().get<float>());
 	}
 
-	if (!this->currentSceneId.empty()) {
-		auto it = this->sceneRebinders.find(this->currentSceneId);
-		if (it != this->sceneRebinders.end() && it->second)
-			it->second(*this);
-	}
-
-	if (data.contains("sceneWindows") && data["sceneWindows"].is_array()) {
-		for (const auto& wj : data["sceneWindows"]) {
-			std::string id = wj.value("id", "");
-			for (auto& w : this->sceneWindows) {
-				if (w.id != id) continue;
-				w.open    = wj.value("open", true);
-				if (wj.contains("pos"))  { w.pos[0]  = wj["pos"][0];  w.pos[1]  = wj["pos"][1];  }
-				if (wj.contains("size")) { w.size[0] = wj["size"][0]; w.size[1] = wj["size"][1]; }
-				w.needRestore = true;
-				break;
+	// Rebuild parent-child links from saved parentId fields
+	{
+		const auto& primJson = data["primitives"];
+		for (size_t i = 0; i < this->primitives.size() && i < primJson.size(); ++i) {
+			if (!primJson[i].contains("parentId")) continue;
+			UINT pid = primJson[i]["parentId"].get<UINT>();
+			for (Primitive* pp : this->primitives) {
+				if (pp->id == pid) {
+					root.RemoveChild(this->primitives[i]);
+					pp->AddChild(this->primitives[i]);
+					break;
+				}
 			}
 		}
 	}
 
+	// Restore root name
+	root.name = this->sceneName;
+
+	// Restore SceneController from JSON
+	if (data.contains("controller") && data["controller"].is_object()) {
+		SceneController* ctrl = SceneController::FromJson(data["controller"]);
+		// Restore sceneFloats values for sliderDefs (already loaded above, just bind)
+		for (auto& sd : ctrl->sliderDefs) {
+			auto it = this->sceneFloats.find(sd.luaGlobal);
+			if (it == this->sceneFloats.end())
+				this->sceneFloats[sd.luaGlobal] = std::make_shared<float>(0.f);
+		}
+		SetController(ctrl);
+	}
+
+	// Restore Lua runtime state synchronously (positions are correct immediately)
+	if (data.contains("luaState") && luaRestoreStateCallback)
+		luaRestoreStateCallback(data["luaState"]);
+
+	// Re-apply Lua scripts on primitives
+	if (luaReApplyCallback) luaReApplyCallback(this->primitives);
+
+	// Run one silent tick at t=0 so all primitives sit at correct positions
+	if (this->sceneTick)
+		this->sceneTick(*this, this->currentTime, 0.f, true);
+	for (auto& p : this->primitives)
+		p->Update(this->currentTime, 0.f);
+
 	this->tpsTimer.Stop();
-	this->deltaTime = 0.0f;
+	this->deltaTime  = 0.0f;
 	this->timePaused = true;
 	this->tpsTimer.Start();
 }
@@ -567,7 +690,9 @@ void Scene::UpdateTime()
 
 		if (this->showTrajectories) {
 			for (Primitive* p : this->primitives) {
-				if (!p->HasUpdater()) continue;
+				XMFLOAT3 v = p->velocity;
+				bool moving = (v.x*v.x + v.y*v.y + v.z*v.z) > 1e-4f;
+				if (!p->HasUpdater() && !moving) continue;
 				auto& traj = this->trajectoryData[p->id];
 				traj.push_back(p->GetPosition());
 				if (this->trajectoryMaxLen > 0 && (int)traj.size() > this->trajectoryMaxLen)
@@ -933,20 +1058,26 @@ void Scene::DrawGrid()
 	}
 }
 
-std::vector<Primitive*>& Scene::GetPrimitivesSorted()
+const std::vector<Primitive*>& Scene::GetPrimitivesSorted() const
 {
-	size_t primitivesCount = this->primitives.size();
-	static std::vector<Primitive*> primitivesOrdered;
-	primitivesOrdered.clear();
-	primitivesOrdered.reserve(primitivesCount);
+	XMFLOAT3 cp = this->camera.GetPositionFloat3();
+	bool cameraMoved = (cp.x != m_sortedCamPos.x || cp.y != m_sortedCamPos.y || cp.z != m_sortedCamPos.z);
+
+	if (!m_sortedDirty && !cameraMoved)
+		return m_sortedCache;
+
+	m_sortedDirty  = false;
+	m_sortedCamPos = cp;
+	m_sortedCache.clear();
+	m_sortedCache.reserve(this->primitives.size());
 
 	std::vector<Primitive*> nonSelOpaque;
 	std::vector<Primitive*> selOpaque;
 	std::vector<std::pair<Primitive*, float>> nonSelTransparent;
 	std::vector<std::pair<Primitive*, float>> selTransparent;
 
-	XMVECTOR camPosV = this->camera.GetPositionVector();
-	XMVECTOR camForward = this->camera.GetForwardVector();
+	XMVECTOR camPosV    = this->camera.GetPositionVector();
+	XMVECTOR camForward = const_cast<Camera&>(this->camera).GetForwardVector();
 
 	for (Primitive* p : this->primitives) {
 		bool transparent = p->GetTransparent();
@@ -955,12 +1086,11 @@ std::vector<Primitive*>& Scene::GetPrimitivesSorted()
 		if (!transparent) {
 			if (sel) selOpaque.push_back(p);
 			else nonSelOpaque.push_back(p);
-		}
-		else {
+		} else {
 			XMFLOAT3 posF = p->GetPosition();
 			XMVECTOR posV = XMLoadFloat3(&posF);
-			XMVECTOR rel = XMVectorSubtract(posV, camPosV);
-			float proj = XMVectorGetX(XMVector3Dot(rel, camForward));
+			XMVECTOR rel  = XMVectorSubtract(posV, camPosV);
+			float proj    = XMVectorGetX(XMVector3Dot(rel, camForward));
 			if (sel) selTransparent.emplace_back(p, proj);
 			else nonSelTransparent.emplace_back(p, proj);
 		}
@@ -968,16 +1098,16 @@ std::vector<Primitive*>& Scene::GetPrimitivesSorted()
 
 	auto cmp = [](const std::pair<Primitive*, float>& a, const std::pair<Primitive*, float>& b) {
 		return a.second > b.second;
-		};
+	};
 	std::sort(nonSelTransparent.begin(), nonSelTransparent.end(), cmp);
 	std::sort(selTransparent.begin(), selTransparent.end(), cmp);
 
-	primitivesOrdered.insert(primitivesOrdered.end(), nonSelOpaque.begin(), nonSelOpaque.end());
-	primitivesOrdered.insert(primitivesOrdered.end(), selOpaque.begin(), selOpaque.end());
-	for (auto& pr : nonSelTransparent) primitivesOrdered.push_back(pr.first);
-	for (auto& pr : selTransparent) primitivesOrdered.push_back(pr.first);
+	m_sortedCache.insert(m_sortedCache.end(), nonSelOpaque.begin(), nonSelOpaque.end());
+	m_sortedCache.insert(m_sortedCache.end(), selOpaque.begin(), selOpaque.end());
+	for (auto& pr : nonSelTransparent) m_sortedCache.push_back(pr.first);
+	for (auto& pr : selTransparent)    m_sortedCache.push_back(pr.first);
 
-	return primitivesOrdered;
+	return m_sortedCache;
 }
 
 void Scene::SetOutline(const XMFLOAT4& col, const float outlineScale)

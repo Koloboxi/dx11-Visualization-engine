@@ -21,6 +21,9 @@ namespace jsonSaver {
 
         if (!p.luaScript.empty()) j["luaScript"] = p.luaScript;
 
+        if (p.velocity.x != 0.f || p.velocity.y != 0.f || p.velocity.z != 0.f)
+            j["velocity"] = { p.velocity.x, p.velocity.y, p.velocity.z };
+
         std::vector<Vertex> vertices = p.GetVertexData();
         std::vector<DWORD> indices = p.GetIndexData();
 
@@ -39,6 +42,8 @@ namespace jsonSaver {
         if (j.contains("id")) p.id = j["id"].get<UINT>();
         if (j.contains("name")) p.name = j["name"].get<std::string>();
         if (j.contains("luaScript")) p.luaScript = j["luaScript"].get<std::string>();
+        if (j.contains("velocity") && j["velocity"].is_array())
+            p.velocity = { j["velocity"][0].get<float>(), j["velocity"][1].get<float>(), j["velocity"][2].get<float>() };
 
         p.SetScale(j.value("scale", 1.0f));
         p.SetPrimitiveTopology(j["primitiveTopology"].get<D3D10_PRIMITIVE_TOPOLOGY>());

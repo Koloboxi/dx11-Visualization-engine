@@ -61,11 +61,33 @@ inline void Draw(const LayoutState& lay, float windowH, Scene& scene,
                  LuaUpdaterEditor& lua, bool& blockMousePick, bool& blockMouseWheel,
                  ImGuiWindowFlags extraFlags) {
     static AddPrimState s_add;
-    static std::string  s_sceneName;
     static int          s_savedSelIdx = 0;
     static int          s_demoSelIdx  = 0;
-    static std::unordered_set<UINT> s_expanded;
+    static std::unordered_set<const SceneNode*> s_expanded;
     static int          s_lastClickedIdx = -1;
+    static SceneNode*   s_lastClickedNode = nullptr;
+    static SceneNode*   s_renameNode     = nullptr;
+    static bool         s_renameFocus    = false;
+    static char         s_renameBuffer[256] = {};
+
+    auto isRenamable = [](SceneNode* n) { return n && !n->IsController(); };
+    auto beginRename = [&](SceneNode* n) {
+        if (!isRenamable(n)) return;
+        s_renameNode  = n;
+        s_renameFocus = true;
+        const std::string& cur = (n == &scene.root) ? scene.sceneName : n->name;
+        strncpy_s(s_renameBuffer, cur.c_str(), sizeof(s_renameBuffer) - 1);
+    };
+    auto commitRename = [&]() {
+        if (!s_renameNode) return;
+        if (s_renameNode == &scene.root) {
+            scene.sceneName = s_renameBuffer;
+            scene.root.name = s_renameBuffer;
+        } else {
+            s_renameNode->name = s_renameBuffer;
+        }
+        s_renameNode = nullptr;
+    };
 
     float panelH = windowH - LayoutState::STRIP_H - lay.consoleH;
     float timeH  = lay.timeH > 0.f ? lay.timeH : panelH * .33f;
@@ -75,22 +97,23 @@ inline void Draw(const LayoutState& lay, float windowH, Scene& scene,
     ImGui::SetNextWindowSize({lay.colW, primH}, ImGuiCond_Always);
     ImGui::Begin("Primitives", nullptr, extraFlags);
 
-    // ---- Scenes section ----
+    // ── Scenes ──────────────────────────────────────────────────────────────
     if (ImGui::Button("Save"))
-        scene.SaveScene(s_sceneName + ".json");
+        scene.SaveScene(scene.sceneName.empty() ? "scene.json" : scene.sceneName + ".json");
     ImGui::SameLine();
     if (ImGui::Button("Clear"))
         ClearAndLoad(scene, lua, [&]{ scene.ClearScene(); });
 
-    static const char* demoNames[] = { "Newton", "PH Demo", "GR Demo" };
+    static const char* demoNames[] = { "Newton", "PH Demo", "GR Demo", "Ideal Gas" };
     if (ImGui::BeginCombo("Demo scenes", demoNames[s_demoSelIdx])) {
-        for (int i = 0; i < 3; ++i) {
+        for (int i = 0; i < 4; ++i) {
             bool sel = (s_demoSelIdx == i);
             if (ImGui::Selectable(demoNames[i], sel)) {
                 s_demoSelIdx = i;
-                if (i == 0)      ClearAndLoad(scene, lua, [&]{ scene.LoadNewtonDemo(); });
-                else if (i == 1) ClearAndLoad(scene, lua, [&]{ scene.LoadPersistentHomologyScene(); });
-                else             ClearAndLoad(scene, lua, [&]{ scene.LoadGRScene(); });
+                if (i == 0)      ClearAndLoad(scene, lua, [&]{ scene.LoadNewtonDemo();              lua.ReApplyAll(scene.primitives); });
+                else if (i == 1) ClearAndLoad(scene, lua, [&]{ scene.LoadPersistentHomologyScene(); lua.ReApplyAll(scene.primitives); });
+                else if (i == 2) ClearAndLoad(scene, lua, [&]{ scene.LoadGRScene();                 lua.ReApplyAll(scene.primitives); });
+                else             ClearAndLoad(scene, lua, [&]{ scene.LoadIdealGasScene();           lua.ReApplyAll(scene.primitives); });
             }
             if (sel) ImGui::SetItemDefaultFocus();
         }
@@ -115,12 +138,9 @@ inline void Draw(const LayoutState& lay, float windowH, Scene& scene,
         ImGui::TextDisabled("No saved scenes");
     }
 
-    ImGui::SetNextItemWidth(lay.colW - 90.f);
-    ImGui::InputText("Name##sn", &s_sceneName);
-
     ImGui::Separator();
 
-    // ---- + / - buttons ----
+    // ── + / - ───────────────────────────────────────────────────────────────
     if (ImGui::Button("+")) ImGui::OpenPopup("AddPrimitive");
     ImGui::SameLine();
     if (ImGui::Button("-")) {
@@ -130,7 +150,7 @@ inline void Draw(const LayoutState& lay, float windowH, Scene& scene,
         s_lastClickedIdx = -1;
     }
 
-    // ---- AddPrimitive modal ----
+    // ── AddPrimitive modal ──────────────────────────────────────────────────
     ImGui::SetNextWindowSize({380, 0}, ImGuiCond_Always);
     if (ImGui::BeginPopupModal("AddPrimitive", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         static const char* types[] = { "Point","Line","Polygon","Sphere","Line3d","Arc3d","STL","Arrow3d" };
@@ -189,54 +209,57 @@ inline void Draw(const LayoutState& lay, float windowH, Scene& scene,
         ImGui::EndPopup();
     }
 
-    // ---- Primitives list (tree, custom rendering) ----
+    // ── Tree ────────────────────────────────────────────────────────────────
     ImGui::Separator();
 
     if (ImGui::BeginChild("##primlist", {0,0}, false)) {
         if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem))
             blockMouseWheel = true;
 
-        // Build scene-index map
-        std::unordered_map<UINT, int> sceneIdx;
-        sceneIdx.reserve(scene.primitives.size());
-        for (int k = 0; k < (int)scene.primitives.size(); ++k)
-            sceneIdx[scene.primitives[k]->id] = k;
-
-        // Build flat ordered list (depth-first, respecting expand state)
-        struct FlatItem { Primitive* prim; int depth; };
-        static std::vector<FlatItem> s_flat;
-        s_flat.clear();
-        std::function<void(Primitive*, int)> build = [&](Primitive* p, int d) {
-            s_flat.push_back({p, d});
-            if (!p->children.empty() && s_expanded.count(p->id))
-                for (Primitive* ch : p->children) build(ch, d+1);
-        };
-        for (Primitive* p : scene.primitives)
-            if (!p->parent) build(p, 0);
-
         float rowH = ImGui::GetFrameHeight();
         float avW  = ImGui::GetContentRegionAvail().x;
         auto* dl   = ImGui::GetWindowDrawList();
         ImVec2 mp  = ImGui::GetMousePos();
 
+        struct FlatItem { SceneNode* node; int depth; };
+        static std::vector<FlatItem> s_flat;
+        s_flat.clear();
+
+        std::function<void(SceneNode*, int)> buildFlat = [&](SceneNode* n, int d) {
+            s_flat.push_back({n, d});
+            bool exp = s_expanded.count(n) > 0;
+            if (exp)
+                for (SceneNode* ch : n->children) buildFlat(ch, d+1);
+        };
+        buildFlat(&scene.root, 0);
+
         for (int i = 0; i < (int)s_flat.size(); ++i) {
-            Primitive* prim  = s_flat[i].prim;
+            SceneNode* node  = s_flat[i].node;
             int        depth = s_flat[i].depth;
-            bool hasCh = !prim->children.empty();
-            bool isExp = s_expanded.count(prim->id) > 0;
+            bool isRoot  = (node == &scene.root);
+            bool isPrim  = node->IsPrimitive();
+            bool isCtrl  = node->IsController();
+            bool hasCh   = !node->children.empty();
+            bool isExp   = s_expanded.count(node) > 0;
+
+            Primitive* prim = isPrim ? static_cast<Primitive*>(node) : nullptr;
 
             ImVec2 rp = ImGui::GetCursorScreenPos();
             ImVec2 re = {rp.x + avW, rp.y + rowH};
-
             bool hovered = (mp.x >= rp.x && mp.x < re.x && mp.y >= rp.y && mp.y < re.y);
-            if (prim->selected)
+
+            if (prim && prim->selected)
                 dl->AddRectFilled(rp, re, IM_COL32(70,110,180,180));
+            else if (isCtrl)
+                dl->AddRectFilled(rp, re, scene.controllerSelected
+                    ? IM_COL32(70,130,70,190) : IM_COL32(60,75,60,120));
+            else if (isRoot)
+                dl->AddRectFilled(rp, re, IM_COL32(45,50,70,140));
             else if (hovered)
                 dl->AddRectFilled(rp, re, IM_COL32(58,63,80,150));
 
-            float triX = rp.x + 4.f + depth * 14.f;
+            float triX  = rp.x + 4.f + depth * 14.f;
             float triMid = rp.y + rowH * .5f;
-
             if (hasCh) {
                 if (isExp)
                     dl->AddTriangleFilled({triX,triMid-4},{triX+8,triMid-4},{triX+4,triMid+3}, IM_COL32(200,210,230,200));
@@ -245,18 +268,43 @@ inline void Draw(const LayoutState& lay, float windowH, Scene& scene,
             }
 
             float textX = triX + 14.f;
-            const char* dimS = prim->GetDimension()==0 ? "p" : (prim->GetDimension()==1 ? "l" : "t");
-            std::string lbl = prim->name.empty()
-                ? (std::to_string(sceneIdx[prim->id]) + dimS)
-                : prim->name;
-            if (prim->HasUpdater()) lbl += " *";
 
-            ImU32 textCol = prim->selected ? IM_COL32(255,255,255,230) : IM_COL32(200,210,228,200);
+            // Inline rename for whichever node is currently being renamed
+            if (node == s_renameNode) {
+                ImGui::SetCursorScreenPos({textX, rp.y + 1.f});
+                ImGui::SetNextItemWidth(avW - textX + rp.x - 4.f);
+                if (s_renameFocus) { ImGui::SetKeyboardFocusHere(); s_renameFocus = false; }
+                bool entered = ImGui::InputText(("##rename" + std::to_string((uintptr_t)node)).c_str(),
+                                                s_renameBuffer, sizeof(s_renameBuffer),
+                                                ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+                if (entered || ImGui::IsItemDeactivated()) commitRename();
+                ImGui::SetCursorScreenPos({rp.x, rp.y + rowH});
+                continue;
+            }
+
+            std::string lbl;
+            ImU32 textCol;
+
+            if (isRoot) {
+                lbl      = node->name.empty() ? "(unnamed scene)" : node->name;
+                textCol  = IM_COL32(200,220,255,230);
+            } else if (isCtrl) {
+                lbl     = "[controller]";
+                textCol = IM_COL32(140,210,140,200);
+            } else if (isPrim) {
+                std::string dimS = prim->GetDimension()==0?"p":(prim->GetDimension()==1?"l":"t");
+                lbl = prim->name.empty() ? (std::to_string(prim->id) + dimS) : prim->name;
+                if (prim->HasUpdater()) lbl += " *";
+                textCol = prim->selected ? IM_COL32(255,255,255,230) : IM_COL32(200,210,228,200);
+            } else {
+                lbl     = node->name.empty() ? "(node)" : node->name;
+                textCol = IM_COL32(180,190,210,180);
+            }
+
             dl->AddText({textX, rp.y + (rowH - ImGui::GetTextLineHeight()) * .5f}, textCol, lbl.c_str());
 
-            // Hit area
             ImGui::SetCursorScreenPos(rp);
-            ImGui::InvisibleButton(("##r" + std::to_string(prim->id)).c_str(), {avW, rowH});
+            ImGui::InvisibleButton(("##r" + std::to_string((uintptr_t)node)).c_str(), {avW, rowH});
 
             if (ImGui::IsItemClicked()) {
                 bool ctrl  = ImGui::GetIO().KeyCtrl;
@@ -264,14 +312,26 @@ inline void Draw(const LayoutState& lay, float windowH, Scene& scene,
                 bool clickedTri = hasCh && mp.x >= triX && mp.x <= triX + 12.f;
 
                 if (clickedTri) {
-                    if (isExp) s_expanded.erase(prim->id);
-                    else       s_expanded.insert(prim->id);
-                } else {
+                    if (isExp) s_expanded.erase(node);
+                    else       s_expanded.insert(node);
+                } else if (isCtrl) {
+                    for (Primitive* p2 : scene.primitives) p2->selected = false;
+                    scene.orientationTransformer.SetTargetObjects({});
+                    scene.controllerSelected = true;
+                    s_lastClickedNode = node;
+                } else if (isRoot) {
+                    scene.controllerSelected = false;
+                    s_lastClickedNode = &scene.root;
+                } else if (isPrim) {
+                    scene.controllerSelected = false;
+                    s_lastClickedNode = prim;
                     if (shift && s_lastClickedIdx >= 0) {
                         int lo = std::min(i, s_lastClickedIdx);
                         int hi = std::max(i, s_lastClickedIdx);
                         for (Primitive* p2 : scene.primitives) p2->selected = false;
-                        for (int j = lo; j <= hi; ++j) s_flat[j].prim->selected = true;
+                        for (int j = lo; j <= hi; ++j)
+                            if (s_flat[j].node->IsPrimitive())
+                                static_cast<Primitive*>(s_flat[j].node)->selected = true;
                     } else if (ctrl) {
                         prim->selected = !prim->selected;
                         s_lastClickedIdx = i;
@@ -286,12 +346,32 @@ inline void Draw(const LayoutState& lay, float windowH, Scene& scene,
                 }
             }
 
+            // double-click any renamable node (root, primitive, generic node) → inline rename
+            if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0) && isRenamable(node))
+                beginRename(node);
+
             ImGui::SetCursorScreenPos({rp.x, rp.y + rowH});
         }
+
+        // F2 renames the last-clicked renamable node (validated against the live tree)
+        bool lastClickedAlive = false, renameAlive = false;
+        for (const FlatItem& fi : s_flat) {
+            if (fi.node == s_lastClickedNode) lastClickedAlive = true;
+            if (fi.node == s_renameNode)      renameAlive      = true;
+        }
+        if (!lastClickedAlive) s_lastClickedNode = nullptr;
+        if (!renameAlive)      s_renameNode      = nullptr;
+        if (s_renameNode == nullptr && ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows) &&
+            ImGui::IsKeyPressed(ImGuiKey_F2) && isRenamable(s_lastClickedNode))
+            beginRename(s_lastClickedNode);
+
+        // expand root by default
+        if (s_flat.size() > 0 && !s_expanded.count(&scene.root))
+            s_expanded.insert(&scene.root);
     }
     ImGui::EndChild();
 
-    if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem))
+    if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem | ImGuiHoveredFlags_ChildWindows))
         blockMousePick = true;
     ImGui::End();
 }

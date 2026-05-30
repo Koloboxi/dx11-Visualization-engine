@@ -4,6 +4,7 @@
 #include "..\..\buffers\indexBuffer.h"
 #include "..\..\buffers\constantBuffer.h"
 #include "..\..\math.h"
+#include "..\scene_node.h"
 #include <functional>
 
 using namespace DirectX;
@@ -15,17 +16,15 @@ namespace BaseVectors {
 	static const XMFLOAT3 ZVEC = XMFLOAT3(0, 0, 1);
 }
 
-class Primitive
+class Primitive : public SceneNode
 {
 public:
 	Primitive(ID3D11Device* device, ID3D11DeviceContext* deviceContext);
 	HRESULT SetVertexIndexBuffers(Vertex* vertexData, UINT vertexNumVertices, DWORD* indexData, UINT indexNumVertices, UCHAR dim);
 
-	UINT id{};
-	std::string name;
+	bool IsPrimitive() const override { return true; }
 
-	Primitive* parent = nullptr;
-	std::vector<Primitive*> children;
+	UINT id{};
 
 	void Draw(const XMMATRIX& viewMatrix, const XMMATRIX& projectionMatrix);
 	bool selected = false;
@@ -71,14 +70,17 @@ public:
 	void ClearUpdater() { updater = nullptr; }
 	bool HasUpdater() const { return updater != nullptr; }
 	void Update(float t, float dt) {
-		if (!updater) return;
-		XMFLOAT3 prevPos = pos;
-		updater(*this, t, dt);
-		if (dt > 0.0001f) {
-			velocity.x = (pos.x - prevPos.x) / dt;
-			velocity.y = (pos.y - prevPos.y) / dt;
-			velocity.z = (pos.z - prevPos.z) / dt;
+		if (updater) updater(*this, t, dt);
+		// Derive velocity from the frame-to-frame position delta, so primitives moved
+		// by something other than their own updater (e.g. a scene controller tick) still
+		// get a meaningful velocity.
+		if (velTracked && dt > 0.0001f) {
+			velocity.x = (pos.x - velPrevPos.x) / dt;
+			velocity.y = (pos.y - velPrevPos.y) / dt;
+			velocity.z = (pos.z - velPrevPos.z) / dt;
 		}
+		velPrevPos = pos;
+		velTracked = true;
 	}
 
 private:
@@ -97,7 +99,8 @@ private:
 
 	ConstantBuffer<CB_VS_vertexshader> cb_vs_vertexshader{};
 	ConstantBuffer<CB_PS_pixelshader> cb_ps_pixelshader{};
-	
+	bool psCBDirty = true;
+
 	float scale = 1.0f;
 
 	bool illuminationCapability;
@@ -107,6 +110,9 @@ private:
 	XMFLOAT3 pos{};
 	XMFLOAT4 rotQuat = { 0.0f, 0.0f, 0.0f, 1.0f };
 	XMFLOAT3 rotZero{};
+
+	XMFLOAT3 velPrevPos{};
+	bool     velTracked = false;
 
 	Updater updater;
 };
@@ -127,4 +133,7 @@ namespace PrimitiveConstructor {
 
 	// Arrow: shaft (cylinder) + cone head from 'from' to 'to'
 	Primitive* Arrow3d(float shaftRadius, float headRadius, float headLength, const XMFLOAT3& from, const XMFLOAT3& to, UINT sides, const XMFLOAT4& col, UINT id);
+
+	Primitive* CubeWireframe(float halfSize, const XMFLOAT3& center, const XMFLOAT4& col, UINT id);
+	Primitive* CubeSolid(float halfSize, const XMFLOAT3& center, const XMFLOAT4& col, UINT id);
 }

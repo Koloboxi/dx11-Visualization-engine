@@ -302,6 +302,83 @@ Primitive* PrimitiveConstructor::Arc3d(float arcRadius, float lineRadius, float 
 	return Line3d(lineRadius, poses, 5, col, id);
 }
 
+Primitive* PrimitiveConstructor::CubeWireframe(float halfSize, const XMFLOAT3& center, const XMFLOAT4& col, UINT id)
+{
+	float L = halfSize;
+	float cx = center.x, cy = center.y, cz = center.z;
+
+	XMFLOAT3 corners[8] = {
+		{cx-L, cy-L, cz-L},
+		{cx+L, cy-L, cz-L},
+		{cx+L, cy+L, cz-L},
+		{cx-L, cy+L, cz-L},
+		{cx-L, cy-L, cz+L},
+		{cx+L, cy-L, cz+L},
+		{cx+L, cy+L, cz+L},
+		{cx-L, cy+L, cz+L},
+	};
+
+	// 12 edges as line pairs
+	int edgeIdx[24] = {
+		0,1, 1,2, 2,3, 3,0,
+		4,5, 5,6, 6,7, 7,4,
+		0,4, 1,5, 2,6, 3,7
+	};
+	std::vector<Vertex> verts;
+	verts.reserve(24);
+	for (int k = 0; k < 24; k++)
+		verts.push_back(Vertex(corners[edgeIdx[k]]));
+
+	Primitive* p = new Primitive(device, deviceContext);
+	p->SetVertexIndexBuffers(verts.data(), 24, nullptr, 0, 1);
+	p->SetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_LINELIST);
+	p->SetPosition({0, 0, 0});
+	p->SetColor(col);
+	p->SetIlluminationCapability(false);
+	p->id = id;
+	return p;
+}
+
+Primitive* PrimitiveConstructor::CubeSolid(float halfSize, const XMFLOAT3& center, const XMFLOAT4& col, UINT id)
+{
+	float L = halfSize;
+	float cx = center.x, cy = center.y, cz = center.z;
+
+	auto v = [](float x, float y, float z, float nx, float ny, float nz) -> Vertex {
+		return Vertex({x, y, z}, {nx, ny, nz});
+	};
+
+	std::vector<Vertex> verts = {
+		// +X
+		v(cx+L, cy-L, cz-L,  1,0,0), v(cx+L, cy+L, cz-L,  1,0,0), v(cx+L, cy+L, cz+L,  1,0,0),
+		v(cx+L, cy-L, cz-L,  1,0,0), v(cx+L, cy+L, cz+L,  1,0,0), v(cx+L, cy-L, cz+L,  1,0,0),
+		// -X
+		v(cx-L, cy-L, cz+L, -1,0,0), v(cx-L, cy+L, cz+L, -1,0,0), v(cx-L, cy+L, cz-L, -1,0,0),
+		v(cx-L, cy-L, cz+L, -1,0,0), v(cx-L, cy+L, cz-L, -1,0,0), v(cx-L, cy-L, cz-L, -1,0,0),
+		// +Y
+		v(cx-L, cy+L, cz-L,  0,1,0), v(cx-L, cy+L, cz+L,  0,1,0), v(cx+L, cy+L, cz+L,  0,1,0),
+		v(cx-L, cy+L, cz-L,  0,1,0), v(cx+L, cy+L, cz+L,  0,1,0), v(cx+L, cy+L, cz-L,  0,1,0),
+		// -Y
+		v(cx-L, cy-L, cz+L,  0,-1,0), v(cx-L, cy-L, cz-L,  0,-1,0), v(cx+L, cy-L, cz-L,  0,-1,0),
+		v(cx-L, cy-L, cz+L,  0,-1,0), v(cx+L, cy-L, cz-L,  0,-1,0), v(cx+L, cy-L, cz+L,  0,-1,0),
+		// +Z
+		v(cx-L, cy-L, cz+L,  0,0,1), v(cx+L, cy-L, cz+L,  0,0,1), v(cx+L, cy+L, cz+L,  0,0,1),
+		v(cx-L, cy-L, cz+L,  0,0,1), v(cx+L, cy+L, cz+L,  0,0,1), v(cx-L, cy+L, cz+L,  0,0,1),
+		// -Z
+		v(cx+L, cy-L, cz-L,  0,0,-1), v(cx-L, cy-L, cz-L,  0,0,-1), v(cx-L, cy+L, cz-L,  0,0,-1),
+		v(cx+L, cy-L, cz-L,  0,0,-1), v(cx-L, cy+L, cz-L,  0,0,-1), v(cx+L, cy+L, cz-L,  0,0,-1),
+	};
+
+	Primitive* p = new Primitive(device, deviceContext);
+	p->SetVertexIndexBuffers(verts.data(), (UINT)verts.size(), nullptr, 0, 2);
+	p->SetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	p->SetPosition({0, 0, 0});
+	p->SetColor(col);
+	p->SetIlluminationCapability(true);
+	p->id = id;
+	return p;
+}
+
 Primitive* PrimitiveConstructor::Arrow3d(
 	float shaftRadius, float headRadius, float headLength,
 	const XMFLOAT3& fromF, const XMFLOAT3& toF,

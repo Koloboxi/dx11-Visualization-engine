@@ -10,6 +10,8 @@
 #include "auxiliaryObjects.h"
 #include "..\..\utils\Timer.h"
 #include "..\..\external\json.hpp"
+#include "scene_node.h"
+#include "scene_controller.h"
 
 #include <unordered_map>
 #include <deque>
@@ -20,24 +22,12 @@
 
 class Scene;
 
-struct SceneWindow {
-    std::string id;
-    std::string title;
-    bool open = true;
-    float pos[2]  = {  50.f,  50.f };
-    float size[2] = { 300.f, 200.f };
-    bool needRestore = false;
-    std::function<void(SceneWindow&)> drawContent;
-};
-
 struct GlobalSlider {
     std::string label;
     std::string luaGlobalName;
     float* valuePtr = nullptr;
     float min = 0.f;
     float max = 1.f;
-    std::function<bool()> readOnly;
-    std::function<void()> onChange;
 };
 
 class Scene {
@@ -55,7 +45,7 @@ public:
 	void DeleteSelected();
 	bool blockMousePick = false;
 	bool blockMouseWheel = false;
-	int lastSelectedIdx = -1;
+	bool controllerSelected = false;
 
 	bool rsSolid = true;
 	bool rsWireframe = false;
@@ -71,6 +61,9 @@ public:
 	bool showGrid = true;
 	bool showAxes = true;
 
+	SceneNode       root;
+	SceneController* controller = nullptr;
+
 	std::vector<Primitive*> primitives;
 
 	void AddPoint(const XMFLOAT3& pos, const XMFLOAT4& col);
@@ -81,23 +74,29 @@ public:
 	void AddArc3d(float arcRadius, float lineRadius, float angleDeg, const XMFLOAT3& center, const UINT numSubdivides, const XMFLOAT4& col);
 	void AddArrow3d(float shaftRadius, float headRadius, float headLength, const XMFLOAT3& from, const XMFLOAT3& to, UINT sides, const XMFLOAT4& col);
 	void AddFromSTL(const std::string& path, const XMFLOAT4& col, const std::string& name = "");
+	void AddCubeWireframe(float halfSize, const XMFLOAT3& center, const XMFLOAT4& col);
+	void AddCubeSolid(float halfSize, const XMFLOAT3& center, const XMFLOAT4& col);
 
 	void RemovePrimitive(Primitive* p);
+	void RemovePrimitivesByPrefix(const std::string& prefix);
+	void SetController(SceneController* ctrl);
 
 	void LoadNewtonDemo();
 	void LoadPersistentHomologyScene();
 	void LoadGRScene();
+	void LoadIdealGasScene();
 
 	nlohmann::json sceneData;
 	std::unordered_map<std::string, std::shared_ptr<float>> sceneFloats;
-	std::vector<SceneWindow>  sceneWindows;
 	std::vector<GlobalSlider> sceneSliders;
 	std::function<void(Scene&, float t, float dt, bool paused)> sceneTick;
 	std::function<void(Scene&)> sceneReset;
-	std::string currentSceneId;
-	std::unordered_map<std::string, std::function<void(Scene&)>> sceneRebinders;
+	std::string sceneName;
+	std::function<void(const std::vector<Primitive*>&)>  luaReApplyCallback;
+	std::function<void(SceneController&)>                luaCompileControllerCallback;
+	std::function<nlohmann::json()>                      luaSaveStateCallback;
+	std::function<void(const nlohmann::json&)>           luaRestoreStateCallback;
 
-	void RegisterSceneRebinders();
 	void ClearSceneCustomState();
 
 	std::string scenesPath = "Data/Scenes/";
@@ -120,6 +119,7 @@ public:
 
 	bool pickModeActive = false;
 	UINT pickedPrimId   = 0;
+	bool idPassNeeded   = true;
 
 private:
 	ID3D11Device* device;
@@ -197,7 +197,7 @@ private:
 
 	void DrawGrid();
 
-	std::vector<Primitive*>& GetPrimitivesSorted();
+	const std::vector<Primitive*>& GetPrimitivesSorted() const;
 
 	void SetOutline(const XMFLOAT4& col, const float outlineScale);
 	void RenderOutlineToTexture(bool toTexture);
@@ -212,4 +212,8 @@ private:
 
 	std::vector<std::string> savedScenes;
 	void UpdateSavedScenes();
+
+	mutable std::vector<Primitive*> m_sortedCache;
+	mutable bool     m_sortedDirty   = true;
+	mutable XMFLOAT3 m_sortedCamPos  = { 1e30f, 1e30f, 1e30f };
 };

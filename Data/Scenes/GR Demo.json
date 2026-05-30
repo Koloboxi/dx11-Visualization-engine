@@ -1,32 +1,92 @@
 {
     "camera": {
         "camPos": [
-            -9.161713600158691,
-            -36.8354377746582,
-            17.967052459716797
+            49.030609130859375,
+            -22.338682174682617,
+            -12.513524055480957
         ],
         "camRot": [
-            -0.9784753918647766,
-            0.19146418571472168,
-            0.0035650457721203566,
+            -0.846333920955658,
+            0.5269109606742859,
+            0.012975811958312988,
             0.0,
-            0.09649097919464111,
-            0.6311838626861572,
-            0.4922337234020233,
+            0.3538525402545929,
+            0.6123287677764893,
+            0.387123703956604,
             0.0,
-            -0.11866798251867294,
-            -0.6219013929367065,
-            0.7702073454856873,
+            -0.2574661374092102,
+            -0.4351117014884949,
+            0.8593506217002869,
             0.0,
             0.0,
             0.0,
             0.0,
             1.0
         ],
-        "camScale": 0.6830132007598877
+        "camScale": 1.0
     },
-    "currentSceneId": "gr",
-    "currentTime": 147.31175231933594,
+    "controller": {
+        "name": "controller",
+        "scripts": [
+            {
+                "code": "\nlocal GM = gr_GM or 10000\nlocal c2 = gr_c2 or 2000\nlocal Rs = 2*GM/c2\nfor i=1,#scene do\n  local n = scene[i].name\n  if n == \"gr_bh\"     then scene[i].scale = math.max(Rs,     0.001) end\n  if n == \"gr_photon\" then scene[i].scale = math.max(1.5*Rs, 0.001) end\n  if n == \"gr_isco\"   then scene[i].scale = math.max(3.0*Rs, 0.001) end\nend\n",
+                "name": "tick"
+            },
+            {
+                "code": "\nlocal GM = gr_GM or 10000\nlocal c2 = gr_c2 or 2000\nlocal Rs = 2*GM/c2\nlocal ISCO = 3*Rs\nlocal labels = {\"Mercury\",\"Venus\",\"Comet\"}\nimgui_text(string.format(\"%-8s  %6s  %6s  %8s\", \"Body\",\"r\",\"|v|\",\"dt/dt\"))\nimgui_separator()\nif not _gr then imgui_text(\"(initializing...)\"); return end\nlocal anyInside = false\nfor i=1,3 do\n  local b = _gr[i]\n  local r  = math.sqrt(b.px*b.px + b.py*b.py + b.pz*b.pz)\n  local v2 = b.vx*b.vx + b.vy*b.vy + b.vz*b.vz\n  local v  = math.sqrt(v2)\n  local darg = 1 - Rs/math.max(r,0.001) - v2/math.max(c2,1e-9)\n  if darg < 0 then darg = 0 end\n  local tau = math.sqrt(darg)\n  local inside = r < ISCO\n  if inside then anyInside = true end\n  local star = inside and \"*\" or \" \"\n  imgui_text(string.format(\"%-8s  %6.1f  %6.2f  %8.5f %s\", labels[i], r, v, tau, star))\nend\nimgui_separator()\nimgui_text(string.format(\"Coord. time: %.3f\", t))\nif anyInside then\n  imgui_text_colored(1, 0.35, 0.35, 1, string.format(\"* r < ISCO (%.1f)\", ISCO))\nend\n",
+                "name": "draw_gr_orbits"
+            },
+            {
+                "code": "\nlocal GM = gr_GM or 10000\nlocal c2 = gr_c2 or 2000\nlocal c  = math.sqrt(c2)\nlocal Rs = 2*GM/c2\nimgui_text(string.format(\"GM:                    %.1f\", GM))\nimgui_text(string.format(\"c (speed of light):    %.2f u/s\", c))\nimgui_separator()\nimgui_text(string.format(\"Schwarzschild radius Rs: %.2f\", Rs))\nimgui_text(string.format(\"Photon sphere:           %.2f\", 1.5*Rs))\nimgui_text(string.format(\"ISCO:                    %.2f\", 3.0*Rs))\nimgui_separator()\nlocal labels = {\"Mercury\",\"Venus\",\"Comet\"}\nimgui_text(\"1PN precession estimate:\")\nif _gr then\n  for i=1,3 do\n    local b = _gr[i]\n    local r = math.sqrt(b.px*b.px + b.py*b.py + b.pz*b.pz)\n    if r > 0.001 then\n      local vcirc = math.sqrt(GM/r)\n      local T = 2*math.pi*r/math.max(vcirc,0.001)\n      local prec_deg = 6*math.pi*GM/(c2*r) * 180/math.pi\n      imgui_text(string.format(\"  %-7s ~%.1f deg/orbit  T~%.1f\", labels[i], prec_deg, T))\n    end\n  end\nend\n",
+                "name": "draw_gr_info"
+            }
+        ],
+        "sliderDefs": [
+            {
+                "label": "GM",
+                "lua_global": "gr_GM",
+                "max": 50000.0,
+                "min": 1000.0,
+                "read_only": false
+            },
+            {
+                "label": "c²",
+                "lua_global": "gr_c2",
+                "max": 20000.0,
+                "min": 100.0,
+                "read_only": false
+            }
+        ],
+        "windowDefs": [
+            {
+                "id": "gr_orbits",
+                "pos": [
+                    50.0,
+                    380.0
+                ],
+                "size": [
+                    400.0,
+                    150.0
+                ],
+                "title": "GR Orbits",
+                "widgets": []
+            },
+            {
+                "id": "gr_info",
+                "pos": [
+                    460.0,
+                    380.0
+                ],
+                "size": [
+                    320.0,
+                    210.0
+                ],
+                "title": "GR Parameters",
+                "widgets": []
+            }
+        ]
+    },
+    "currentTime": 38.96665954589844,
     "primitives": [
         {
             "color": [
@@ -36,7 +96,7 @@
                 1.0
             ],
             "dimension": 2,
-            "id": 41,
+            "id": 46,
             "illuminationCapability": true,
             "indices": [
                 0,
@@ -3521,7 +3581,7 @@
                 0.550000011920929
             ],
             "dimension": 2,
-            "id": 42,
+            "id": 47,
             "illuminationCapability": true,
             "indices": [
                 0,
@@ -5876,7 +5936,7 @@
                 0.44999998807907104
             ],
             "dimension": 2,
-            "id": 43,
+            "id": 48,
             "illuminationCapability": true,
             "indices": [
                 0,
@@ -8231,7 +8291,7 @@
                 1.0
             ],
             "dimension": 2,
-            "id": 44,
+            "id": 49,
             "illuminationCapability": true,
             "indices": [
                 0,
@@ -9195,10 +9255,11 @@
                 310,
                 311
             ],
+            "luaScript": "\nif _gr_t and t < _gr_t - 0.001 then _gr = nil end\n_gr_t = t\nlocal GM = gr_GM or 10000\nlocal c2 = gr_c2 or 2000\nlocal Rs = 2*GM/c2\nlocal soft2 = (Rs*0.5)*(Rs*0.5)\nif not _gr then\n  _gr = {\n    {px=200, py=0,  pz=0,  vx=0, vy=7.0,  vz=0},\n    {px=120, py=0,  pz=0,  vx=0, vy=10.5, vz=0},\n    {px=350, py=0,  pz=50, vx=0, vy=5.0,  vz=2.0}\n  }\nend\nfor i=1,3 do\n  local b=_gr[i]\n  local rx,ry,rz=b.px,b.py,b.pz\n  local vx,vy,vz=b.vx,b.vy,b.vz\n  local r2=rx*rx+ry*ry+rz*rz+soft2\n  local r=math.sqrt(r2)\n  local r3=r2*r\n  local v2=vx*vx+vy*vy+vz*vz\n  local rdotv=rx*vx+ry*vy+rz*vz\n  local newt=GM/r3\n  local pnC=GM/(c2*r3)\n  local pnA=4*GM/r-v2\n  local ax=-newt*rx+pnC*(pnA*rx+4*rdotv*vx)\n  local ay=-newt*ry+pnC*(pnA*ry+4*rdotv*vy)\n  local az=-newt*rz+pnC*(pnA*rz+4*rdotv*vz)\n  b.vx=b.vx+ax*dt; b.vy=b.vy+ay*dt; b.vz=b.vz+az*dt\n  b.px=b.px+b.vx*dt; b.py=b.py+b.vy*dt; b.pz=b.pz+b.vz*dt\nend\np.x=_gr[1].px; p.y=_gr[1].py; p.z=_gr[1].pz\n",
             "name": "gr_body_0",
             "position": [
-                -73.36588287353516,
-                -211.06887817382813,
+                50.85554122924805,
+                202.6697235107422,
                 0.0
             ],
             "primitiveTopology": 4,
@@ -9209,6 +9270,11 @@
                 1.0
             ],
             "scale": 1.0,
+            "velocity": [
+                -6.426644325256348,
+                2.040280818939209,
+                0.0
+            ],
             "vertices": [
                 [
                     0.0,
@@ -11716,7 +11782,7 @@
                 1.0
             ],
             "dimension": 2,
-            "id": 45,
+            "id": 50,
             "illuminationCapability": true,
             "indices": [
                 0,
@@ -12680,10 +12746,11 @@
                 310,
                 311
             ],
+            "luaScript": "if _gr and _gr[2] then p.x=_gr[2].px; p.y=_gr[2].py; p.z=_gr[2].pz end",
             "name": "gr_body_1",
             "position": [
-                -491.3316345214844,
-                -3.9519362449645996,
+                -109.30494689941406,
+                214.97935485839844,
                 0.0
             ],
             "primitiveTopology": 4,
@@ -12694,6 +12761,11 @@
                 1.0
             ],
             "scale": 1.0,
+            "velocity": [
+                -6.812255859375,
+                0.8599701523780823,
+                0.0
+            ],
             "vertices": [
                 [
                     0.0,
@@ -15201,7 +15273,7 @@
                 1.0
             ],
             "dimension": 2,
-            "id": 46,
+            "id": 51,
             "illuminationCapability": true,
             "indices": [
                 0,
@@ -16165,11 +16237,12 @@
                 310,
                 311
             ],
+            "luaScript": "if _gr and _gr[3] then p.x=_gr[3].px; p.y=_gr[3].py; p.z=_gr[3].pz end",
             "name": "gr_body_2",
             "position": [
-                -163.34780883789063,
-                357.8169860839844,
-                119.79127502441406
+                295.6656494140625,
+                185.04383850097656,
+                116.25548553466797
             ],
             "primitiveTopology": 4,
             "rotation": [
@@ -16179,6 +16252,11 @@
                 1.0
             ],
             "scale": 1.0,
+            "velocity": [
+                -2.66033935546875,
+                4.266854286193848,
+                1.3266637325286865
+            ],
             "vertices": [
                 [
                     0.0,
@@ -18679,74 +18757,11 @@
             ]
         }
     ],
-    "sceneData": {
-        "gr_bodies": [
-            {
-                "ip": [
-                    200.0,
-                    0.0,
-                    0.0
-                ],
-                "iv": [
-                    0.0,
-                    7.0,
-                    0.0
-                ]
-            },
-            {
-                "ip": [
-                    120.0,
-                    0.0,
-                    0.0
-                ],
-                "iv": [
-                    0.0,
-                    10.5,
-                    0.0
-                ]
-            },
-            {
-                "ip": [
-                    350.0,
-                    0.0,
-                    50.0
-                ],
-                "iv": [
-                    0.0,
-                    5.0,
-                    2.0
-                ]
-            }
-        ]
-    },
+    "sceneData": {},
     "sceneFloats": {
         "gr_GM": 10000.0,
         "gr_c2": 2000.0
     },
-    "sceneWindows": [
-        {
-            "id": "gr_orbits",
-            "open": true,
-            "pos": [
-                50.0,
-                380.0
-            ],
-            "size": [
-                430.0,
-                175.0
-            ]
-        },
-        {
-            "id": "gr_info",
-            "open": true,
-            "pos": [
-                490.0,
-                380.0
-            ],
-            "size": [
-                320.0,
-                270.0
-            ]
-        }
-    ]
+    "sceneName": "GR Demo",
+    "sceneWindows": []
 }
