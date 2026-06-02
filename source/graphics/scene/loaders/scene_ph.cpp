@@ -1,12 +1,6 @@
 #include "../scene.h"
 
-// Persistent-homology demo, fully driven by a SceneController + Lua (like the other
-// demos). The only C++ specialisation is the heavy numeric helpers exposed to Lua:
-// scene_ph_topology(cloud, r) -> b0,b1,edges,tris  and  scene_ph_coverage(cloud) -> r.
-// The point cloud lives in the Lua global _ph_cloud (array of {x,y,z}); ph_pt_<k> are
-// the points and ph_sph_<k> the growing VR balls (nested under their point in the tree).
 
-// Build / regenerate the cloud and its primitives.
 static const char* PH_GENERATE = R"lua(
 math.randomseed(os.time())
 scene_remove_by_prefix("ph_pt_")
@@ -159,7 +153,7 @@ void Scene::LoadPersistentHomologyScene()
     this->sceneFloats["ph_distrib"]      = std::make_shared<float>(0.0f);
     this->sceneFloats["ph_gaussSigma"]   = std::make_shared<float>(80.0f);
     this->sceneFloats["ph_sphereR"]      = std::make_shared<float>(120.0f);
-    this->sceneData["ph_distrib"]        = 0; // combo current index
+    this->sceneData["ph_distrib"]        = 0;
 
     auto* ctrl = new SceneController();
     ctrl->SetScript("tick",          PH_TICK);
@@ -180,7 +174,6 @@ void Scene::LoadPersistentHomologyScene()
 
     SetController(ctrl);
 
-    // Build the initial cloud + primitives through the same Lua action the button uses.
     if (controller && controller->compiledFns.count("generate"))
         controller->compiledFns["generate"](*this);
 

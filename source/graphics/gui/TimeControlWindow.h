@@ -42,4 +42,4 @@ inline void Draw(const LayoutState& lay, float windowH, Scene& scene,
     ImGui::End();
 }
 
-} // namespace TimeControlWindow
+}

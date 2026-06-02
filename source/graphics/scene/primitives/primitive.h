@@ -71,9 +71,6 @@ public:
 	bool HasUpdater() const { return updater != nullptr; }
 	void Update(float t, float dt) {
 		if (updater) updater(*this, t, dt);
-		// Derive velocity from the frame-to-frame position delta, so primitives moved
-		// by something other than their own updater (e.g. a scene controller tick) still
-		// get a meaningful velocity.
 		if (velTracked && dt > 0.0001f) {
 			velocity.x = (pos.x - velPrevPos.x) / dt;
 			velocity.y = (pos.y - velPrevPos.y) / dt;
@@ -89,7 +86,7 @@ private:
 
 	ID3D11Device* device{};
 	ID3D11DeviceContext* deviceContext{};
-	 
+
 	VertexBuffer<Vertex> vertexBuffer{};
 	IndexBuffer indexBuffer{};
 	VertexBuffer<Vertex> vertexBufferFaces{};
@@ -117,7 +114,6 @@ private:
 	Updater updater;
 };
 
-#include "..\..\misc\inlines.h"
 namespace PrimitiveConstructor {
 	extern ID3D11Device* device;
 	extern ID3D11DeviceContext* deviceContext;
@@ -131,7 +127,6 @@ namespace PrimitiveConstructor {
 
 	Primitive* Arc3d(float arcRadius, float lineRadius, float angleDeg, const XMFLOAT3& center, const UINT numSubdivides, const XMFLOAT4& col, UINT id);
 
-	// Arrow: shaft (cylinder) + cone head from 'from' to 'to'
 	Primitive* Arrow3d(float shaftRadius, float headRadius, float headLength, const XMFLOAT3& from, const XMFLOAT3& to, UINT sides, const XMFLOAT4& col, UINT id);
 
 	Primitive* CubeWireframe(float halfSize, const XMFLOAT3& center, const XMFLOAT4& col, UINT id);

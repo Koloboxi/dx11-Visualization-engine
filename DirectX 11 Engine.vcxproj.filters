@@ -17,12 +17,6 @@
     <FxCompile Include="source\graphics\shaders\pixelshaderwriteids.hlsl" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="source\eigen-master\bench\perf_monitoring\resources\chart_footer.html" />
-    <None Include="source\eigen-master\bench\perf_monitoring\resources\chart_header.html" />
-    <None Include="source\eigen-master\bench\perf_monitoring\resources\footer.html" />
-    <None Include="source\eigen-master\bench\perf_monitoring\resources\header.html" />
-  </ItemGroup>
-  <ItemGroup>
     <ClInclude Include="source\graphics\imgui\imconfig.h" />
     <ClInclude Include="source\graphics\imgui\imgui.h" />
     <ClInclude Include="source\graphics\imgui\imgui_impl_dx11.h" />
@@ -56,9 +50,7 @@
     <ClInclude Include="source\graphics\imgui\implot_internal.h" />
     <ClInclude Include="source\graphics\camera\Projections.h" />
     <ClInclude Include="source\graphics\misc\Colors.h" />
-    <ClInclude Include="source\graphics\misc\inlines.h" />
     <ClInclude Include="source\external\json.hpp" />
-    <ClInclude Include="source\graphics\misc\DataVisualizer.h" />
     <ClInclude Include="source\graphics\scene\jsonSaver.h" />
     <ClInclude Include="source\graphics\imgui\imgui_stdlib.h" />
     <ClInclude Include="source\graphics\math.h" />
@@ -75,6 +67,8 @@
     <ClInclude Include="source\graphics\gui\PrimitivesWindow.h" />
     <ClInclude Include="source\graphics\gui\TimeControlWindow.h" />
     <ClInclude Include="source\graphics\gui\TopStripWindow.h" />
+    <ClInclude Include="source\graphics\scene\scene_controller.h" />
+    <ClInclude Include="source\graphics\scene\scene_node.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="source\graphics\imgui\imgui.cpp" />
@@ -107,8 +101,16 @@
     <ClCompile Include="source\graphics\imgui\implot_items.cpp" />
     <ClCompile Include="source\graphics\gui.cpp" />
     <ClCompile Include="source\graphics\imgui\imgui_stdlib.cpp" />
-    <ClCompile Include="source\graphics\scene\auxiliaryObjects.h" />
+    <ClInclude Include="source\graphics\scene\auxiliaryObjects.h" />
     <ClCompile Include="source\graphics\scene\auxiliaryObjects.cpp" />
     <ClCompile Include="source\graphics\scene\primitives\primitiveConstructor.cpp" />
+    <ClCompile Include="source\graphics\scene\loaders\scene_gas.cpp" />
+    <ClCompile Include="source\scripting\LuaUpdaterEditor.cpp" />
+    <ClCompile Include="source\scripting\LuaUpdaterEditor_updaters.cpp" />
+    <ClCompile Include="source\scripting\LuaUpdaterEditor_console.cpp" />
+    <ClCompile Include="source\scripting\LuaUpdaterEditor_globals.cpp" />
+    <ClCompile Include="source\scripting\LuaUpdaterEditor_api.cpp" />
+    <ClCompile Include="source\scripting\LuaUpdaterEditor_controller.cpp" />
+    <ClCompile Include="source\scripting\LuaUpdaterEditor_state.cpp" />
   </ItemGroup>
 </Project>

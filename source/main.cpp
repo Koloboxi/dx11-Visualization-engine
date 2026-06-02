@@ -3,7 +3,7 @@
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 	_In_opt_ HINSTANCE hPrevInstance,
 	_In_ LPWSTR lpCmdLine,
-	_In_ int nCmdShow) 
+	_In_ int nCmdShow)
 {
 	try {
 		HRESULT hr = CoInitialize(NULL);
@@ -17,7 +17,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 		RECT workArea;
 		SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
 
-		int width = workArea.right - workArea.left; 
+		int width = workArea.right - workArea.left;
 		int height = workArea.bottom - workArea.top;
 		width /= 1.2f;
 		height /= 1.2f;
@@ -32,6 +32,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 	catch (const std::exception& e) {
 		ErrorLogger::Log(e.what());
 	}
-	
+
 	return 0;
 }

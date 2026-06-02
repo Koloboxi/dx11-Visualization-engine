@@ -8,7 +8,7 @@ class Camera
 public:
 	Camera();
 	void SetProjectionValues(float viewWidth, float viewHeight, float nearZ, float farZ);
-	
+
 	const XMMATRIX& GetViewMatrix()	const;
 	const XMMATRIX& GetProjectionMatrix() const;
 
@@ -29,7 +29,7 @@ public:
 
 	void SetRotation(const XMMATRIX& rotMatrix);
 	void AdjustRotation(const XMMATRIX& rotMatrix);
-	
+
 	const XMVECTOR& GetForwardVector();
 	const XMVECTOR& GetRightVector();
 	const XMVECTOR& GetBackwardVector();

@@ -97,7 +97,6 @@ inline void Draw(const LayoutState& lay, float windowH, Scene& scene,
     ImGui::SetNextWindowSize({lay.colW, primH}, ImGuiCond_Always);
     ImGui::Begin("Primitives", nullptr, extraFlags);
 
-    // ── Scenes ──────────────────────────────────────────────────────────────
     if (ImGui::Button("Save"))
         scene.SaveScene(scene.sceneName.empty() ? "scene.json" : scene.sceneName + ".json");
     ImGui::SameLine();
@@ -140,7 +139,6 @@ inline void Draw(const LayoutState& lay, float windowH, Scene& scene,
 
     ImGui::Separator();
 
-    // ── + / - ───────────────────────────────────────────────────────────────
     if (ImGui::Button("+")) ImGui::OpenPopup("AddPrimitive");
     ImGui::SameLine();
     if (ImGui::Button("-")) {
@@ -150,7 +148,6 @@ inline void Draw(const LayoutState& lay, float windowH, Scene& scene,
         s_lastClickedIdx = -1;
     }
 
-    // ── AddPrimitive modal ──────────────────────────────────────────────────
     ImGui::SetNextWindowSize({380, 0}, ImGuiCond_Always);
     if (ImGui::BeginPopupModal("AddPrimitive", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         static const char* types[] = { "Point","Line","Polygon","Sphere","Line3d","Arc3d","STL","Arrow3d" };
@@ -209,7 +206,6 @@ inline void Draw(const LayoutState& lay, float windowH, Scene& scene,
         ImGui::EndPopup();
     }
 
-    // ── Tree ────────────────────────────────────────────────────────────────
     ImGui::Separator();
 
     if (ImGui::BeginChild("##primlist", {0,0}, false)) {
@@ -269,7 +265,6 @@ inline void Draw(const LayoutState& lay, float windowH, Scene& scene,
 
             float textX = triX + 14.f;
 
-            // Inline rename for whichever node is currently being renamed
             if (node == s_renameNode) {
                 ImGui::SetCursorScreenPos({textX, rp.y + 1.f});
                 ImGui::SetNextItemWidth(avW - textX + rp.x - 4.f);
@@ -346,14 +341,12 @@ inline void Draw(const LayoutState& lay, float windowH, Scene& scene,
                 }
             }
 
-            // double-click any renamable node (root, primitive, generic node) → inline rename
             if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0) && isRenamable(node))
                 beginRename(node);
 
             ImGui::SetCursorScreenPos({rp.x, rp.y + rowH});
         }
 
-        // F2 renames the last-clicked renamable node (validated against the live tree)
         bool lastClickedAlive = false, renameAlive = false;
         for (const FlatItem& fi : s_flat) {
             if (fi.node == s_lastClickedNode) lastClickedAlive = true;
@@ -365,7 +358,6 @@ inline void Draw(const LayoutState& lay, float windowH, Scene& scene,
             ImGui::IsKeyPressed(ImGuiKey_F2) && isRenamable(s_lastClickedNode))
             beginRename(s_lastClickedNode);
 
-        // expand root by default
         if (s_flat.size() > 0 && !s_expanded.count(&scene.root))
             s_expanded.insert(&scene.root);
     }
@@ -376,4 +368,4 @@ inline void Draw(const LayoutState& lay, float windowH, Scene& scene,
     ImGui::End();
 }
 
-} // namespace PrimitivesWindow
+}

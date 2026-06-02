@@ -16,7 +16,8 @@
       "PowerShell(Get-Process venginedx11 -ErrorAction SilentlyContinue)",
       "Bash(msbuild \"DirectX 11 Engine.vcxproj\" /p:Configuration=Debug /p:Platform=x64 /t:Build /m /nologo)",
       "Bash(where msbuild *)",
-      "PowerShell($msb = \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\2022\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\"; & $msb \"dx11-Visualization-engine.sln\" /t:Build /p:Configuration=Debug /p:Platform=x64 /m /nologo /v:minimal 2>&1 | Select-Object -Last 25)"
+      "PowerShell($msb = \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\2022\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\"; & $msb \"dx11-Visualization-engine.sln\" /t:Build /p:Configuration=Debug /p:Platform=x64 /m /nologo /v:minimal 2>&1 | Select-Object -Last 25)",
+      "PowerShell($f = \"C:\\\\Users\\\\kolobox\\\\source\\\\repos\\\\DirectX\\\\Visualization engine dx11\\\\source\\\\scripting\\\\LuaUpdaterEditor.h\"; \"LuaUpdaterEditor.h lines: \" + \\(Get-Content $f | Measure-Object -Line\\).Lines; \"`n--- math.h ---\"; \\(Get-Content \"C:\\\\Users\\\\kolobox\\\\source\\\\repos\\\\DirectX\\\\Visualization engine dx11\\\\source\\\\graphics\\\\math.h\" | Measure-Object -Line\\).Lines; \"--- inlines.h ---\"; \\(Get-Content \"C:\\\\Users\\\\kolobox\\\\source\\\\repos\\\\DirectX\\\\Visualization engine dx11\\\\source\\\\graphics\\\\misc\\\\inlines.h\" | Measure-Object -Line\\).Lines; \"--- DataVisualizer.h ---\"; \\(Get-Content \"C:\\\\Users\\\\kolobox\\\\source\\\\repos\\\\DirectX\\\\Visualization engine dx11\\\\source\\\\graphics\\\\misc\\\\DataVisualizer.h\" | Measure-Object -Line\\).Lines)"
     ]
   }
 }

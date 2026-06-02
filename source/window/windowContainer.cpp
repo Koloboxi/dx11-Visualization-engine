@@ -29,7 +29,6 @@ LRESULT WindowContainer::WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM 
 
 	switch (uMsg)
 	{
-		// mouse
 	case WM_MOUSEMOVE: {
 		int x = LOWORD(lParam);
 		int y = HIWORD(lParam);
@@ -101,7 +100,6 @@ LRESULT WindowContainer::WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM 
 	}
 
 
-		// keyboard
 	case WM_KEYDOWN: {
 		unsigned char keycode = static_cast<unsigned char>(wParam);
 		if (keyboard.IsKeysAutoRepeat()) {
@@ -143,12 +141,10 @@ LRESULT WindowContainer::WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM 
 			if (!DragQueryFileW(hDrop, i, path, MAX_PATH)) continue;
 			std::wstring wpath(path);
 
-			// Case-insensitive .stl check
 			std::wstring lower = wpath;
 			std::transform(lower.begin(), lower.end(), lower.begin(), ::towlower);
 			if (lower.size() < 4 || lower.compare(lower.size() - 4, 4, L".stl") != 0) continue;
 
-			// Filename stem (without directory and extension)
 			size_t slash = wpath.find_last_of(L"\\/");
 			std::wstring stem = (slash != std::wstring::npos) ? wpath.substr(slash + 1) : wpath;
 			if (stem.size() >= 4) stem = stem.substr(0, stem.size() - 4);

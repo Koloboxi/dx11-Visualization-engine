@@ -6,7 +6,7 @@ Primitive::Primitive(ID3D11Device* device, ID3D11DeviceContext* deviceContext)
 	this->deviceContext = deviceContext;
 	this->cb_vs_vertexshader.Initialize(this->device, this->deviceContext);
 	this->cb_ps_pixelshader.Initialize(this->device, this->deviceContext);
-	
+
 	this->SetPosition(BaseVectors::ORIGIN);
 	this->SetRotation(BaseVectors::ORIGIN);
 }
@@ -45,8 +45,6 @@ void Primitive::Draw(const XMMATRIX& viewMatrix, const XMMATRIX& projectionMatri
 	const bool isPoint = (this->primitiveTopology == D3D10_PRIMITIVE_TOPOLOGY_POINTLIST);
 	const bool isMesh  = !isLine && !isPoint;
 
-	// For flat-shaded meshes use the pre-built face-normal buffer if it was generated;
-	// fall back to the regular vertex buffer (e.g. primitive has no index buffer).
 	VertexBuffer<Vertex>* activeBuffer =
 		(isMesh && !this->smoothShade && this->vertexBufferFaces.GetBufferSize() > 0)
 		? &this->vertexBufferFaces
@@ -54,7 +52,6 @@ void Primitive::Draw(const XMMATRIX& viewMatrix, const XMMATRIX& projectionMatri
 
 	this->deviceContext->IASetVertexBuffers(0, 1, activeBuffer->GetAddressOf(), activeBuffer->GetStridePtr(), &offset);
 
-	// Indexed draw only for smooth-shaded meshes that actually have an index buffer.
 	if (isMesh && this->smoothShade && this->indexBuffer.GetBufferSize() > 0) {
 		this->deviceContext->IASetIndexBuffer(this->indexBuffer.Get(), DXGI_FORMAT::DXGI_FORMAT_R32_UINT, 0);
 		this->deviceContext->DrawIndexed(this->indexBuffer.GetBufferSize(), 0, 0);
@@ -94,8 +91,7 @@ void Primitive::SetSmoothShading(const bool sh)
 	this->smoothShade = sh;
 	if (this->smoothShade) return;
 	if (this->vertexBufferFaces.GetBufferSize()) return;
-	
-	// generate buffer with face normals (without index buffer)
+
 	if (!this->indexBuffer.GetBufferSize()) return;
 
 	std::vector<Vertex> oldVertices = this->vertexBuffer.GetData();

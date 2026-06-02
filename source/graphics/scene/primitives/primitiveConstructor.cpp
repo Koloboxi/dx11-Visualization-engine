@@ -173,7 +173,7 @@ Primitive* PrimitiveConstructor::Line3d(float radius, const std::vector<XMFLOAT3
 		else                      dir = p - XM(poses[i - 1]);
 		dir = XMVector3Normalize(dir);
 
-		
+
 		XMVECTOR up = XMVectorSet(0, 1, 0, 0);
 		if (fabs(XMVectorGetX(XMVector3Dot(up, dir))) > 0.99f)
 			up = XMVectorSet(1, 0, 0, 0);
@@ -318,7 +318,6 @@ Primitive* PrimitiveConstructor::CubeWireframe(float halfSize, const XMFLOAT3& c
 		{cx-L, cy+L, cz+L},
 	};
 
-	// 12 edges as line pairs
 	int edgeIdx[24] = {
 		0,1, 1,2, 2,3, 3,0,
 		4,5, 5,6, 6,7, 7,4,
@@ -349,22 +348,16 @@ Primitive* PrimitiveConstructor::CubeSolid(float halfSize, const XMFLOAT3& cente
 	};
 
 	std::vector<Vertex> verts = {
-		// +X
 		v(cx+L, cy-L, cz-L,  1,0,0), v(cx+L, cy+L, cz-L,  1,0,0), v(cx+L, cy+L, cz+L,  1,0,0),
 		v(cx+L, cy-L, cz-L,  1,0,0), v(cx+L, cy+L, cz+L,  1,0,0), v(cx+L, cy-L, cz+L,  1,0,0),
-		// -X
 		v(cx-L, cy-L, cz+L, -1,0,0), v(cx-L, cy+L, cz+L, -1,0,0), v(cx-L, cy+L, cz-L, -1,0,0),
 		v(cx-L, cy-L, cz+L, -1,0,0), v(cx-L, cy+L, cz-L, -1,0,0), v(cx-L, cy-L, cz-L, -1,0,0),
-		// +Y
 		v(cx-L, cy+L, cz-L,  0,1,0), v(cx-L, cy+L, cz+L,  0,1,0), v(cx+L, cy+L, cz+L,  0,1,0),
 		v(cx-L, cy+L, cz-L,  0,1,0), v(cx+L, cy+L, cz+L,  0,1,0), v(cx+L, cy+L, cz-L,  0,1,0),
-		// -Y
 		v(cx-L, cy-L, cz+L,  0,-1,0), v(cx-L, cy-L, cz-L,  0,-1,0), v(cx+L, cy-L, cz-L,  0,-1,0),
 		v(cx-L, cy-L, cz+L,  0,-1,0), v(cx+L, cy-L, cz-L,  0,-1,0), v(cx+L, cy-L, cz+L,  0,-1,0),
-		// +Z
 		v(cx-L, cy-L, cz+L,  0,0,1), v(cx+L, cy-L, cz+L,  0,0,1), v(cx+L, cy+L, cz+L,  0,0,1),
 		v(cx-L, cy-L, cz+L,  0,0,1), v(cx+L, cy+L, cz+L,  0,0,1), v(cx-L, cy+L, cz+L,  0,0,1),
-		// -Z
 		v(cx+L, cy-L, cz-L,  0,0,-1), v(cx-L, cy-L, cz-L,  0,0,-1), v(cx-L, cy+L, cz-L,  0,0,-1),
 		v(cx+L, cy-L, cz-L,  0,0,-1), v(cx-L, cy+L, cz-L,  0,0,-1), v(cx+L, cy+L, cz-L,  0,0,-1),
 	};
@@ -417,7 +410,6 @@ Primitive* PrimitiveConstructor::Arrow3d(
 		return { pf, nf };
 	};
 
-	// ── Shaft rings ──────────────────────────────────────────────────────────
 	if (shaftLen > 1e-5f) {
 		UINT ring0 = (UINT)verts.size();
 		for (UINT k = 0; k < N; k++) {
@@ -436,7 +428,6 @@ Primitive* PrimitiveConstructor::Arrow3d(
 			idx.push_back(ring0 + k);  idx.push_back(ring0 + k1); idx.push_back(ring1 + k);
 			idx.push_back(ring0 + k1); idx.push_back(ring1 + k1); idx.push_back(ring1 + k);
 		}
-		// Back cap
 		UINT bc = (UINT)verts.size();
 		verts.push_back(storeV(from, -dir));
 		for (UINT k = 0; k < N; k++) {
@@ -445,7 +436,6 @@ Primitive* PrimitiveConstructor::Arrow3d(
 		}
 	}
 
-	// ── Cone ring ─────────────────────────────────────────────────────────────
 	UINT coneRing = (UINT)verts.size();
 	for (UINT k = 0; k < N; k++) {
 		float a = (float)k / N * XM_2PI;
@@ -453,7 +443,6 @@ Primitive* PrimitiveConstructor::Arrow3d(
 		XMVECTOR n = XMVector3Normalize(r * headRadius - dir * headLength);
 		verts.push_back(storeV(shaftEnd + r * headRadius, n));
 	}
-	// Apex vertices (one per slice for smooth normals)
 	UINT apexBase = (UINT)verts.size();
 	XMFLOAT3 tipPos; XMStoreFloat3(&tipPos, to);
 	for (UINT k = 0; k < N; k++) {
@@ -467,7 +456,6 @@ Primitive* PrimitiveConstructor::Arrow3d(
 		UINT k1 = (k + 1) % N;
 		idx.push_back(apexBase + k); idx.push_back(coneRing + k); idx.push_back(coneRing + k1);
 	}
-	// Cone base disk
 	UINT baseCtr = (UINT)verts.size();
 	XMFLOAT3 baseCtrPos, backN; XMStoreFloat3(&baseCtrPos, shaftEnd); XMStoreFloat3(&backN, -dir);
 	verts.push_back({ baseCtrPos, backN });

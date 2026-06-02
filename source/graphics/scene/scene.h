@@ -1,7 +1,6 @@
 #pragma once
 #include "..\camera\Camera.h"
 #include "jsonSaver.h"
-#include "..\misc\DataVisualizer.h"
 
 #include "../shaders/shaders.h"
 #include "..\misc\Colors.h"
@@ -99,7 +98,7 @@ public:
 
 	void ClearSceneCustomState();
 
-	std::string scenesPath = "Data/Scenes/";
+	std::string scenesPath;
 	const std::vector<std::string>& GetSavedScenes() const;
 	void SaveScene(std::string name);
 	void ClearScene();

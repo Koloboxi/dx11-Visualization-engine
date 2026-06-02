@@ -4,6 +4,23 @@
 #include <algorithm>
 #include <numeric>
 #include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+
+namespace {
+	std::string ResolveScenesDir()
+	{
+		char* appdata = nullptr;
+		size_t len = 0;
+		_dupenv_s(&appdata, &len, "APPDATA");
+		std::filesystem::path base = appdata ? std::filesystem::path(appdata) : std::filesystem::current_path();
+		if (appdata) free(appdata);
+		std::filesystem::path dir = base / "VEngineDX11" / "Scenes";
+		std::error_code ec;
+		std::filesystem::create_directories(dir, ec);
+		return dir.string() + "\\";
+	}
+}
 
 bool Scene::Initialize(ID3D11Device* device, ID3D11DeviceContext* deviceContext, std::wstring shadersPath, ID3D11DepthStencilView* dsView, ID3D11DepthStencilView* dsViewNoMSAA, ID3D11RenderTargetView* mainRTV, VertexShader* vs, int windowWidth, int windowHeight)
 {
@@ -32,12 +49,11 @@ bool Scene::Initialize(ID3D11Device* device, ID3D11DeviceContext* deviceContext,
 	this->orientationTransformer.Initialize(device, deviceContext);
 
 	this->UpdateLight();
+	this->scenesPath = ResolveScenesDir();
 	this->UpdateSavedScenes();
 	this->tpsTimer.Start();
 
 	this->root.name = "";
-	// NB: the initial demo scene is loaded by Graphics::Initialize AFTER BindToScene,
-	// so the controller can compile and its Lua actions (e.g. generate) are available.
 
 	return true;
 }
@@ -264,8 +280,6 @@ void Scene::DeleteSelected()
 	while (it != this->primitives.end()) {
 		Primitive* p = *it;
 		if (p->selected) {
-			// Unlink from the scene tree before freeing, else dangling pointers remain
-			// in parent/root children lists (the tree walk would then crash).
 			for (SceneNode* ch : p->children) { ch->parent = &root; root.children.push_back(ch); }
 			p->children.clear();
 			if (p->parent) p->parent->RemoveChild(p);
@@ -610,7 +624,6 @@ void Scene::LoadScene(std::string name)
 			this->sceneFloats[it.key()] = std::make_shared<float>(it.value().get<float>());
 	}
 
-	// Rebuild parent-child links from saved parentId fields
 	{
 		const auto& primJson = data["primitives"];
 		for (size_t i = 0; i < this->primitives.size() && i < primJson.size(); ++i) {
@@ -626,13 +639,10 @@ void Scene::LoadScene(std::string name)
 		}
 	}
 
-	// Restore root name
 	root.name = this->sceneName;
 
-	// Restore SceneController from JSON
 	if (data.contains("controller") && data["controller"].is_object()) {
 		SceneController* ctrl = SceneController::FromJson(data["controller"]);
-		// Restore sceneFloats values for sliderDefs (already loaded above, just bind)
 		for (auto& sd : ctrl->sliderDefs) {
 			auto it = this->sceneFloats.find(sd.luaGlobal);
 			if (it == this->sceneFloats.end())
@@ -641,14 +651,11 @@ void Scene::LoadScene(std::string name)
 		SetController(ctrl);
 	}
 
-	// Restore Lua runtime state synchronously (positions are correct immediately)
 	if (data.contains("luaState") && luaRestoreStateCallback)
 		luaRestoreStateCallback(data["luaState"]);
 
-	// Re-apply Lua scripts on primitives
 	if (luaReApplyCallback) luaReApplyCallback(this->primitives);
 
-	// Run one silent tick at t=0 so all primitives sit at correct positions
 	if (this->sceneTick)
 		this->sceneTick(*this, this->currentTime, 0.f, true);
 	for (auto& p : this->primitives)

@@ -72,14 +72,14 @@
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <IncludePath>$(SolutionDir)\includes;$(SolutionDir)\source\headers;$(IncludePath)</IncludePath>
+    <IncludePath>$(IncludePath)</IncludePath>
     <LibraryPath>$(SolutionDir)\libs\Debug;$(SolutionDir)\libs;$(LibraryPath)</LibraryPath>
     <ExternalIncludePath>$(ExternalIncludePath)</ExternalIncludePath>
     <OutDir>$(SolutionDir)\</OutDir>
     <IntDir>$(SolutionDir)\intermediate\$(Configuration)</IntDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <IncludePath>$(SolutionDir)\includes;$(SolutionDir)\source\headers;$(IncludePath)</IncludePath>
+    <IncludePath>$(IncludePath)</IncludePath>
     <LibraryPath>$(SolutionDir)\libs;$(SolutionDir)\libs\Release;$(LibraryPath)</LibraryPath>
     <ExternalIncludePath>$(ExternalIncludePath)</ExternalIncludePath>
     <OutDir>$(SolutionDir)\</OutDir>
@@ -132,7 +132,7 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>d3d11.lib;DirectXTK.lib;DXGI.lib;D3DCompiler.lib;lua54.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>d3d11.lib;DXGI.lib;D3DCompiler.lib;lua54.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -152,7 +152,7 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>d3d11.lib;DirectXTK.lib;DXGI.lib;D3DCompiler.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>d3d11.lib;DXGI.lib;D3DCompiler.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <FxCompile>
       <ShaderModel>5.0</ShaderModel>
@@ -232,12 +232,6 @@
     </FxCompile>
   </ItemGroup>
   <ItemGroup>
-    <None Include="source\eigen-master\bench\perf_monitoring\resources\chart_footer.html" />
-    <None Include="source\eigen-master\bench\perf_monitoring\resources\chart_header.html" />
-    <None Include="source\eigen-master\bench\perf_monitoring\resources\footer.html" />
-    <None Include="source\eigen-master\bench\perf_monitoring\resources\header.html" />
-  </ItemGroup>
-  <ItemGroup>
     <ClInclude Include="source\external\json.hpp" />
     <ClInclude Include="source\external\lua\lauxlib.h" />
     <ClInclude Include="source\external\lua\lua.h" />
@@ -252,9 +246,10 @@
     <ClInclude Include="source\graphics\imgui\imgui_stdlib.h" />
     <ClInclude Include="source\graphics\math.h" />
     <ClInclude Include="source\graphics\misc\Colors.h" />
-    <ClInclude Include="source\graphics\misc\DataVisualizer.h" />
-    <ClInclude Include="source\graphics\misc\inlines.h" />
     <ClInclude Include="source\graphics\scene\jsonSaver.h" />
+    <ClInclude Include="source\graphics\scene\auxiliaryObjects.h" />
+    <ClInclude Include="source\graphics\scene\scene_controller.h" />
+    <ClInclude Include="source\graphics\scene\scene_node.h" />
     <ClInclude Include="source\utils\adapterReader.h" />
     <ClInclude Include="source\graphics\camera\Camera.h" />
     <ClInclude Include="source\graphics\buffers\constantBuffer.h" />
@@ -309,7 +304,6 @@
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Pixel</ShaderType>
     </FxCompile>
     <ClCompile Include="source\graphics\scene\auxiliaryObjects.cpp" />
-    <ClCompile Include="source\graphics\scene\auxiliaryObjects.h" />
     <ClCompile Include="source\graphics\scene\primitives\primitiveConstructor.cpp" />
     <ClCompile Include="source\utils\adapterReader.cpp" />
     <ClCompile Include="source\graphics\camera\Camera.cpp" />
@@ -340,6 +334,13 @@
     <ClCompile Include="source\graphics\scene\loaders\scene_ph.cpp" />
     <ClCompile Include="source\graphics\scene\loaders\scene_gr.cpp" />
     <ClCompile Include="source\graphics\scene\loaders\scene_gas.cpp" />
+    <ClCompile Include="source\scripting\LuaUpdaterEditor.cpp" />
+    <ClCompile Include="source\scripting\LuaUpdaterEditor_updaters.cpp" />
+    <ClCompile Include="source\scripting\LuaUpdaterEditor_console.cpp" />
+    <ClCompile Include="source\scripting\LuaUpdaterEditor_globals.cpp" />
+    <ClCompile Include="source\scripting\LuaUpdaterEditor_api.cpp" />
+    <ClCompile Include="source\scripting\LuaUpdaterEditor_controller.cpp" />
+    <ClCompile Include="source\scripting\LuaUpdaterEditor_state.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

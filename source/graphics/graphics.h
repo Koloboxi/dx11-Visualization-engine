@@ -1,15 +1,11 @@
 #pragma once
 #include "..\utils\adapterReader.h"
 #include "shaders\shaders.h"
-#include <SpriteBatch.h>
-#include <SpriteFont.h>
-#include <WICTextureLoader.h>
 #include "imgui\imgui.h"
 #include "imgui\implot.h"
 #include "imgui\imgui_impl_win32.h"
 #include "imgui\imgui_impl_dx11.h"
 #include "imgui\imgui_stdlib.h"
-#include "Model.h"
 #include "scene\scene.h"
 #include "navcube\NavCube.h"
 #include "..\scripting\LuaUpdaterEditor.h"
@@ -20,12 +16,12 @@ public:
 	bool Initialize(HWND hwnd, int width, int height);
 	void OnResize(int newWidth, int newHeight);
 	void RenderFrame();
-	
+
 	int GetClientWindowWidth();
 	int GetClientWindowHeight();
 	XMFLOAT2 ScreenCoords2NDC(int x, int y);
 
-	LuaUpdaterEditor luaEditor;  // must be declared before scene (destroyed after scene)
+	LuaUpdaterEditor luaEditor;
 	Scene scene;
 
 private:

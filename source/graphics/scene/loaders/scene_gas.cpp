@@ -1,9 +1,5 @@
 #include "../scene.h"
 
-// Particle count, box size, mass and avg-speed are all driven by Lua globals
-// (gas_N, gas_L, gas_mass, gas_avg_speed) exposed as DragFloat sliders in the
-// "Lua Globals" window. The tick reconciles the live particle set to gas_N every
-// frame (even while paused), so changes apply on the fly.
 static const char* GAS_TICK = R"lua(
 _vel   = _vel or {}
 _gas_N = _gas_N or 0
@@ -114,8 +110,6 @@ if _hist_timer >= 0.2 then
 end
 )lua";
 
-// Reset only clears particles + state and (re)builds the box; the tick repopulates
-// up to gas_N on its next run (which happens even while paused, dt = 0).
 static const char* GAS_RESET = R"lua(
 scene_remove_by_prefix("gas_p_")
 scene_remove_by_name("gas_box")

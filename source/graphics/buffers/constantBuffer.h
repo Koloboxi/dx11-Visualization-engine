@@ -1,11 +1,8 @@
 #pragma once
-#ifndef ConstantBuffer_h__
-#define ConstantBuffer_h__
-#endif
 #include <d3d11.h>
 #include <DirectXMath.h>
 #include <wrl/client.h>
-#include "../utils/errorLogger.h"
+#include "../../utils/errorLogger.h"
 
 struct CB_VS_vertexshader
 {
@@ -43,7 +40,7 @@ struct CB_PS_id
 };
 
 template<class T>
-class ConstantBuffer 
+class ConstantBuffer
 {
 private:
 	ConstantBuffer(const ConstantBuffer<T>& rhs);
@@ -68,7 +65,7 @@ public:
 	HRESULT Initialize(ID3D11Device* device, ID3D11DeviceContext* deviceContext) {
 		if (buffer.Get() != nullptr)
 			buffer.Reset();
-		
+
 		this->deviceContext = deviceContext;
 
 		D3D11_BUFFER_DESC desc;
@@ -82,7 +79,7 @@ public:
 		desc.StructureByteStride = 0;
 
 		HRESULT hr = device->CreateBuffer(&desc, nullptr, buffer.GetAddressOf());
-		return hr;	
+		return hr;
 	}
 
 	bool ApplyChanges() {

@@ -9,7 +9,7 @@
 #include "..\..\utils\errorLogger.h"
 
 template<class T>
-class VertexBuffer 
+class VertexBuffer
 {
 private:
 	std::vector<T> data{};
@@ -58,9 +58,9 @@ public:
 
 	HRESULT Initialize(ID3D11Device* device, T* data, UINT& numVertices) {
 		if (this->buffer.Get() != nullptr)
-			this->buffer.Reset(); 
+			this->buffer.Reset();
 		this->bufferSize = numVertices;
-		
+
 		if(this->stride.get() == nullptr)
 			this->stride = std::make_shared<UINT>(sizeof(T));
 

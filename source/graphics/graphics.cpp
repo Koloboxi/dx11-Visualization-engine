@@ -14,9 +14,6 @@ bool Graphics::Initialize(HWND hwnd, int width, int height) {
 		return false;
 
 	luaEditor.sceneFloatMap = &this->scene.sceneFloats;
-	// Registers the Lua scene/ImGui API, wires all scene callbacks (reapply, controller
-	// compile, save/restore state). Must run before the first scene is loaded so its
-	// controller compiles and its Lua actions (generate, etc.) are available.
 	luaEditor.BindToScene(this->scene);
 	this->scene.LoadNewtonDemo();
 
@@ -30,7 +27,7 @@ bool Graphics::Initialize(HWND hwnd, int width, int height) {
 	ImGui_ImplWin32_Init(hwnd);
 	ImGui_ImplDX11_Init(this->device.Get(), this->deviceContext.Get());
 	ImGui::StyleColorsDark();
-	
+
 	return true;
 }
 
@@ -42,7 +39,7 @@ void Graphics::OnResize(int newWidth, int newHeight)
 		this->windowHeight = newHeight;
 
 		this->ResetResources();
-				
+
 		HRESULT hr = this->swapchain->ResizeBuffers(
 			0,
 			this->windowWidth,
@@ -51,7 +48,7 @@ void Graphics::OnResize(int newWidth, int newHeight)
 			DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH
 		);
 		COM_ERROR_IF_FAILED(hr, "Failed to resize swap chain buffers.");
-				
+
 		this->InitializeResources();
 
 		this->cb_gs_geometryshader.data.AspectRatio = (float)this->windowWidth / (float)this->windowHeight;
@@ -103,7 +100,6 @@ XMFLOAT2 Graphics::ScreenCoords2NDC(int x, int y)
 
 bool Graphics::InitializeDirectX(HWND hwnd) {
 	try {
-		//Adapters (GPUS)
 		std::vector<AdapterData> adapters = AdapterReader::GetAdapters();
 
 		if (adapters.size() < 1) {
@@ -116,7 +112,7 @@ bool Graphics::InitializeDirectX(HWND hwnd) {
 		swap_chain_desc.BufferDesc.Height = this->windowHeight;
 		swap_chain_desc.BufferDesc.RefreshRate.Numerator = 120;
 		swap_chain_desc.BufferDesc.RefreshRate.Denominator = 1;
-		swap_chain_desc.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM; 
+		swap_chain_desc.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
 		swap_chain_desc.BufferDesc.ScanlineOrdering = DXGI_MODE_SCANLINE_ORDER_UNSPECIFIED;
 		swap_chain_desc.BufferDesc.Scaling = DXGI_MODE_SCALING_UNSPECIFIED;
 		swap_chain_desc.SampleDesc.Count = 8;
@@ -144,10 +140,10 @@ bool Graphics::InitializeDirectX(HWND hwnd) {
 			this->deviceContext.GetAddressOf()
 		);
 		COM_ERROR_IF_FAILED(hr, "Failed to create device and swapchain.");
-				
+
 		this->InitializeResources();
 
-		
+
 		D3D11_BLEND_DESC blendDesc{};
 		D3D11_RENDER_TARGET_BLEND_DESC rtbd{};
 

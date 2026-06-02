@@ -80,4 +80,4 @@ inline void Draw(float windowW, Scene& scene, bool& blockMousePick, const char* 
     }
 }
 
-} // namespace TopStripWindow
+}

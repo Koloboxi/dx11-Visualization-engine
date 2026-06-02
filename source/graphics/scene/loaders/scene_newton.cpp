@@ -1,11 +1,5 @@
 #include "../scene.h"
 
-// Solar-system N-body demo, controller + Lua driven (like the other demos).
-// Massive bodies (Sun, 8 planets, big asteroids) feel each other; the small belt /
-// Kuiper points are test particles that only feel the Sun. State lives in Lua globals
-// _nb (massive: {px,py,pz,vx,vy,vz,m,name}) and _belt (test particles), with _nb0/_belt0
-// snapshots so Reset restarts the exact same configuration. Bodies are named nb_<Name>
-// and ast_<i>; the tick writes their positions into scene[] by name.
 
 static const char* NEWTON_GENERATE = R"lua(
 math.randomseed(os.time())

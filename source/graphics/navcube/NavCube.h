@@ -83,7 +83,6 @@ public:
         if (inWidget && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && hovered >= 0)
             camera.SetRotation(*faces[hovered].proj);
 
-        // Panel
         float panelX = windowSize.x - PADDING - SIZE;
         float panelY = yOffset + PADDING + SIZE + 4.f;
         ImGui::SetNextWindowPos(ImVec2(panelX, panelY), ImGuiCond_Always);
@@ -98,24 +97,20 @@ public:
 
         float btnW = (SIZE - 12.f) * 0.5f;
 
-        // Row 1: Iso / Dim
         if (ImGui::Button("Iso", ImVec2(btnW, 0))) camera.SetRotation(Projections::ISO);
         ImGui::SameLine();
         if (ImGui::Button("Dim", ImVec2(btnW, 0))) camera.SetRotation(Projections::DIM);
 
-        // Row 2: Reset Pos / Reset Scale
         if (ImGui::Button("Rst Pos", ImVec2(btnW, 0))) camera.SetPosition(XMFLOAT3(0.f, 0.f, 0.f));
         ImGui::SameLine();
         if (ImGui::Button("Rst Scl", ImVec2(btnW, 0))) camera.SetScale(1.f);
 
-        // Row 3: zoom slider
         float scale = camera.GetScale();
         float logS  = std::log10f(scale);
         ImGui::SetNextItemWidth(SIZE - 8.f);
         if (ImGui::SliderFloat("##zoom", &logS, -4.f, 5.f, "", ImGuiSliderFlags_NoRoundToFormat))
             camera.SetScale(std::powf(10.f, logS));
 
-        // Row 4: Solid / Wireframe toggle icon buttons
         GuiIcons::ToggleIconButton("##solid", &rsSolid,      btnW, GuiIcons::SolidCube);
         ImGui::SameLine();
         GuiIcons::ToggleIconButton("##wire",  &rsWireframe,  btnW, GuiIcons::WireframeCube);

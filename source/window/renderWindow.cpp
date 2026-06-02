@@ -11,7 +11,7 @@ bool RenderWindow::Initialize(
 	this->window_title_wide = StringConverter::StringToWide(window_title);
 	this->window_class = window_class;
 	this->window_class_wide = StringConverter::StringToWide(window_class);
-	
+
 	this->RegisterWindowClass();
 
 	int centerScreenX = GetSystemMetrics(SM_CXSCREEN) / 2 - this->width / 2;
@@ -78,7 +78,7 @@ LRESULT CALLBACK HandleMessageSetup(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM 
 		SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(HandleMsgRedirect));
 		return pWindow->WindowProc(hwnd, uMsg, wParam, lParam);
 	}
-	default: 
+	default:
 		return DefWindowProc(hwnd, uMsg, wParam, lParam);
 	}
 }

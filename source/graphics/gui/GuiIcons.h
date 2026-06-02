@@ -102,4 +102,4 @@ inline bool ToggleIconButton(const char* id, bool* toggled, float sz, DrawFn dra
     return clicked;
 }
 
-} // namespace GuiIcons
+}

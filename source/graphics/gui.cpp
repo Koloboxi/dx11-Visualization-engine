@@ -107,13 +107,10 @@ void Graphics::Gui()
         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus |
         ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoCollapse;
 
-    // 1. Time Control
     TimeControlWindow::Draw(s_layout, wH, scene, blockMousePick, fixedFlags);
 
-    // 2. Primitives + Scenes
     PrimitivesWindow::Draw(s_layout, wH, scene, luaEditor, blockMousePick, blockMouseWheel, fixedFlags);
 
-    // 3. Lua Globals
     {
         float luaH = s_layout.luaH > 0.f ? s_layout.luaH : panelH * .33f;
         ImGui::SetNextWindowPos({s_layout.colW, LayoutState::STRIP_H}, ImGuiCond_Always);
@@ -125,8 +122,6 @@ void Graphics::Gui()
         if (global_changed) luaEditor.ReApplyAll(scene.primitives);
     }
 
-    // 4. Scene windows area (right column bottom) — all scene windows live here
-    //    (C++ SceneWindow lambdas + declarative SceneController Lua draw scripts)
     {
         float luaH  = s_layout.luaH > 0.f ? s_layout.luaH : panelH * .33f;
         float swY   = LayoutState::STRIP_H + luaH;
@@ -141,7 +136,6 @@ void Graphics::Gui()
         ImGui::End();
     }
 
-    // 5. Console (always visible at bottom of panel)
     {
         std::vector<Primitive*> selPrims;
         for (Primitive* p : scene.primitives) if (p->selected) selPrims.push_back(p);
@@ -152,7 +146,6 @@ void Graphics::Gui()
             blockMousePick = true;
     }
 
-    // Pick mode vector insertion
     if (luaEditor.awaitingVectorPick)
         scene.pickModeActive = true;
 
@@ -182,13 +175,10 @@ void Graphics::Gui()
         scene.pickedPrimId = 0;
     }
 
-    // 6. Top strip (drawn late to sit above panel content)
     TopStripWindow::Draw(wW, scene, blockMousePick, fpsStr.c_str());
 
-    // 7. Splitter overlay (drawn last so it can override cursor)
     DrawSplitters(s_layout, wW, wH, blockMousePick);
 
-    // 8. NavCube
     bool navCubeHover = NavCube::Draw(
         ImVec2(wW, wH), scene.camera,
         LayoutState::STRIP_H, scene.rsSolid, scene.rsWireframe);
