@@ -6,6 +6,7 @@
 # User-specific files
 *.rsuser
 *.suo
+*.cso
 *.user
 *.userosscache
 *.sln.docstates
@@ -361,3 +362,5 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+.claude/
