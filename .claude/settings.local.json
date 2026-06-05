@@ -34,7 +34,13 @@
       "Bash(where clang *)",
       "Bash(\"C:\\\\Program Files \\(x86\\)\\\\Microsoft Visual Studio\\\\Installer\\\\vswhere.exe\" -latest -property installationPath)",
       "Bash(\"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\2022\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\" \"dx11-Visualization-engine.sln\" -t:Build -p:Configuration=Debug -p:Platform=x64 -m -v:minimal -nologo)",
-      "Bash(grep -iE \": error|venginedx11.exe$|-> C\")"
+      "Bash(grep -iE \": error|venginedx11.exe$|-> C\")",
+      "Bash(python gen_contours.py)",
+      "Bash(python -c ' *)",
+      "Bash('/c/Program Files/Microsoft Visual Studio/2022/Community/MSBuild/Current/Bin/MSBuild.exe' dx11-Visualization-engine.sln -t:Build -p:Configuration=Debug -p:Platform=x64 -m -v:minimal -nologo)",
+      "Bash(python -)",
+      "Bash(grep -Ei \"error C|error LNK|error MSB|venginedx11.exe -> |venginedx11.exe$\")",
+      "Bash(grep -E \"venginedx11.exe$\")"
     ]
   }
 }

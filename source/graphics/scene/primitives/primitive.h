@@ -34,9 +34,9 @@ public:
 	enum PointSkin { SKIN_RING = 0, SKIN_CROSS = 1 };
 	int pointSkin = SKIN_RING;
 
-	// True for the SEM pipeline primitives (source contour, offset lines, band
-	// mesh) so the tree can mark them as a staging / SEM-loaded object.
-	bool semStaging = false;
+	bool staging = false;
+
+	std::string semSourcePath;
 
 	void SetColor(const XMFLOAT4& col);
 	void SetUseVertexColor(const bool v);

@@ -280,6 +280,19 @@ void Scene::HandleSelection(Primitive* primitiveClicked)
 	this->orientationTransformer.SetTargetObjects(sel);
 }
 
+void Scene::SetStaged(Primitive* p)
+{
+	for (Primitive* q : this->primitives) q->staging = false;
+	this->stagedPrimitive = p;
+	if (p) p->staging = true;
+}
+
+void Scene::ClearStaged()
+{
+	for (Primitive* q : this->primitives) q->staging = false;
+	this->stagedPrimitive = nullptr;
+}
+
 void Scene::DeleteSelected()
 {
 	if (this->orientationTransformer.HasActiveObject())
@@ -654,6 +667,7 @@ void Scene::DestroyNodeRecursive(SceneNode* n)
 
 	if (n->IsPrimitive()) {
 		Primitive* p = static_cast<Primitive*>(n);
+		if (p == this->stagedPrimitive) this->stagedPrimitive = nullptr;
 		auto it = std::find(this->primitives.begin(), this->primitives.end(), p);
 		if (it != this->primitives.end()) this->primitives.erase(it);
 	}
@@ -710,9 +724,8 @@ void Scene::SetNodeVisibleCascade(SceneNode* n, bool show)
 
 	std::function<void(SceneNode*)> rec = [&](SceneNode* m) {
 		for (SceneNode* ch : m->children) {
+			if (ch->IsVertexPointsGroup()) continue;
 			ch->visible = show;
-			if (show && ch->IsVertexPointsGroup())
-				GenerateVertexPoints(static_cast<VertexPointsGroup*>(ch));
 			rec(ch);
 		}
 	};
@@ -802,6 +815,7 @@ void Scene::ClearScene()
 
 	for (Primitive* p : this->primitives) delete p;
 	this->primitives.clear();
+	this->stagedPrimitive = nullptr;
 	root.children.clear();
 	m_sortedDirty = true;
 	this->ClearTrajectories();

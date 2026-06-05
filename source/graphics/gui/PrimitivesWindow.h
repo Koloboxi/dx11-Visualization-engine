@@ -220,10 +220,11 @@ inline void Draw(Scene& scene, LuaUpdaterEditor& lua,
                     else if (s_impFmt == 2) scene.AddFromCSVMesh(path, lc, pc);
                     else {
                         Primitive* src = scene.AddFromCSV3D(path);
-                        if (src) { src->semStaging = true; scene.AttachVertexPointsGroup(src); }
-                        int rc = SEM_LoadCSV3D(path.c_str());
-                        if (rc == 0) SEMWindow::SetSource(path, src);
-                        else         ErrorLogger::Log("SEM_LoadCSV3D failed (" + std::to_string(rc) + "): " + path);
+                        if (src) {
+                            src->semSourcePath = path;
+                            scene.AttachVertexPointsGroup(src);
+                            scene.SetStaged(src);
+                        }
                     }
                 }
                 catch (const std::exception& e) { ErrorLogger::Log(std::string("Import failed: ") + e.what()); }
@@ -420,9 +421,7 @@ inline void Draw(Scene& scene, LuaUpdaterEditor& lua,
 
             dl->AddText({textX, rp.y + (rowH - ImGui::GetTextLineHeight()) * .5f}, textCol, lbl.c_str());
 
-            // Staging outline: marks the SEM pipeline primitives (source contour,
-            // offset lines, band mesh) as SEM-loaded objects.
-            if (prim && prim->semStaging)
+            if (prim && prim->staging)
                 dl->AddRect(rp, re, IM_COL32(90,205,165,220), 3.f, 0, 1.5f);
 
             // Visibility "eye" toggle, drawn at the right edge. Shown for
@@ -497,8 +496,17 @@ inline void Draw(Scene& scene, LuaUpdaterEditor& lua,
                 }
             }
 
-            if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0) && isRenamable(node))
-                beginRename(node);
+            if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) {
+                if (isPrim) {
+                    if (prim->staging) scene.ClearStaged();
+                    else               scene.SetStaged(prim);
+                    for (Primitive* p2 : scene.primitives) p2->selected = false;
+                    scene.orientationTransformer.SetTargetObjects({});
+                    scene.controllerSelected = false;
+                } else if (isRenamable(node)) {
+                    beginRename(node);
+                }
+            }
 
             ImGui::SetCursorScreenPos({rp.x, rp.y + rowH});
         }

@@ -42,6 +42,10 @@ public:
 	void HandleSelection(Primitive* primitiveClicked);
 	void HandleLMouse(int px, int py, bool tPressfRelease);
 	void DeleteSelected();
+
+	Primitive* stagedPrimitive = nullptr;
+	void SetStaged(Primitive* p);
+	void ClearStaged();
 	bool blockMousePick = false;
 	bool blockMouseWheel = false;
 	bool controllerSelected = false;
