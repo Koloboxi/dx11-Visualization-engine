@@ -10,6 +10,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <set>
+#include <tuple>
+#include <cmath>
 #include <utility>
 
 namespace {
@@ -99,7 +101,9 @@ void Scene::Draw()
 		if (!p->visible) continue;
 		UCHAR dim = p->GetDimension();
 		switch (dim) {
-		case 0: this->deviceContext->GSSetShader(this->geometryshaderpoints.GetShader(), NULL, 0); break;
+		case 0: this->deviceContext->GSSetShader(
+				(p->pointSkin == Primitive::SKIN_CROSS ? this->geometryshaderpointscross : this->geometryshaderpoints).GetShader(),
+				NULL, 0); break;
 		case 1: this->deviceContext->GSSetShader(this->geometryshaderthickness.GetShader(), NULL, 0); break;
 		case 2: this->deviceContext->GSSetShader(nullptr, NULL, 0); break;
 		}
@@ -282,18 +286,16 @@ void Scene::DeleteSelected()
 		this->orientationTransformer.HandleObjRelease();
 	this->orientationTransformer.SetTargetObjects({});
 
-	auto it = this->primitives.begin();
-	while (it != this->primitives.end()) {
-		Primitive* p = *it;
-		if (p->selected) {
-			for (SceneNode* ch : p->children) { ch->parent = &root; root.children.push_back(ch); }
-			p->children.clear();
-			if (p->parent) p->parent->RemoveChild(p);
-			delete p;
-			it = this->primitives.erase(it);
-		} else {
-			++it;
-		}
+	// Deleting a parent deletes its whole subtree. Snapshot the selection first;
+	// a selected child may already be gone after its parent's subtree was
+	// destroyed, so re-check membership before touching each one.
+	std::vector<Primitive*> sel;
+	for (Primitive* p : this->primitives) if (p->selected) sel.push_back(p);
+	for (Primitive* p : sel) {
+		if (std::find(this->primitives.begin(), this->primitives.end(), p) == this->primitives.end())
+			continue;
+		if (p->parent) p->parent->RemoveChild(p);
+		DestroyNodeRecursive(p);
 	}
 	m_sortedDirty = true;
 }
@@ -423,7 +425,7 @@ void Scene::AddArrow3d(float shaftRadius, float headRadius, float headLength, co
 void Scene::AddFromSTL(const std::string& path, const XMFLOAT4& col, const std::string& name)
 {
 	Primitive* p = STLLoader::Load(path, col, NextId());
-	if (!p) return;
+	if (!p) { ErrorLogger::Log("Failed to load STL file: " + path); return; }
 	if (!name.empty()) p->name = name;
 	this->primitives.push_back(p);
 	root.AddChild(p);
@@ -434,7 +436,7 @@ void Scene::AddFromSTL(const std::string& path, const XMFLOAT4& col, const std::
 void Scene::AddFromOBJ(const std::string& path, const XMFLOAT4& lineCol, const XMFLOAT4& pointCol)
 {
 	OBJLoader::OBJData obj;
-	if (!OBJLoader::Load(path, obj)) return;
+	if (!OBJLoader::Load(path, obj)) { ErrorLogger::Log("Failed to load OBJ file: " + path); return; }
 
 	const auto& V = obj.vertices;
 
@@ -480,7 +482,7 @@ void Scene::AddFromOBJ(const std::string& path, const XMFLOAT4& lineCol, const X
 void Scene::AddFromCSVMesh(const std::string& path, const XMFLOAT4& lineCol, const XMFLOAT4& pointCol)
 {
 	CSVMeshLoader::CSVMeshData csv;
-	if (!CSVMeshLoader::Load(path, csv)) return;
+	if (!CSVMeshLoader::Load(path, csv)) { ErrorLogger::Log("Failed to load CSV mesh file: " + path); return; }
 
 	const auto& V = csv.vertices;
 
@@ -517,10 +519,13 @@ void Scene::AddFromCSVMesh(const std::string& path, const XMFLOAT4& lineCol, con
 	m_sortedDirty = true;
 }
 
-void Scene::AddFromCSV3D(const std::string& path, const std::string& name)
+Primitive* Scene::AddFromCSV3D(const std::string& path, const std::string& name, SceneNode* parent)
 {
 	CSV3DLoader::CSV3DData data;
-	if (!CSV3DLoader::Load(path, data)) return;
+	if (!CSV3DLoader::Load(path, data)) {
+		ErrorLogger::Log("Failed to load CSV3D file: " + path);
+		return nullptr;
+	}
 
 	// Derive the primitive name from the file stem unless an explicit name
 	// was supplied by the caller.
@@ -566,7 +571,11 @@ void Scene::AddFromCSV3D(const std::string& path, const std::string& name)
 	for (const auto& e : data.edges)
 		addEdge(e.first, e.second);
 
-	if (edges.empty()) { m_sortedDirty = true; return; }
+	if (edges.empty()) {
+		ErrorLogger::Log("CSV3D file contains no drawable edges: " + path);
+		m_sortedDirty = true;
+		return nullptr;
+	}
 
 	// Build a single LINELIST: two vertices per edge, each coloured by its
 	// node's temperature so the rasteriser interpolates along the segment.
@@ -584,9 +593,10 @@ void Scene::AddFromCSV3D(const std::string& path, const std::string& name)
 	auto* p = PrimitiveConstructor::ColoredLine(poses, cols, /*asLineList*/ true, NextId());
 	p->name = primName;
 	this->primitives.push_back(p);
-	root.AddChild(p);
+	(parent ? parent : &root)->AddChild(p);
 
 	m_sortedDirty = true;
+	return p;
 }
 
 void Scene::AddCubeWireframe(float halfSize, const XMFLOAT3& center, const XMFLOAT4& col)
@@ -606,16 +616,14 @@ void Scene::RemovePrimitivesByPrefix(const std::string& prefix)
 	if (orientationTransformer.HasActiveObject()) orientationTransformer.HandleObjRelease();
 	orientationTransformer.SetTargetObjects({});
 
-	auto it = this->primitives.begin();
-	while (it != this->primitives.end()) {
-		Primitive* p = *it;
-		if (p->name.rfind(prefix, 0) == 0) {
-			for (SceneNode* ch : p->children) { ch->parent = &root; root.children.push_back(ch); }
-			p->children.clear();
-			if (p->parent) p->parent->RemoveChild(p);
-			delete p;
-			it = this->primitives.erase(it);
-		} else ++it;
+	std::vector<Primitive*> matched;
+	for (Primitive* p : this->primitives)
+		if (p->name.rfind(prefix, 0) == 0) matched.push_back(p);
+	for (Primitive* p : matched) {
+		if (std::find(this->primitives.begin(), this->primitives.end(), p) == this->primitives.end())
+			continue;
+		if (p->parent) p->parent->RemoveChild(p);
+		DestroyNodeRecursive(p);
 	}
 	m_sortedDirty = true;
 }
@@ -630,12 +638,94 @@ void Scene::RemovePrimitive(Primitive* p)
 		this->orientationTransformer.HandleObjRelease();
 
 	this->orientationTransformer.SetTargetObjects({});
-	for (SceneNode* ch : p->children) { ch->parent = &root; root.children.push_back(ch); }
-	p->children.clear();
 	if (p->parent) p->parent->RemoveChild(p);
-	this->primitives.erase(it);
+	DestroyNodeRecursive(p);
 	m_sortedDirty = true;
-	delete p;
+}
+
+// Recursively destroys a node and everything below it: child subtrees first,
+// then the node itself (erasing it from `primitives` if it is a Primitive).
+void Scene::DestroyNodeRecursive(SceneNode* n)
+{
+	if (!n) return;
+	std::vector<SceneNode*> kids = n->children;
+	n->children.clear();
+	for (SceneNode* ch : kids) DestroyNodeRecursive(ch);
+
+	if (n->IsPrimitive()) {
+		Primitive* p = static_cast<Primitive*>(n);
+		auto it = std::find(this->primitives.begin(), this->primitives.end(), p);
+		if (it != this->primitives.end()) this->primitives.erase(it);
+	}
+	delete n;
+}
+
+VertexPointsGroup* Scene::AttachVertexPointsGroup(Primitive* src)
+{
+	if (!src) return nullptr;
+	for (SceneNode* ch : src->children)
+		if (ch->IsVertexPointsGroup()) return static_cast<VertexPointsGroup*>(ch);
+
+	auto* g = new VertexPointsGroup();
+	g->name    = "Vertex points";
+	g->source  = src;
+	g->visible = false;
+	src->AddChild(g);
+	return g;
+}
+
+// Lazily populate a vertex-points group with one yellow "+" cross per unique
+// source vertex. Idempotent.
+void Scene::GenerateVertexPoints(VertexPointsGroup* g)
+{
+	if (!g || g->generated || !g->source) return;
+
+	const XMFLOAT4 yellow(1.0f, 0.9f, 0.1f, 1.0f);
+	const std::vector<Vertex> verts = g->source->GetVertexData();
+
+	std::set<std::tuple<int, int, int>> seen;
+	for (const Vertex& v : verts) {
+		auto key = std::make_tuple((int)llround(v.pos.x * 1000.0),
+		                           (int)llround(v.pos.y * 1000.0),
+		                           (int)llround(v.pos.z * 1000.0));
+		if (!seen.insert(key).second) continue;
+
+		Primitive* pt = PrimitiveConstructor::Point(v.pos, yellow, NextId());
+		pt->pointSkin = Primitive::SKIN_CROSS;
+		pt->name      = "v";
+		pt->visible   = g->visible;
+		this->primitives.push_back(pt);
+		g->AddChild(pt);
+	}
+	g->generated = true;
+	m_sortedDirty = true;
+}
+
+void Scene::SetNodeVisibleCascade(SceneNode* n, bool show)
+{
+	if (!n) return;
+	n->visible = show;
+	if (show && n->IsVertexPointsGroup())
+		GenerateVertexPoints(static_cast<VertexPointsGroup*>(n));
+
+	std::function<void(SceneNode*)> rec = [&](SceneNode* m) {
+		for (SceneNode* ch : m->children) {
+			ch->visible = show;
+			if (show && ch->IsVertexPointsGroup())
+				GenerateVertexPoints(static_cast<VertexPointsGroup*>(ch));
+			rec(ch);
+		}
+	};
+	rec(n);
+	m_sortedDirty = true;
+}
+
+// Reveal (or hide) the vertex markers belonging to `src`, creating the group on
+// demand. Used by the SEM "Subdivide" action to force the markers on.
+void Scene::ShowVertexPointsFor(Primitive* src, bool show)
+{
+	VertexPointsGroup* g = AttachVertexPointsGroup(src);
+	if (g) SetNodeVisibleCascade(g, show);
 }
 
 void Scene::UpdateLight()
@@ -941,6 +1031,9 @@ bool Scene::InitializeDirectX()
 	if (!this->geometryshaderpoints.Initialize(this->device, this->shadersPath + L"geometryshaderpoints.cso"))
 		return false;
 
+	if (!this->geometryshaderpointscross.Initialize(this->device, this->shadersPath + L"geometryshaderpointscross.cso"))
+		return false;
+
 	if (!this->geometryshaderthickness.Initialize(this->device, this->shadersPath + L"geometryshaderthickness.cso"))
 		return false;
 
@@ -1153,14 +1246,18 @@ void Scene::SetOutlineResources()
 	this->deviceContext->IASetVertexBuffers(0, 0, nullptr, nullptr, nullptr);
 	this->deviceContext->IASetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 	this->deviceContext->VSSetShader(this->vsFSQuad.GetShader(), NULL, 0);
-
+	this->deviceContext->GSSetShader(nullptr, NULL, 0);
 	this->deviceContext->OMSetDepthStencilState(this->dsStateNoDepth.Get(), 0);
 }
 
 void Scene::DrawGrid()
 {
 	this->deviceContext->OMSetRenderTargets(1, this->rtvsMain, this->dsView);
-
+	this->deviceContext->IASetInputLayout(this->vsMain->GetInputLayout());
+	this->deviceContext->VSSetShader(this->vsMain->GetShader(), NULL, 0);
+	this->deviceContext->PSSetShader(this->pixelShaderMain.GetShader(), NULL, 0);
+	this->deviceContext->RSSetState(this->rasterizerSolid.Get());
+	this->deviceContext->OMSetDepthStencilState(this->dsStateDepth.Get(), 0);
 	if (!showGrid && !showAxes) return;
 
 	this->deviceContext->GSSetShader(this->geometryshaderthickness.GetShader(), NULL, 0);

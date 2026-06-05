@@ -75,13 +75,22 @@ public:
 	void AddFromSTL(const std::string& path, const XMFLOAT4& col, const std::string& name = "");
 	void AddFromOBJ(const std::string& path, const XMFLOAT4& lineCol, const XMFLOAT4& pointCol);
 	void AddFromCSVMesh(const std::string& path, const XMFLOAT4& lineCol, const XMFLOAT4& pointCol);
-	void AddFromCSV3D(const std::string& path, const std::string& name = "");
+	Primitive* AddFromCSV3D(const std::string& path, const std::string& name = "", SceneNode* parent = nullptr);
 	void AddCubeWireframe(float halfSize, const XMFLOAT3& center, const XMFLOAT4& col);
 	void AddCubeSolid(float halfSize, const XMFLOAT3& center, const XMFLOAT4& col);
 
 	void RemovePrimitive(Primitive* p);
 	void RemovePrimitivesByPrefix(const std::string& prefix);
 	void SetController(SceneController* ctrl);
+
+	// Per-vertex marker support. AttachVertexPointsGroup creates (or returns) an
+	// empty hidden grouping node under `src`; its yellow cross markers are
+	// generated lazily the first time the group is revealed. SetNodeVisibleCascade
+	// toggles a node and one-shot-cascades the new visibility to all descendants
+	// (lazily generating a vertex-points group on reveal).
+	VertexPointsGroup* AttachVertexPointsGroup(Primitive* src);
+	void SetNodeVisibleCascade(SceneNode* n, bool show);
+	void ShowVertexPointsFor(Primitive* src, bool show);
 
 	void LoadNewtonDemo();
 	void LoadPersistentHomologyScene();
@@ -132,6 +141,7 @@ private:
 
 	std::wstring shadersPath;
 	GeometryShader geometryshaderpoints;
+	GeometryShader geometryshaderpointscross;
 	GeometryShader geometryshaderthickness;
 
 	VertexShader* vsMain;
@@ -211,6 +221,9 @@ private:
 
 	UINT nextId = 1;
 	UINT NextId() { return nextId++; }
+
+	void GenerateVertexPoints(VertexPointsGroup* g);
+	void DestroyNodeRecursive(SceneNode* n);
 
 	std::vector<std::string> savedScenes;
 	void UpdateSavedScenes();

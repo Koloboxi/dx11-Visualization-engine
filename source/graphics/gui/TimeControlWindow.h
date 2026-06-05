@@ -1,17 +1,11 @@
 #pragma once
-#include "LayoutState.h"
+#include "../imgui/imgui.h"
 #include "../scene/scene.h"
 
 namespace TimeControlWindow {
 
-inline void Draw(const LayoutState& lay, float windowH, Scene& scene,
-                 bool& blockMousePick, ImGuiWindowFlags extraFlags) {
-    float panelH   = windowH - LayoutState::STRIP_H - lay.consoleH;
-    float timeH    = lay.timeH > 0.f ? lay.timeH : panelH * .33f;
-
-    ImGui::SetNextWindowPos({0.f, LayoutState::STRIP_H}, ImGuiCond_Always);
-    ImGui::SetNextWindowSize({lay.colW, timeH}, ImGuiCond_Always);
-    ImGui::Begin("Time Control", nullptr, extraFlags);
+inline void Draw(Scene& scene, bool& blockMousePick) {
+    ImGui::Begin("Time Control");
 
     ImGui::Text("t = %.3f", scene.currentTime);
     if (scene.timePaused) {
@@ -32,7 +26,7 @@ inline void Draw(const LayoutState& lay, float windowH, Scene& scene,
     ImGui::Checkbox("Show##traj", &scene.showTrajectories);
     ImGui::SameLine();
     if (ImGui::SmallButton("Clear##traj")) scene.ClearTrajectories();
-    ImGui::SetNextItemWidth(lay.colW - 100.f);
+    ImGui::SetNextItemWidth(-100.f);
     ImGui::DragInt("Max len##traj", &scene.trajectoryMaxLen, 10, 0, 1000000,
         scene.trajectoryMaxLen <= 0 ? "unlimited" : "%d pts");
     if (scene.trajectoryMaxLen < 0) scene.trajectoryMaxLen = 0;

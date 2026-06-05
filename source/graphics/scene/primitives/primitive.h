@@ -28,7 +28,15 @@ public:
 
 	void Draw(const XMMATRIX& viewMatrix, const XMMATRIX& projectionMatrix);
 	bool selected = false;
-	bool visible  = true;
+
+	// Render style for dimension-0 (point) primitives. 0 = ring (default),
+	// 1 = "+" cross. Ignored by line / triangle primitives.
+	enum PointSkin { SKIN_RING = 0, SKIN_CROSS = 1 };
+	int pointSkin = SKIN_RING;
+
+	// True for the SEM pipeline primitives (source contour, offset lines, band
+	// mesh) so the tree can mark them as a staging / SEM-loaded object.
+	bool semStaging = false;
 
 	void SetColor(const XMFLOAT4& col);
 	void SetUseVertexColor(const bool v);

@@ -15,8 +15,7 @@ bool Graphics::Initialize(HWND hwnd, int width, int height) {
 
 	luaEditor.sceneFloatMap = &this->scene.sceneFloats;
 	luaEditor.BindToScene(this->scene);
-	this->scene.LoadNewtonDemo();
-	this->scene.ClearScene();
+	
 	ID3D11RenderTargetView* rtvs[] = { this->renderTargetView.Get(), this->scene.GetMaskRTV() };
 	this->deviceContext->OMSetRenderTargets(2, rtvs, this->depthStencilView.Get());
 
@@ -24,6 +23,7 @@ bool Graphics::Initialize(HWND hwnd, int width, int height) {
 	ImGui::CreateContext();
 	ImPlot::CreateContext();
 	ImGuiIO& io = ImGui::GetIO();
+	io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 	ImGui_ImplWin32_Init(hwnd);
 	ImGui_ImplDX11_Init(this->device.Get(), this->deviceContext.Get());
 	ImGui::StyleColorsDark();

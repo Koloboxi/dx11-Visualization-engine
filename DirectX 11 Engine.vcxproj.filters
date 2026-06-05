@@ -65,11 +65,16 @@
     <ClInclude Include="source\external\lua\lua.hpp" />
     <ClInclude Include="source\external\lua\luaconf.h" />
     <ClInclude Include="source\external\lua\lualib.h" />
+    <ClInclude Include="source\graphics\gui\ConsoleWindow.h" />
+    <ClInclude Include="source\graphics\gui\DockHost.h" />
     <ClInclude Include="source\graphics\gui\GuiIcons.h" />
-    <ClInclude Include="source\graphics\gui\LayoutState.h" />
+    <ClInclude Include="source\graphics\gui\LuaGlobalsWindow.h" />
     <ClInclude Include="source\graphics\gui\PrimitivesWindow.h" />
+    <ClInclude Include="source\graphics\gui\SceneAreaWindow.h" />
+    <ClInclude Include="source\graphics\gui\SEMWindow.h" />
     <ClInclude Include="source\graphics\gui\TimeControlWindow.h" />
     <ClInclude Include="source\graphics\gui\TopStripWindow.h" />
+    <ClInclude Include="source\graphics\gui\VectorPick.h" />
     <ClInclude Include="source\graphics\scene\scene_controller.h" />
     <ClInclude Include="source\graphics\scene\scene_node.h" />
   </ItemGroup>
@@ -102,7 +107,7 @@
     <ClCompile Include="source\main.cpp" />
     <ClCompile Include="source\graphics\imgui\implot.cpp" />
     <ClCompile Include="source\graphics\imgui\implot_items.cpp" />
-    <ClCompile Include="source\graphics\gui.cpp" />
+    <ClCompile Include="source\graphics\gui\gui.cpp" />
     <ClCompile Include="source\graphics\imgui\imgui_stdlib.cpp" />
     <ClInclude Include="source\graphics\scene\auxiliaryObjects.h" />
     <ClCompile Include="source\graphics\scene\auxiliaryObjects.cpp" />

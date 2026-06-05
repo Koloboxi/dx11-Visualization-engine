@@ -1,9 +1,10 @@
 #pragma once
-#include "LayoutState.h"
 #include "GuiIcons.h"
 #include "../scene/scene.h"
 #include "../../scripting/LuaUpdaterEditor.h"
 #include "../../external/sem_exports.h"
+#include "../../utils/errorLogger.h"
+#include "SEMWindow.h"
 #include <unordered_set>
 #include <unordered_map>
 #include <functional>
@@ -97,9 +98,8 @@ inline std::string BrowseForMeshFile(const char* filter, const char* title) {
     return {};
 }
 
-inline void Draw(const LayoutState& lay, float windowH, Scene& scene,
-                 LuaUpdaterEditor& lua, bool& blockMousePick, bool& blockMouseWheel,
-                 ImGuiWindowFlags extraFlags) {
+inline void Draw(Scene& scene, LuaUpdaterEditor& lua,
+                 bool& blockMousePick, bool& blockMouseWheel) {
     static AddPrimState s_add;
     static int          s_savedSelIdx = 0;
     static float        s_impLineCol[4]  = { 0.4f, 0.7f, 1.0f, 1.0f };
@@ -132,13 +132,7 @@ inline void Draw(const LayoutState& lay, float windowH, Scene& scene,
         s_renameNode = nullptr;
     };
 
-    float panelH = windowH - LayoutState::STRIP_H - lay.consoleH;
-    float timeH  = lay.timeH > 0.f ? lay.timeH : panelH * .33f;
-    float primH  = panelH - timeH;
-
-    ImGui::SetNextWindowPos({0.f, LayoutState::STRIP_H + timeH}, ImGuiCond_Always);
-    ImGui::SetNextWindowSize({lay.colW, primH}, ImGuiCond_Always);
-    ImGui::Begin("Primitives", nullptr, extraFlags);
+    ImGui::Begin("Primitives");
 
     if (ImGui::Button("Save"))
         scene.SaveScene(scene.sceneName.empty() ? "scene.json" : scene.sceneName + ".json");
@@ -192,10 +186,6 @@ inline void Draw(const LayoutState& lay, float windowH, Scene& scene,
     }
     ImGui::SameLine();
     if (ImGui::Button("Import...")) ImGui::OpenPopup("ImportMesh");
-    ImGui::SameLine();
-    if (ImGui::Button("SEM Offsets...")) ImGui::OpenPopup("SEMOffsets");
-    ImGui::SameLine();
-    if (ImGui::Button("SEM Triangulate...")) ImGui::OpenPopup("SEMTriangulate");
 
     ImGui::SetNextWindowSize({360, 0}, ImGuiCond_Always);
     if (ImGui::BeginPopupModal("ImportMesh", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
@@ -223,86 +213,26 @@ inline void Draw(const LayoutState& lay, float windowH, Scene& scene,
                 path = BrowseForMeshFile("CSV Mesh (*.csv)\0*.csv\0All files (*.*)\0*.*\0", "Open CSV Mesh file");
 
             if (!path.empty()) {
-                XMFLOAT4 lc(s_impLineCol[0],  s_impLineCol[1],  s_impLineCol[2],  s_impLineCol[3]);
-                XMFLOAT4 pc(s_impPointCol[0], s_impPointCol[1], s_impPointCol[2], s_impPointCol[3]);
-                if      (s_impFmt == 1) scene.AddFromOBJ(path, lc, pc);
-                else if (s_impFmt == 2) scene.AddFromCSVMesh(path, lc, pc);
-                else {
-                    scene.AddFromCSV3D(path);
-                    SEM_LoadCSV3D(path.c_str());
+                try {
+                    XMFLOAT4 lc(s_impLineCol[0],  s_impLineCol[1],  s_impLineCol[2],  s_impLineCol[3]);
+                    XMFLOAT4 pc(s_impPointCol[0], s_impPointCol[1], s_impPointCol[2], s_impPointCol[3]);
+                    if      (s_impFmt == 1) scene.AddFromOBJ(path, lc, pc);
+                    else if (s_impFmt == 2) scene.AddFromCSVMesh(path, lc, pc);
+                    else {
+                        Primitive* src = scene.AddFromCSV3D(path);
+                        if (src) { src->semStaging = true; scene.AttachVertexPointsGroup(src); }
+                        int rc = SEM_LoadCSV3D(path.c_str());
+                        if (rc == 0) SEMWindow::SetSource(path, src);
+                        else         ErrorLogger::Log("SEM_LoadCSV3D failed (" + std::to_string(rc) + "): " + path);
+                    }
                 }
+                catch (const std::exception& e) { ErrorLogger::Log(std::string("Import failed: ") + e.what()); }
+                catch (...)                     { ErrorLogger::Log("Import failed: unknown exception."); }
                 ImGui::CloseCurrentPopup();
             }
         }
         ImGui::SameLine();
         if (ImGui::Button("Cancel", {80, 0})) ImGui::CloseCurrentPopup();
-        ImGui::EndPopup();
-    }
-
-    ImGui::SetNextWindowSize({340, 0}, ImGuiCond_Always);
-    if (ImGui::BeginPopupModal("SEMOffsets", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        static double s_semScale      = 1.0;
-        static int    s_semNumOffsets = 3;
-        static char   s_semStatus[256] = "Ready";
-
-        ImGui::TextUnformatted("Compute offset polylines from loaded CSV3D.");
-        ImGui::Separator();
-        ImGui::InputDouble("Scale coefficient", &s_semScale, 0.1, 1.0, "%.4f");
-        ImGui::InputInt("Num offsets", &s_semNumOffsets);
-        if (s_semNumOffsets < 1) s_semNumOffsets = 1;
-        ImGui::Separator();
-        ImGui::TextDisabled("%s", s_semStatus);
-        ImGui::Separator();
-        if (ImGui::Button("Compute & Load", {140, 0})) {
-            int rc = SEM_ComputeOffsets(s_semScale, s_semNumOffsets);
-            if (rc != 0) {
-                const char* errs[] = { "", "No source loaded", "Invalid parameters", "Cannot order edges" };
-                int idx = (-rc < 4) ? -rc : 0;
-                snprintf(s_semStatus, sizeof(s_semStatus), "ComputeOffsets error %d: %s", rc, errs[idx]);
-            } else {
-                const char* outPath = SEM_SerializeOffsets(nullptr);
-                if (!outPath) {
-                    snprintf(s_semStatus, sizeof(s_semStatus), "SerializeOffsets failed");
-                } else {
-                    std::string p(outPath);
-                    scene.AddFromCSV3D(p, "offsets_" + FileStem(p));
-                    snprintf(s_semStatus, sizeof(s_semStatus), "Loaded: %s", p.c_str());
-                    ImGui::CloseCurrentPopup();
-                }
-            }
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Close", {80, 0})) {
-            snprintf(s_semStatus, sizeof(s_semStatus), "Ready");
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::EndPopup();
-    }
-
-    ImGui::SetNextWindowSize({340, 0}, ImGuiCond_Always);
-    if (ImGui::BeginPopupModal("SEMTriangulate", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        static char s_triStatus[256] = "Ready";
-
-        ImGui::TextUnformatted("Triangulate the band spanned by the computed offsets.");
-        ImGui::Separator();
-        ImGui::TextDisabled("%s", s_triStatus);
-        ImGui::Separator();
-        if (ImGui::Button("Triangulate & Load", {160, 0})) {
-            const char* outPath = SEM_Triangulate(nullptr);
-            if (!outPath) {
-                snprintf(s_triStatus, sizeof(s_triStatus), "Triangulate failed (no source / <2 offsets / write error)");
-            } else {
-                std::string p(outPath);
-                scene.AddFromCSV3D(p, "tris_" + FileStem(p));
-                snprintf(s_triStatus, sizeof(s_triStatus), "Loaded: %s", p.c_str());
-                ImGui::CloseCurrentPopup();
-            }
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Close", {80, 0})) {
-            snprintf(s_triStatus, sizeof(s_triStatus), "Ready");
-            ImGui::CloseCurrentPopup();
-        }
         ImGui::EndPopup();
     }
 
@@ -364,6 +294,24 @@ inline void Draw(const LayoutState& lay, float windowH, Scene& scene,
         ImGui::EndPopup();
     }
 
+    // Point-skin selector for the current selection. Only shown when at least
+    // one selected primitive is a point (dimension 0); applies to all of them.
+    {
+        int ptCount = 0, firstSkin = Primitive::SKIN_RING;
+        for (Primitive* p : scene.primitives)
+            if (p->selected && p->GetDimension() == 0) {
+                if (ptCount == 0) firstSkin = p->pointSkin;
+                ++ptCount;
+            }
+        if (ptCount > 0) {
+            int skin = firstSkin;
+            ImGui::SetNextItemWidth(160);
+            if (ImGui::Combo("Point skin", &skin, "Ring\0Cross\0"))
+                for (Primitive* p : scene.primitives)
+                    if (p->selected && p->GetDimension() == 0) p->pointSkin = skin;
+        }
+    }
+
     ImGui::Separator();
 
     if (ImGui::BeginChild("##primlist", {0,0}, false)) {
@@ -378,6 +326,22 @@ inline void Draw(const LayoutState& lay, float windowH, Scene& scene,
         struct FlatItem { SceneNode* node; int depth; };
         static std::vector<FlatItem> s_flat;
         s_flat.clear();
+
+        // Auto-expand any node the first time it is seen with children, so a
+        // freshly created primitive shows its children expanded by default.
+        // Once a node is known, the user's manual collapse/expand sticks.
+        static std::unordered_set<const SceneNode*> s_known;
+        std::function<void(SceneNode*)> seedExpand = [&](SceneNode* n) {
+            if (!s_known.count(n)) {
+                s_known.insert(n);
+                // Don't auto-expand a vertex-points group: it can hold thousands
+                // of markers and would flood the tree.
+                if (!n->children.empty() && !n->IsVertexPointsGroup())
+                    s_expanded.insert(n);
+            }
+            for (SceneNode* ch : n->children) seedExpand(ch);
+        };
+        seedExpand(&scene.root);
 
         std::function<void(SceneNode*, int)> buildFlat = [&](SceneNode* n, int d) {
             s_flat.push_back({n, d});
@@ -456,16 +420,24 @@ inline void Draw(const LayoutState& lay, float windowH, Scene& scene,
 
             dl->AddText({textX, rp.y + (rowH - ImGui::GetTextLineHeight()) * .5f}, textCol, lbl.c_str());
 
-            // Visibility "eye" toggle, drawn at the right edge of primitive rows.
+            // Staging outline: marks the SEM pipeline primitives (source contour,
+            // offset lines, band mesh) as SEM-loaded objects.
+            if (prim && prim->semStaging)
+                dl->AddRect(rp, re, IM_COL32(90,205,165,220), 3.f, 0, 1.5f);
+
+            // Visibility "eye" toggle, drawn at the right edge. Shown for
+            // primitives and for grouping nodes (incl. an as-yet-empty vertex-
+            // points group, whose first reveal lazily generates its markers).
+            bool showEye = (isPrim || hasCh || node->IsVertexPointsGroup()) && !isRoot && !isCtrl;
             float eyeR  = rowH * 0.24f;
             float eyeCx = rp.x + avW - eyeR - 8.f;
             float eyeCy = rp.y + rowH * .5f;
             float eyeHalf = eyeR + 4.f;
-            if (isPrim) {
-                ImU32 eyeCol = prim->visible
+            if (showEye) {
+                ImU32 eyeCol = node->visible
                     ? (hovered ? IM_COL32(225,235,255,235) : IM_COL32(180,195,225,180))
                     : IM_COL32(120,128,150,170);
-                GuiIcons::EyeIcon(dl, {eyeCx, eyeCy}, eyeR, prim->visible, eyeCol);
+                GuiIcons::EyeIcon(dl, {eyeCx, eyeCy}, eyeR, node->visible, eyeCol);
             }
 
             ImGui::SetCursorScreenPos(rp);
@@ -475,11 +447,13 @@ inline void Draw(const LayoutState& lay, float windowH, Scene& scene,
                 bool ctrl  = ImGui::GetIO().KeyCtrl;
                 bool shift = ImGui::GetIO().KeyShift;
                 bool clickedTri = hasCh && mp.x >= triX && mp.x <= triX + 12.f;
-                bool clickedEye = isPrim && mp.x >= eyeCx - eyeHalf && mp.x <= eyeCx + eyeHalf &&
+                bool clickedEye = showEye && mp.x >= eyeCx - eyeHalf && mp.x <= eyeCx + eyeHalf &&
                                   mp.y >= eyeCy - eyeHalf && mp.y <= eyeCy + eyeHalf;
 
                 if (clickedEye) {
-                    prim->visible = !prim->visible;
+                    // One-shot cascade: parent's new state is pushed to all
+                    // descendants; afterwards each child toggles independently.
+                    scene.SetNodeVisibleCascade(node, !node->visible);
                 } else if (clickedTri) {
                     if (isExp) s_expanded.erase(node);
                     else       s_expanded.insert(node);
@@ -494,6 +468,14 @@ inline void Draw(const LayoutState& lay, float windowH, Scene& scene,
                 } else if (isPrim) {
                     scene.controllerSelected = false;
                     s_lastClickedNode = prim;
+                    // Selecting a parent selects its whole primitive subtree.
+                    auto selectSubtree = [](SceneNode* n, bool v) {
+                        std::function<void(SceneNode*)> rec = [&](SceneNode* m) {
+                            if (m->IsPrimitive()) static_cast<Primitive*>(m)->selected = v;
+                            for (SceneNode* ch : m->children) rec(ch);
+                        };
+                        rec(n);
+                    };
                     if (shift && s_lastClickedIdx >= 0) {
                         int lo = std::min(i, s_lastClickedIdx);
                         int hi = std::max(i, s_lastClickedIdx);
@@ -502,11 +484,11 @@ inline void Draw(const LayoutState& lay, float windowH, Scene& scene,
                             if (s_flat[j].node->IsPrimitive())
                                 static_cast<Primitive*>(s_flat[j].node)->selected = true;
                     } else if (ctrl) {
-                        prim->selected = !prim->selected;
+                        selectSubtree(prim, !prim->selected);
                         s_lastClickedIdx = i;
                     } else {
                         for (Primitive* p2 : scene.primitives) p2->selected = false;
-                        prim->selected = true;
+                        selectSubtree(prim, true);
                         s_lastClickedIdx = i;
                     }
                     std::vector<Primitive*> sel;

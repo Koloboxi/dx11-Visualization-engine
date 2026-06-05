@@ -176,6 +176,24 @@
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Geometry</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Geometry</ShaderType>
     </FxCompile>
+    <FxCompile Include="source\graphics\shaders\geometryshaderpointscross.hlsl">
+      <ObjectFileOutput Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">$(SolutionDir)\geometryshaderpointscross.cso</ObjectFileOutput>
+      <ObjectFileOutput Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">$(SolutionDir)\geometryshaderpointscross.cso</ObjectFileOutput>
+      <ObjectFileOutput Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(SolutionDir)\geometryshaderpointscross.cso</ObjectFileOutput>
+      <ObjectFileOutput Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(SolutionDir)\geometryshaderpointscross.cso</ObjectFileOutput>
+      <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">5.0</ShaderModel>
+      <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">5.0</ShaderModel>
+      <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">5.0</ShaderModel>
+      <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">5.0</ShaderModel>
+      <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">GS_Main</EntryPointName>
+      <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">GS_Main</EntryPointName>
+      <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">GS_Main</EntryPointName>
+      <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">GS_Main</EntryPointName>
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Geometry</ShaderType>
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Geometry</ShaderType>
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Geometry</ShaderType>
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Geometry</ShaderType>
+    </FxCompile>
     <FxCompile Include="source\graphics\shaders\geometryshaderthickness.hlsl">
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Geometry</ShaderType>
       <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">5.0</ShaderModel>
@@ -239,11 +257,16 @@
     <ClInclude Include="source\external\lua\luaconf.h" />
     <ClInclude Include="source\external\lua\lualib.h" />
     <ClInclude Include="source\external\sem_exports.h" />
+    <ClInclude Include="source\graphics\gui\ConsoleWindow.h" />
+    <ClInclude Include="source\graphics\gui\DockHost.h" />
     <ClInclude Include="source\graphics\gui\GuiIcons.h" />
-    <ClInclude Include="source\graphics\gui\LayoutState.h" />
+    <ClInclude Include="source\graphics\gui\LuaGlobalsWindow.h" />
     <ClInclude Include="source\graphics\gui\PrimitivesWindow.h" />
+    <ClInclude Include="source\graphics\gui\SceneAreaWindow.h" />
+    <ClInclude Include="source\graphics\gui\SEMWindow.h" />
     <ClInclude Include="source\graphics\gui\TimeControlWindow.h" />
     <ClInclude Include="source\graphics\gui\TopStripWindow.h" />
+    <ClInclude Include="source\graphics\gui\VectorPick.h" />
     <ClInclude Include="source\graphics\imgui\imgui_stdlib.h" />
     <ClInclude Include="source\graphics\math.h" />
     <ClInclude Include="source\graphics\misc\Colors.h" />
@@ -292,7 +315,7 @@
     <ClInclude Include="source\loaders\STLLoader.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="source\graphics\gui.cpp" />
+    <ClCompile Include="source\graphics\gui\gui.cpp" />
     <ClCompile Include="source\graphics\imgui\imgui_stdlib.cpp" />
     <FxCompile Include="source\graphics\shaders\pixelshaderwriteids.hlsl">
       <FileType>Document</FileType>

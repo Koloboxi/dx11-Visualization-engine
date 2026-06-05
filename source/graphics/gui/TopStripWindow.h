@@ -1,5 +1,4 @@
 #pragma once
-#include "LayoutState.h"
 #include "GuiIcons.h"
 #include "../scene/scene.h"
 
@@ -9,20 +8,10 @@ static bool   s_lightOpen   = false;
 static ImVec2 s_lightBtnMin = {};
 static ImVec2 s_lightBtnMax = {};
 
-inline void Draw(float windowW, Scene& scene, bool& blockMousePick, const char* fpsText = nullptr) {
-    constexpr float SH = LayoutState::STRIP_H;
-    float btnSz = SH - 8.f;
+inline void DrawMenuBarContents(Scene& scene, bool& blockMousePick, const char* fpsText = nullptr) {
+    if (!ImGui::BeginMenuBar()) return;
 
-    ImGui::SetNextWindowPos({0.f, 0.f}, ImGuiCond_Always);
-    ImGui::SetNextWindowSize({windowW, SH}, ImGuiCond_Always);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {4.f, 4.f});
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,   {3.f, 3.f});
-    ImGui::Begin("##topstrip", nullptr,
-        ImGuiWindowFlags_NoTitleBar    | ImGuiWindowFlags_NoResize        |
-        ImGuiWindowFlags_NoMove        | ImGuiWindowFlags_NoScrollbar     |
-        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus |
-        ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoCollapse);
-    ImGui::PopStyleVar(2);
+    float btnSz = ImGui::GetFrameHeight() - 2.f;
 
     GuiIcons::ToggleIconButton("##outline", &scene.outlineThroughObjets, btnSz, GuiIcons::OutlineIcon);
     ImGui::SameLine();
@@ -44,20 +33,20 @@ inline void Draw(float windowW, Scene& scene, bool& blockMousePick, const char* 
         char buf[32];
         snprintf(buf, sizeof(buf), "FPS: %s", fpsText);
         float tw = ImGui::CalcTextSize(buf).x;
-        ImGui::SameLine(windowW - tw - 10.f);
+        float avail = ImGui::GetContentRegionAvail().x;
+        if (avail > tw + 10.f) ImGui::SameLine(0.f, avail - tw - 10.f);
+        else ImGui::SameLine();
         ImGui::AlignTextToFramePadding();
         ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "%s", buf);
     }
 
-    if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem))
-        blockMousePick = true;
-
-    ImGui::End();
+    ImGui::EndMenuBar();
 
     if (s_lightOpen) {
         float popW = 220.f;
         float popX = s_lightBtnMin.x;
-        if (popX + popW > windowW) popX = windowW - popW - 4.f;
+        float vpRight = ImGui::GetMainViewport()->WorkPos.x + ImGui::GetMainViewport()->WorkSize.x;
+        if (popX + popW > vpRight) popX = vpRight - popW - 4.f;
 
         ImGui::SetNextWindowPos({popX, s_lightBtnMax.y + 2.f}, ImGuiCond_Always);
         ImGui::SetNextWindowSize({popW, 0.f}, ImGuiCond_Always);
@@ -65,7 +54,7 @@ inline void Draw(float windowW, Scene& scene, bool& blockMousePick, const char* 
             ImGuiWindowFlags_NoTitleBar       | ImGuiWindowFlags_NoResize     |
             ImGuiWindowFlags_NoMove           | ImGuiWindowFlags_AlwaysAutoResize |
             ImGuiWindowFlags_NoSavedSettings  | ImGuiWindowFlags_NoFocusOnAppearing |
-            ImGuiWindowFlags_NoCollapse);
+            ImGuiWindowFlags_NoDocking        | ImGuiWindowFlags_NoCollapse);
 
         bool changed = false;
         changed |= ImGui::DragFloat("Ambient",   &scene.ambient,   0.05f, 0.f, 1.f,  "%.2f");
