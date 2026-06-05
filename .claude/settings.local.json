@@ -27,7 +27,14 @@
       "PowerShell(& \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\2022\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\" \"DirectX 11 Engine.vcxproj\" /t:Build /p:Configuration=Debug /p:Platform=x64 /m /nologo /verbosity:minimal /clp:ErrorsOnly)",
       "Bash(python Data/_gen_contours.py)",
       "Bash(where MSBuild.exe)",
-      "PowerShell($msb = \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\2022\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\"; & $msb \"dx11-Visualization-engine.sln\" /t:Build /p:Configuration=Debug /p:Platform=x64 /m /v:minimal /clp:ErrorsOnly 2>&1 | Select-Object -Last 40)"
+      "PowerShell($msb = \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\2022\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\"; & $msb \"dx11-Visualization-engine.sln\" /t:Build /p:Configuration=Debug /p:Platform=x64 /m /v:minimal /clp:ErrorsOnly 2>&1 | Select-Object -Last 40)",
+      "Bash(where cl.exe)",
+      "Bash(where gcc *)",
+      "Bash(where g++)",
+      "Bash(where clang *)",
+      "Bash(\"C:\\\\Program Files \\(x86\\)\\\\Microsoft Visual Studio\\\\Installer\\\\vswhere.exe\" -latest -property installationPath)",
+      "Bash(\"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\2022\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\" \"dx11-Visualization-engine.sln\" -t:Build -p:Configuration=Debug -p:Platform=x64 -m -v:minimal -nologo)",
+      "Bash(grep -iE \": error|venginedx11.exe$|-> C\")"
     ]
   }
 }

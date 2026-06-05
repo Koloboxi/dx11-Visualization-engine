@@ -3,8 +3,11 @@
 #include "../scene/scene.h"
 #include "../../external/sem_exports.h"
 #include "../../utils/errorLogger.h"
+#include "../../loaders/CSV3DLoader.h"
 #include <string>
 #include <vector>
+#include <map>
+#include <excpt.h>
 
 namespace SEMWindow {
 
@@ -30,6 +33,54 @@ namespace detail {
         auto dot = file.find_last_of('.');
         return (dot != std::string::npos) ? file.substr(0, dot) : file;
     }
+
+    // Vertex / edge / triangle counts for a CSV3D file, plus a couple of values
+    // derived from them. Computed once when a result file is produced (never per
+    // frame) and cached in the window's static state.
+    struct Stats {
+        bool valid    = false;
+        int  verts    = 0;
+        int  edges    = 0;   // unique undirected edges (triangles + faces + explicit)
+        int  tris     = 0;
+        int  boundary = 0;   // edges used by exactly one triangle (tris > 0 only)
+    };
+
+    inline Stats ComputeStats(const std::string& path) {
+        Stats s;
+        CSV3DLoader::CSV3DData d;
+        if (path.empty() || !CSV3DLoader::Load(path, d)) return s;
+        s.valid = true;
+        s.verts = (int)d.nodes.size();
+        s.tris  = (int)d.triangles.size();
+
+        // Count how many faces each undirected edge belongs to so we can also
+        // report the boundary (edges touched by a single triangle).
+        std::map<std::pair<unsigned, unsigned>, int> edgeUse;
+        auto add = [&](unsigned a, unsigned b) {
+            if (a == b) return;
+            edgeUse[a < b ? std::make_pair(a, b) : std::make_pair(b, a)]++;
+        };
+        for (const auto& t : d.triangles) { add(t.x, t.y); add(t.y, t.z); add(t.z, t.x); }
+        for (const auto& f : d.faces) {
+            size_t m = f.size();
+            for (size_t i = 0; i < m; ++i) add(f[i], f[(i + 1) % m]);
+        }
+        for (const auto& e : d.edges) add(e.first, e.second);
+
+        s.edges = (int)edgeUse.size();
+        if (s.tris > 0)
+            for (const auto& kv : edgeUse) if (kv.second == 1) ++s.boundary;
+        return s;
+    }
+}
+
+// Wrap the meshing entry point so an access violation inside the prebuilt
+// Triangle-based DLL is turned into an error code (-100) instead of taking the
+// whole application down. SEH and C++ stack unwinding cannot share a scope, so
+// this helper holds no C++ objects with destructors.
+inline int SafeBuildMeshEx(const SEM_MeshParamsEx* params) {
+    __try { return SEM_BuildMeshEx(params); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return -100; }
 }
 
 // Called by the importer after a successful SEM_LoadCSV3D. The new contour
@@ -66,6 +117,11 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
 
     static char  s_status[256]    = "Ready";
 
+    // Cached geometry readouts (vertices / edges / triangles + derived values).
+    // Refreshed only when their underlying file is (re)produced, never per frame.
+    static Stats       s_srcStats, s_offStats, s_meshStats;
+    static std::string s_srcStatsPath;
+
     auto alive = [&](Primitive* q) {
         if (!q) return false;
         for (Primitive* p : scene.primitives) if (p == q) return true;
@@ -74,6 +130,9 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
 
     SceneNode* attachTo = alive(SourcePrim()) ? static_cast<SceneNode*>(SourcePrim()) : nullptr;
     const std::string& loaded = SourcePath();
+
+    // Source stats: recompute only when the loaded contour file changes.
+    if (loaded != s_srcStatsPath) { s_srcStats = ComputeStats(loaded); s_srcStatsPath = loaded; }
 
     // In Manual mode failures pop an ErrorLogger message box; in Real-time mode
     // (silent) they only update the status line, so dragging a slider over an
@@ -92,6 +151,7 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         if (alive(LastOffsets())) scene.RemovePrimitive(LastOffsets());
         LastOffsets() = scene.AddFromCSV3D(p, "offsets_" + Stem(loaded), attachTo);
         if (LastOffsets()) { LastOffsets()->semStaging = true; scene.AttachVertexPointsGroup(LastOffsets()); }
+        s_offStats = ComputeStats(p);
         snprintf(s_status, sizeof(s_status), "Offsets: %s", BaseName(p).c_str());
     };
 
@@ -162,7 +222,12 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
     auto doMesh = [&](bool silent) {
         try {
             SEM_MeshParamsEx params{ s_meshMethod, (double)s_meshParam, (double)s_steinerMargin };
-            int rc = SEM_BuildMeshEx(&params);
+            int rc = SafeBuildMeshEx(&params);
+            if (rc == -100) {
+                report(silent, "SEM_BuildMeshEx crashed inside the mesher DLL (access violation caught). "
+                               "Try a different Steiner method or a larger parameter.");
+                return;
+            }
             if (rc != 0) {
                 const char* errs[] = { "", "No source loaded", "Compute offsets first",
                                        "Not enough valid lines", "Triangulation failed",
@@ -178,6 +243,7 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
             if (alive(LastMesh())) scene.RemovePrimitive(LastMesh());
             LastMesh() = scene.AddFromCSV3D(p, "mesh_" + Stem(loaded), attachTo);
             if (LastMesh()) { LastMesh()->semStaging = true; scene.AttachVertexPointsGroup(LastMesh()); }
+            s_meshStats = ComputeStats(p);
             snprintf(s_status, sizeof(s_status), "Mesh: %s", BaseName(p).c_str());
         }
         catch (const std::exception& e) { report(silent, std::string("SEM_BuildMeshEx exception: ") + e.what()); }
@@ -212,6 +278,41 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
 
     ImGui::TextDisabled("Source: %s", loaded.empty() ? "(none loaded)" : BaseName(loaded).c_str());
 
+    // Right-aligned geometry readout. Reports the most-derived artefact present
+    // (mesh > offsets > source contour): vertex / edge / triangle counts plus a
+    // few values derived from them.
+    {
+        const Stats* st  = nullptr;
+        const char*  tag = "Source";
+        if      (alive(LastMesh())    && s_meshStats.valid) { st = &s_meshStats; tag = "Mesh";    }
+        else if (alive(LastOffsets()) && s_offStats.valid)  { st = &s_offStats;  tag = "Offsets"; }
+        else if (s_srcStats.valid)                          { st = &s_srcStats;  tag = "Source";  }
+
+        auto rightLine = [](const char* txt) {
+            float w     = ImGui::CalcTextSize(txt).x;
+            float avail = ImGui::GetContentRegionAvail().x;
+            if (avail > w) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - w));
+            ImGui::TextDisabled("%s", txt);
+        };
+
+        char l1[160], l2[160];
+        if (st && st->tris > 0) {
+            int   chi = st->verts - st->edges + st->tris;        // Euler characteristic
+            int   holes = 1 - chi;                               // connected planar region => holes
+            float te  = st->edges ? (float)st->tris / st->edges : 0.0f;
+            snprintf(l1, sizeof(l1), "%s   V %d   E %d   T %d", tag, st->verts, st->edges, st->tris);
+            snprintf(l2, sizeof(l2), "chi %d   holes %d   bnd %d   T/E %.2f", chi, holes, st->boundary, te);
+        } else if (st) {
+            snprintf(l1, sizeof(l1), "%s   V %d   E %d", tag, st->verts, st->edges);
+            snprintf(l2, sizeof(l2), "E-V %d", st->edges - st->verts);   // 0 ~ single closed loop
+        } else {
+            snprintf(l1, sizeof(l1), "(no geometry)");
+            l2[0] = '\0';
+        }
+        rightLine(l1);
+        if (l2[0]) rightLine(l2);
+    }
+
     ImGui::RadioButton("Manual", &s_mode, 0);
     ImGui::SameLine();
     ImGui::RadioButton("Real-time", &s_mode, 1);
@@ -240,10 +341,19 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
                 if (alive(LastMesh()))    doMesh(true);
             }
         } else if (ImGui::Button("Subdivide", {160, 0})) {
-            // The cached offsets/mesh are now stale; drop their primitives.
+            // The offsets/mesh are derived from the (now subdivided) source, so
+            // recompute whatever the pipeline already produced instead of dropping
+            // it. AddFromCSV3D is a pure visual load and never touches the SEM
+            // cache (only SEM_LoadCSV3D clears it), so the offsets recompute and
+            // then the mesh recompute both see the freshly subdivided contour.
+            // Offsets must come first: SEM_SubdivideContour invalidated the cached
+            // offsets the mesh depends on. Turning the markers on afterwards
+            // regenerates the yellow vertex points against the new geometry.
             if (doSubdivide(false)) {
-                if (alive(LastOffsets())) { scene.RemovePrimitive(LastOffsets()); LastOffsets() = nullptr; }
-                if (alive(LastMesh()))    { scene.RemovePrimitive(LastMesh());    LastMesh()    = nullptr; }
+                if (alive(LastOffsets())) doOffsets(false);
+                if (alive(LastMesh()))    doMesh(false);
+                if (alive(LastOffsets())) scene.ShowVertexPointsFor(LastOffsets(), true);
+                if (alive(LastMesh()))    scene.ShowVertexPointsFor(LastMesh(),    true);
             }
         }
     }
