@@ -223,6 +223,7 @@ inline void Draw(Scene& scene, LuaUpdaterEditor& lua,
                         if (src) {
                             src->semSourcePath = path;
                             scene.AttachVertexPointsGroup(src);
+                            scene.stagingEnabled = true;
                             scene.SetStaged(src);
                         }
                     }
@@ -497,7 +498,10 @@ inline void Draw(Scene& scene, LuaUpdaterEditor& lua,
             }
 
             if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) {
-                if (isPrim) {
+                // Staging only hijacks double-click while staging mode is on
+                // (enabled on CSV3D import, disabled from the SEM window).
+                // Otherwise double-click keeps its normal rename behavior.
+                if (isPrim && scene.stagingEnabled) {
                     if (prim->staging) scene.ClearStaged();
                     else               scene.SetStaged(prim);
                     for (Primitive* p2 : scene.primitives) p2->selected = false;

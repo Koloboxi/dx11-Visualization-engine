@@ -1,6 +1,7 @@
 #include "graphics.h"
 
 bool Graphics::Initialize(HWND hwnd, int width, int height) {
+	this->hwnd = hwnd;
 	this->windowWidth = width;
 	this->windowHeight = height;
 	this->fpsTimer.Start();
@@ -77,7 +78,20 @@ void Graphics::RenderFrame()
 	this->scene.Draw();
 	this->Gui();
 
-	this->swapchain->Present(1, NULL);
+	// Throttle hard when the window is neither focused nor visible: minimized
+	// windows don't need to redraw, and a backgrounded one can run at a low
+	// refresh. Otherwise present at vsync (sync interval 1).
+	HWND fg = GetForegroundWindow();
+	bool focused   = (fg == this->hwnd);
+	bool minimized = IsIconic(this->hwnd);
+
+	UINT syncInterval = focused ? 1 : 4; // 4 vblanks ~= 15 fps at 60 Hz
+	this->swapchain->Present(syncInterval, 0);
+
+	// Present with a high sync interval still spins the loop when the swap chain
+	// is occluded/minimized (nothing to wait on), so back off on the CPU too.
+	if (minimized)      Sleep(50);
+	else if (!focused)  Sleep(15);
 }
 
 int Graphics::GetClientWindowWidth()

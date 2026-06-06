@@ -44,6 +44,9 @@ public:
 	void DeleteSelected();
 
 	Primitive* stagedPrimitive = nullptr;
+	// Staging mode: enabled on CSV3D import, turned off from the SEM window.
+	// While off, the tree behaves normally (double-click = rename, not stage).
+	bool stagingEnabled = false;
 	void SetStaged(Primitive* p);
 	void ClearStaged();
 	bool blockMousePick = false;
@@ -79,7 +82,9 @@ public:
 	void AddFromSTL(const std::string& path, const XMFLOAT4& col, const std::string& name = "");
 	void AddFromOBJ(const std::string& path, const XMFLOAT4& lineCol, const XMFLOAT4& pointCol);
 	void AddFromCSVMesh(const std::string& path, const XMFLOAT4& lineCol, const XMFLOAT4& pointCol);
-	Primitive* AddFromCSV3D(const std::string& path, const std::string& name = "", SceneNode* parent = nullptr);
+	// overrideColor: when non-null, every edge is drawn in this flat colour
+	// instead of the per-node temperature gradient (used for the green isoline).
+	Primitive* AddFromCSV3D(const std::string& path, const std::string& name = "", SceneNode* parent = nullptr, const XMFLOAT4* overrideColor = nullptr);
 	void AddCubeWireframe(float halfSize, const XMFLOAT3& center, const XMFLOAT4& col);
 	void AddCubeSolid(float halfSize, const XMFLOAT3& center, const XMFLOAT4& col);
 

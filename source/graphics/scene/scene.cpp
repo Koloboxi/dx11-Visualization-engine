@@ -532,7 +532,7 @@ void Scene::AddFromCSVMesh(const std::string& path, const XMFLOAT4& lineCol, con
 	m_sortedDirty = true;
 }
 
-Primitive* Scene::AddFromCSV3D(const std::string& path, const std::string& name, SceneNode* parent)
+Primitive* Scene::AddFromCSV3D(const std::string& path, const std::string& name, SceneNode* parent, const XMFLOAT4* overrideColor)
 {
 	CSV3DLoader::CSV3DData data;
 	if (!CSV3DLoader::Load(path, data)) {
@@ -598,9 +598,9 @@ Primitive* Scene::AddFromCSV3D(const std::string& path, const std::string& name,
 	cols.reserve(edges.size() * 2);
 	for (const auto& e : edges) {
 		poses.push_back(N[e.first].pos);
-		cols.push_back(tempColor(N[e.first].T));
+		cols.push_back(overrideColor ? *overrideColor : tempColor(N[e.first].T));
 		poses.push_back(N[e.second].pos);
-		cols.push_back(tempColor(N[e.second].T));
+		cols.push_back(overrideColor ? *overrideColor : tempColor(N[e.second].T));
 	}
 
 	auto* p = PrimitiveConstructor::ColoredLine(poses, cols, /*asLineList*/ true, NextId());
@@ -816,6 +816,7 @@ void Scene::ClearScene()
 	for (Primitive* p : this->primitives) delete p;
 	this->primitives.clear();
 	this->stagedPrimitive = nullptr;
+	this->stagingEnabled  = false;
 	root.children.clear();
 	m_sortedDirty = true;
 	this->ClearTrajectories();

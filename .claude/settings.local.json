@@ -40,7 +40,18 @@
       "Bash('/c/Program Files/Microsoft Visual Studio/2022/Community/MSBuild/Current/Bin/MSBuild.exe' dx11-Visualization-engine.sln -t:Build -p:Configuration=Debug -p:Platform=x64 -m -v:minimal -nologo)",
       "Bash(python -)",
       "Bash(grep -Ei \"error C|error LNK|error MSB|venginedx11.exe -> |venginedx11.exe$\")",
-      "Bash(grep -E \"venginedx11.exe$\")"
+      "Bash(grep -E \"venginedx11.exe$\")",
+      "Bash(ls *.sln *.vcxproj)",
+      "Bash(ls *.bat)",
+      "PowerShell(& \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\2022\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\" \"dx11-Visualization-engine.sln\" /t:Build /p:Configuration=Debug /p:Platform=x64 /m /nologo /v:minimal /clp:ErrorsOnly 2>&1)",
+      "Bash(command -v msbuild MSBuild.exe)",
+      "Read(//c/Program Files/Microsoft Visual Studio/**)",
+      "Bash(\"C:/Program Files/Microsoft Visual Studio/2022/Community/MSBuild/Current/Bin/MSBuild.exe\" \"dx11-Visualization-engine.sln\" -nologo -m -p:Configuration=Debug -v:minimal)",
+      "Bash('C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/*/bin/Hostx64/x64/dumpbin.exe' /exports __TRACKED_VAR__/surface_extender_mesher.lib)",
+      "Bash(python _gen_nonsmooth_offsets.py)",
+      "Bash(ls *.lib)",
+      "Bash(ls source/external/*.lib)",
+      "Bash(find . -maxdepth 2 -name \"surface_extender_mesher.lib\")"
     ]
   }
 }

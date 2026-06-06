@@ -15,6 +15,7 @@
     <FxCompile Include="source\graphics\shaders\vertexshaderFSQuad.hlsl" />
     <FxCompile Include="source\graphics\shaders\pixelshaderoutlinemerge.hlsl" />
     <FxCompile Include="source\graphics\shaders\pixelshaderwriteids.hlsl" />
+    <FxCompile Include="source\graphics\shaders\geometryshaderpointscross.hlsl" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="source\graphics\imgui\imconfig.h" />
@@ -77,6 +78,9 @@
     <ClInclude Include="source\graphics\gui\VectorPick.h" />
     <ClInclude Include="source\graphics\scene\scene_controller.h" />
     <ClInclude Include="source\graphics\scene\scene_node.h" />
+    <ClInclude Include="source\external\sem_exports.h" />
+    <ClInclude Include="source\loaders\Grid2DLoader.h" />
+    <ClInclude Include="source\graphics\gui\SemSession.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="source\graphics\imgui\imgui.cpp" />

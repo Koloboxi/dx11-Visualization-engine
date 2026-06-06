@@ -32,6 +32,7 @@ private:
 
 	void Gui();
 
+	HWND hwnd = nullptr;
 	int windowWidth = 0;
 	int windowHeight = 0;
 

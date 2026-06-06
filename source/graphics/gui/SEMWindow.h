@@ -77,12 +77,27 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
 
     ImGui::Begin("SEM");
 
+    // Staging mode is turned on automatically when a CSV3D contour is imported.
+    // This button turns it back off so the tree's double-click reverts to rename.
+    if (scene.stagingEnabled) {
+        if (ImGui::Button("Disable staging")) {
+            scene.stagingEnabled = false;
+            scene.ClearStaged();
+        }
+        ImGui::SetItemTooltip("Stop binding contours via double-click. Re-enabled on the next CSV3D import.");
+        ImGui::Separator();
+    }
+
     if (!S.HasSource()) {
         if (S.SourcePrim()) ImGui::TextDisabled("Staged primitive is not a SEM contour.");
         else                ImGui::TextDisabled("No staged contour.");
         ImGui::Spacing();
-        ImGui::TextWrapped("Double-click a CSV3D contour in the tree to stage it here.");
-        ImGui::TextWrapped("Double-click empty 3D space to unstage.");
+        if (scene.stagingEnabled) {
+            ImGui::TextWrapped("Double-click a CSV3D contour in the tree to stage it here.");
+            ImGui::TextWrapped("Double-click empty 3D space to unstage.");
+        } else {
+            ImGui::TextWrapped("Staging is off. Import a CSV3D contour to re-enable it.");
+        }
         ImGui::Separator();
         ImGui::TextDisabled("%s", S.status);
         if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem | ImGuiHoveredFlags_ChildWindows))
@@ -93,6 +108,12 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
 
     ImGui::TextDisabled("Staged: %s", BaseName(S.SourcePath()).c_str());
     DrawReadout(S);
+    ImGui::Separator();
+
+    if (ImGui::Button("Run full pipeline", {-1.0f, 0})) S.RunFullPipeline(scene);
+    ImGui::SetItemTooltip("Adaptive subdivide -> graded offsets (first gap = 1 mean edge\n"
+                          "length, grading 1.2, 8 offsets) -> max-area mesh (default area)\n"
+                          "-> thermal solve (default) -> isotherm at T=0.5.");
     ImGui::Separator();
 
     auto autoTag = [&](bool* autoFlag) {
@@ -140,9 +161,12 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         changed |= ImGui::Combo("Spacing", &S.offsetMode, modes);
 
         if (S.offsetMode == OFFSET_EVEN) {
-            ImGui::DragFloat("Max distance", &S.dMax, 1.0f, -5000.0f, 5000.0f, "%.2f");
+            ImGui::DragFloat("First gap", &S.firstGap, 0.05f, -1000.0f, 1000.0f, "%.3f");
             released |= ImGui::IsItemDeactivatedAfterEdit();
-            ImGui::SetItemTooltip("Sign selects the side (left/right of travel).");
+            ImGui::SetItemTooltip("Size of the first gap, in multiples of the source's\n"
+                                  "mean edge length (1 = one mean edge length).\n"
+                                  "Sign selects the side (left/right of travel).\n"
+                                  "Successive gaps scale by Grading.");
             ImGui::DragInt("Num offsets", &S.numOffsets, 0.2f, 1, 500);
             released |= ImGui::IsItemDeactivatedAfterEdit();
             ImGui::DragFloat("Grading", &S.grading, 0.01f, 0.05f, 20.0f, "%.3f");
@@ -200,6 +224,28 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
             ImGui::SetItemTooltip("%s", MeshParamHelp(S.meshMethod));
             ImGui::SameLine();
             if (ImGui::SmallButton("auto")) { S.meshParam = -1.0f; changed = true; }
+
+            // Length/area knobs can be entered as multiples of the source's mean
+            // edge length. Toggling converts the value so the mesh is unchanged.
+            bool lenArea = (S.meshMethod == SEM_STEINER_MAX_AREA ||
+                            S.meshMethod == SEM_STEINER_SIZING);
+            if (lenArea) {
+                ImGui::SameLine();
+                const char* ulabel = !S.meshParamEdgeUnits ? "units: model"
+                    : (S.meshMethod == SEM_STEINER_MAX_AREA ? "units: x edge^2"
+                                                            : "units: x edge");
+                if (ImGui::SmallButton(ulabel)) {
+                    double f = S.MeshParamFactor();
+                    if (S.meshParam > 0.0f && f > 0.0) {
+                        if (!S.meshParamEdgeUnits) S.meshParam = (float)(S.meshParam / f);
+                        else                       S.meshParam = (float)(S.meshParam * f);
+                    }
+                    S.meshParamEdgeUnits = !S.meshParamEdgeUnits;
+                }
+                ImGui::SetItemTooltip("Toggle the parameter's units between model units and\n"
+                                      "multiples of the source contour's mean edge length.\n"
+                                      "The value is converted so meshing is unaffected.");
+            }
         }
         if (S.meshMethod == SEM_STEINER_GRID) {
             ImGui::DragFloat("Steiner margin", &S.steinerMargin, 0.005f, 0.0f, 1.0f, "%.3f");
@@ -208,6 +254,48 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
 
         if (S.meshAuto) { if (changed || released) S.RecomputeFrom(scene, STAGE_MESH, true); }
         else if (ImGui::Button("Apply", {160, 0})) S.RecomputeFrom(scene, STAGE_MESH, false);
+        ImGui::Unindent();
+        ImGui::EndDisabled();
+        ImGui::PopID();
+    }
+
+    ImGui::Separator();
+
+    {
+        ImGui::PushID("thermal");
+        ImGui::TextUnformatted("Thermal solve");
+        ImGui::BeginDisabled(!S.MeshPrim());
+        ImGui::Indent();
+        ImGui::DragFloat("Conductivity", &S.thermalK, 0.05f, 0.0001f, 10000.0f, "%.4f");
+        ImGui::SetItemTooltip("Steady-state heat conduction on the band mesh.\n"
+                              "Source held at T=1, farthest offset at T=0.\n"
+                              "Replaces each node's distance T with temperature.");
+        if (S.thermalK <= 0.0f) S.thermalK = 0.0001f;
+        if (ImGui::Button("Solve thermal", {160, 0})) S.ApplyThermal(scene, false);
+        ImGui::Unindent();
+        ImGui::EndDisabled();
+        ImGui::PopID();
+    }
+
+    ImGui::Separator();
+
+    {
+        ImGui::PushID("isoline");
+        ImGui::TextUnformatted("Isoline");
+        ImGui::SameLine();
+        ImGui::Checkbox("Auto-apply", &S.isoAuto);
+        ImGui::BeginDisabled(!S.ThermalSolved());
+        ImGui::Indent();
+        // Extraction needs no re-solve, so Auto-apply re-extracts live on every
+        // value change (real-time drag), not just when the drag ends.
+        bool changed = ImGui::DragFloat("Value (0..1)", &S.isoValue, 0.005f, 0.0f, 1.0f, "%.3f");
+        ImGui::SetItemTooltip("Isotherm at this normalized temperature, drawn in green.\n"
+                              "Requires a thermal solve.");
+        if (S.isoValue < 0.0f) S.isoValue = 0.0f;
+        if (S.isoValue > 1.0f) S.isoValue = 1.0f;
+
+        if (S.isoAuto) { if (changed) S.ApplyIsoline(scene, true); }
+        else if (ImGui::Button("Extract isoline", {160, 0})) S.ApplyIsoline(scene, false);
         ImGui::Unindent();
         ImGui::EndDisabled();
         ImGui::PopID();
