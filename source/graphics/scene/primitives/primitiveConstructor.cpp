@@ -502,6 +502,63 @@ Primitive* PrimitiveConstructor::Arrow3d(
 	return arrow;
 }
 
+Primitive* PrimitiveConstructor::RevolutionSurface(const std::vector<XMFLOAT3>& profile, UINT segments, const XMFLOAT4& col, UINT id)
+{
+	if (profile.size() < 2) return nullptr;
+	if (segments < 3) segments = 3;
+	const UINT P = (UINT)profile.size();
+
+	std::vector<XMFLOAT2> nrm2(P);
+	for (UINT i = 0; i < P; ++i) {
+		const XMFLOAT3& a = profile[i > 0 ? i - 1 : i];
+		const XMFLOAT3& b = profile[i + 1 < P ? i + 1 : i];
+		float dx = b.x - a.x;
+		float dy = b.y - a.y;
+		float nx = dy, ny = -dx;
+		float len = sqrtf(nx * nx + ny * ny);
+		if (len < 1e-6f) { nx = 1.0f; ny = 0.0f; len = 1.0f; }
+		nrm2[i] = { nx / len, ny / len };
+	}
+
+	std::vector<Vertex> verts;
+	verts.reserve((size_t)P * segments);
+	for (UINT i = 0; i < P; ++i) {
+		float r = profile[i].x;
+		float y = profile[i].y;
+		for (UINT j = 0; j < segments; ++j) {
+			float a = (float)j / (float)segments * XM_2PI;
+			float ca = cosf(a), sa = sinf(a);
+			XMFLOAT3 pos = { r * ca, y, r * sa };
+			XMFLOAT3 n = { nrm2[i].x * ca, nrm2[i].y, nrm2[i].x * sa };
+			XMStoreFloat3(&n, XMVector3Normalize(XMLoadFloat3(&n)));
+			verts.push_back({ pos, n });
+		}
+	}
+
+	std::vector<DWORD> idx;
+	idx.reserve((size_t)(P - 1) * segments * 6);
+	for (UINT i = 0; i + 1 < P; ++i) {
+		for (UINT j = 0; j < segments; ++j) {
+			UINT jn = (j + 1) % segments;
+			UINT p00 = i * segments + j;
+			UINT p01 = i * segments + jn;
+			UINT p10 = (i + 1) * segments + j;
+			UINT p11 = (i + 1) * segments + jn;
+			idx.push_back(p00); idx.push_back(p10); idx.push_back(p01);
+			idx.push_back(p10); idx.push_back(p11); idx.push_back(p01);
+		}
+	}
+
+	Primitive* poly = new Primitive(device, deviceContext);
+	poly->SetVertexIndexBuffers(verts.data(), (UINT)verts.size(), idx.data(), (UINT)idx.size(), 2);
+	poly->SetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	poly->SetPosition({ 0, 0, 0 });
+	poly->SetColor(col);
+	poly->SetIlluminationCapability(true);
+	poly->id = id;
+	return poly;
+}
+
 
 
 

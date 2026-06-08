@@ -3,12 +3,35 @@
 #include "../scene/scene.h"
 #include "SemSession.h"
 #include <cstdio>
+#include <string>
+#include <commdlg.h>
 
 namespace SEMWindow {
 
 inline SemSessionNS::SemSession& Session() {
     static SemSessionNS::SemSession s;
     return s;
+}
+
+inline std::string BrowseCsv3dFile() {
+    char exe[MAX_PATH] = {};
+    GetModuleFileNameA(nullptr, exe, MAX_PATH);
+    std::string s(exe);
+    auto pos = s.find_last_of("\\/");
+    std::string dataDir = (pos != std::string::npos ? s.substr(0, pos) : s) + "\\Data";
+
+    char fileBuf[MAX_PATH] = {};
+    OPENFILENAMEA ofn   = {};
+    ofn.lStructSize     = sizeof(ofn);
+    ofn.lpstrFilter     = "CSV3D contour (*.csv3d)\0*.csv3d\0All files (*.*)\0*.*\0";
+    ofn.lpstrFile       = fileBuf;
+    ofn.nMaxFile        = MAX_PATH;
+    ofn.lpstrInitialDir = dataDir.c_str();
+    ofn.lpstrTitle      = "Import CSV3D contour";
+    ofn.Flags           = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+
+    if (GetOpenFileNameA(&ofn)) return std::string(fileBuf);
+    return {};
 }
 
 inline const char* MeshParamLabel(int m) {
@@ -43,29 +66,68 @@ inline void DrawReadout(SemSessionNS::SemSession& S) {
     else if (S.OffsetsPrim() && S.OffStats().valid)  { st = &S.OffStats();  tag = "Offsets"; }
     else if (S.SrcStats().valid)                     { st = &S.SrcStats();  tag = "Source";  }
 
-    auto rightLine = [](const char* txt) {
-        float w     = ImGui::CalcTextSize(txt).x;
-        float avail = ImGui::GetContentRegionAvail().x;
-        if (avail > w) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - w));
-        ImGui::TextDisabled("%s", txt);
-    };
-
-    char l1[160], l2[160];
+    char line[256];
     if (st && st->tris > 0) {
         int   chi   = st->verts - st->edges + st->tris;
         int   holes = 1 - chi;
         float te    = st->edges ? (float)st->tris / st->edges : 0.0f;
-        snprintf(l1, sizeof(l1), "%s   V %d   E %d   T %d", tag, st->verts, st->edges, st->tris);
-        snprintf(l2, sizeof(l2), "chi %d   holes %d   bnd %d   T/E %.2f", chi, holes, st->boundary, te);
+        snprintf(line, sizeof(line),
+                 "%s   V %d   E %d   T %d   chi %d   holes %d   bnd %d   T/E %.2f",
+                 tag, st->verts, st->edges, st->tris, chi, holes, st->boundary, te);
     } else if (st) {
-        snprintf(l1, sizeof(l1), "%s   V %d   E %d", tag, st->verts, st->edges);
-        snprintf(l2, sizeof(l2), "E-V %d", st->edges - st->verts);
+        snprintf(line, sizeof(line), "%s   V %d   E %d   E-V %d",
+                 tag, st->verts, st->edges, st->edges - st->verts);
     } else {
-        snprintf(l1, sizeof(l1), "(no geometry)");
-        l2[0] = '\0';
+        snprintf(line, sizeof(line), "(no geometry)");
     }
-    rightLine(l1);
-    if (l2[0]) rightLine(l2);
+    ImGui::TextDisabled("%s", line);
+}
+
+inline void DrawRevolutionSection(Scene& scene, SemSessionNS::SemSession& S) {
+    using namespace SemSessionNS;
+    ImGui::PushID("rev");
+
+    bool rm = S.revolutionMode;
+    if (ImGui::Checkbox("Revolution mode (around Y)", &rm)) {
+        if (rm) S.revolutionMode = S.ValidateRevolutionContour(scene);
+        else    S.revolutionMode = false;
+    }
+    ImGui::SetItemTooltip("Treat the staged contour as a half-profile and build surfaces of\n"
+                          "revolution around the Y axis. The contour must lie entirely on\n"
+                          "one side of the Y axis (all X>=0 or all X<=0).");
+
+    if (S.revolutionMode) {
+        ImGui::Indent();
+
+        {
+            Primitive* sp = S.SrcRevSurf();
+            bool show = sp && sp->visible;
+            if (ImGui::Checkbox("Source surface", &show)) S.ShowSourceRevolution(scene, show);
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Reset##srcrev")) S.DropSrcRev(scene);
+            float a = S.srcRevAlpha;
+            if (ImGui::DragFloat("Source opacity", &a, 0.005f, 0.05f, 1.0f, "%.2f"))
+                S.SetSrcRevAlpha(scene, a);
+        }
+
+        {
+            Primitive* ip = S.IsoRevSurf();
+            bool show = ip && ip->visible;
+            ImGui::BeginDisabled(!S.HasIsolinePath() && !(ip && ip->visible));
+            if (ImGui::Checkbox("Isotherm surface", &show)) S.ShowIsolineRevolution(scene, show);
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Reset##isorev")) S.DropIsoRev(scene);
+            float a = S.isoRevAlpha;
+            if (ImGui::DragFloat("Isotherm opacity", &a, 0.005f, 0.05f, 1.0f, "%.2f"))
+                S.SetIsoRevAlpha(scene, a);
+            ImGui::EndDisabled();
+            if (!S.HasIsolinePath()) ImGui::TextDisabled("Run the thermal isotherm first.");
+        }
+
+        ImGui::Unindent();
+    }
+
+    ImGui::PopID();
 }
 
 inline void Draw(Scene& scene, bool& blockMousePick) {
@@ -77,20 +139,16 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
 
     ImGui::Begin("SEM");
 
-    // Staging mode is turned on automatically when a CSV3D contour is imported.
-    // This button turns it back off so the tree's double-click reverts to rename.
-    if (scene.stagingEnabled) {
-        if (ImGui::Button("Disable staging")) {
-            scene.stagingEnabled = false;
-            scene.ClearStaged();
-        }
-        ImGui::SetItemTooltip("Stop binding contours via double-click. Re-enabled on the next CSV3D import.");
-        ImGui::Separator();
-    }
-
     if (!S.HasSource()) {
         if (S.SourcePrim()) ImGui::TextDisabled("Staged primitive is not a SEM contour.");
         else                ImGui::TextDisabled("No staged contour.");
+        ImGui::Spacing();
+        if (ImGui::Button("Import CSV3D...", {200, 0})) {
+            std::string p = BrowseCsv3dFile();
+            if (!p.empty()) S.ImportSource(scene, p);
+        }
+        ImGui::SetItemTooltip("Browse for a .csv3d contour, add it to the scene and stage it\n"
+                              "as the source of the SEM pipeline.");
         ImGui::Spacing();
         if (scene.stagingEnabled) {
             ImGui::TextWrapped("Double-click a CSV3D contour in the tree to stage it here.");
@@ -106,14 +164,27 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         return;
     }
 
-    ImGui::TextDisabled("Staged: %s", BaseName(S.SourcePath()).c_str());
+    const float kItemW = 180.0f;
+    ImGui::PushItemWidth(kItemW);
+
+    if (ImGui::Button("Import CSV3D...", {kItemW, 0})) {
+        std::string p = BrowseCsv3dFile();
+        if (!p.empty()) S.ImportSource(scene, p);
+    }
+    ImGui::SetItemTooltip("Browse for a .csv3d contour, add it to the scene and stage it\n"
+                          "as the source of the SEM pipeline (replaces the current source).");
+    ImGui::Separator();
+
     DrawReadout(S);
     ImGui::Separator();
 
-    if (ImGui::Button("Run full pipeline", {-1.0f, 0})) S.RunFullPipeline(scene);
+    if (ImGui::Button("Run full pipeline", {kItemW, 0})) S.RunFullPipeline(scene);
     ImGui::SetItemTooltip("Adaptive subdivide -> graded offsets (first gap = 1 mean edge\n"
                           "length, grading 1.2, 8 offsets) -> max-area mesh (default area)\n"
                           "-> thermal solve (default) -> isotherm at T=0.5.");
+    ImGui::Separator();
+
+    DrawRevolutionSection(scene, S);
     ImGui::Separator();
 
     auto autoTag = [&](bool* autoFlag) {
@@ -151,8 +222,10 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
     {
         ImGui::PushID("off");
         bool en = S.offEnabled;
-        if (ImGui::Checkbox("Offsets", &en)) { S.offEnabled = en; S.RecomputeFrom(scene, STAGE_OFFSETS, false); }
+        if (ImGui::Checkbox("Offsets", &en)) { S.offEnabled = en; S.SetStageVisible(scene, STAGE_OFFSETS, en); }
         autoTag(&S.offAuto);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##off")) S.ResetStage(scene, STAGE_OFFSETS);
 
         ImGui::BeginDisabled(!S.offEnabled);
         ImGui::Indent();
@@ -205,8 +278,10 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
     {
         ImGui::PushID("mesh");
         bool en = S.meshEnabled;
-        if (ImGui::Checkbox("Mesh", &en)) { S.meshEnabled = en; S.RecomputeFrom(scene, STAGE_MESH, false); }
+        if (ImGui::Checkbox("Mesh", &en)) { S.meshEnabled = en; S.SetStageVisible(scene, STAGE_MESH, en); }
         autoTag(&S.meshAuto);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##mesh")) S.ResetStage(scene, STAGE_MESH);
 
         ImGui::BeginDisabled(!S.meshEnabled);
         ImGui::Indent();
@@ -225,8 +300,6 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
             ImGui::SameLine();
             if (ImGui::SmallButton("auto")) { S.meshParam = -1.0f; changed = true; }
 
-            // Length/area knobs can be entered as multiples of the source's mean
-            // edge length. Toggling converts the value so the mesh is unchanged.
             bool lenArea = (S.meshMethod == SEM_STEINER_MAX_AREA ||
                             S.meshMethod == SEM_STEINER_SIZING);
             if (lenArea) {
@@ -263,39 +336,23 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
 
     {
         ImGui::PushID("thermal");
-        ImGui::TextUnformatted("Thermal solve");
-        ImGui::BeginDisabled(!S.MeshPrim());
-        ImGui::Indent();
-        ImGui::DragFloat("Conductivity", &S.thermalK, 0.05f, 0.0001f, 10000.0f, "%.4f");
-        ImGui::SetItemTooltip("Steady-state heat conduction on the band mesh.\n"
-                              "Source held at T=1, farthest offset at T=0.\n"
-                              "Replaces each node's distance T with temperature.");
-        if (S.thermalK <= 0.0f) S.thermalK = 0.0001f;
-        if (ImGui::Button("Solve thermal", {160, 0})) S.ApplyThermal(scene, false);
-        ImGui::Unindent();
-        ImGui::EndDisabled();
-        ImGui::PopID();
-    }
-
-    ImGui::Separator();
-
-    {
-        ImGui::PushID("isoline");
-        ImGui::TextUnformatted("Isoline");
+        bool en = S.thermalEnabled;
+        if (ImGui::Checkbox("Thermal solve", &en)) { S.thermalEnabled = en; S.SetStageVisible(scene, STAGE_THERMAL, en); }
+        autoTag(&S.thermalAuto);
         ImGui::SameLine();
-        ImGui::Checkbox("Auto-apply", &S.isoAuto);
-        ImGui::BeginDisabled(!S.ThermalSolved());
+        if (ImGui::SmallButton("Reset##thermal")) S.ResetStage(scene, STAGE_THERMAL);
+
+        ImGui::BeginDisabled(!S.thermalEnabled);
         ImGui::Indent();
-        // Extraction needs no re-solve, so Auto-apply re-extracts live on every
-        // value change (real-time drag), not just when the drag ends.
-        bool changed = ImGui::DragFloat("Value (0..1)", &S.isoValue, 0.005f, 0.0f, 1.0f, "%.3f");
-        ImGui::SetItemTooltip("Isotherm at this normalized temperature, drawn in green.\n"
-                              "Requires a thermal solve.");
+        bool changed = ImGui::DragFloat("Isoline value (0..1)", &S.isoValue, 0.005f, 0.0f, 1.0f, "%.3f");
+        ImGui::SetItemTooltip("Steady-state heat conduction on the band mesh (source T=1,\n"
+                              "farthest offset T=0). The isotherm at this normalized\n"
+                              "temperature is drawn in green.");
         if (S.isoValue < 0.0f) S.isoValue = 0.0f;
         if (S.isoValue > 1.0f) S.isoValue = 1.0f;
 
-        if (S.isoAuto) { if (changed) S.ApplyIsoline(scene, true); }
-        else if (ImGui::Button("Extract isoline", {160, 0})) S.ApplyIsoline(scene, false);
+        if (S.thermalAuto) { if (changed) S.RecomputeFrom(scene, STAGE_THERMAL, true); }
+        else if (ImGui::Button("Apply", {160, 0})) S.RecomputeFrom(scene, STAGE_THERMAL, false);
         ImGui::Unindent();
         ImGui::EndDisabled();
         ImGui::PopID();
@@ -303,6 +360,8 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
 
     ImGui::Separator();
     ImGui::TextDisabled("%s", S.status);
+
+    ImGui::PopItemWidth();
 
     if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem | ImGuiHoveredFlags_ChildWindows))
         blockMousePick = true;

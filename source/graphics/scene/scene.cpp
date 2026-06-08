@@ -624,6 +624,17 @@ void Scene::AddCubeSolid(float halfSize, const XMFLOAT3& center, const XMFLOAT4&
 	if (p) { this->primitives.push_back(p); root.AddChild(p); m_sortedDirty = true; }
 }
 
+Primitive* Scene::AddRevolutionSurface(const std::vector<XMFLOAT3>& profile, UINT segments, const XMFLOAT4& col, const std::string& name, SceneNode* parent)
+{
+	Primitive* p = PrimitiveConstructor::RevolutionSurface(profile, segments, col, NextId());
+	if (!p) return nullptr;
+	p->name = name;
+	this->primitives.push_back(p);
+	(parent ? parent : &root)->AddChild(p);
+	m_sortedDirty = true;
+	return p;
+}
+
 void Scene::RemovePrimitivesByPrefix(const std::string& prefix)
 {
 	if (orientationTransformer.HasActiveObject()) orientationTransformer.HandleObjRelease();

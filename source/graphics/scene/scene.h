@@ -87,6 +87,7 @@ public:
 	Primitive* AddFromCSV3D(const std::string& path, const std::string& name = "", SceneNode* parent = nullptr, const XMFLOAT4* overrideColor = nullptr);
 	void AddCubeWireframe(float halfSize, const XMFLOAT3& center, const XMFLOAT4& col);
 	void AddCubeSolid(float halfSize, const XMFLOAT3& center, const XMFLOAT4& col);
+	Primitive* AddRevolutionSurface(const std::vector<XMFLOAT3>& profile, UINT segments, const XMFLOAT4& col, const std::string& name, SceneNode* parent = nullptr);
 
 	void RemovePrimitive(Primitive* p);
 	void RemovePrimitivesByPrefix(const std::string& prefix);

@@ -144,4 +144,6 @@ namespace PrimitiveConstructor {
 
 	Primitive* CubeWireframe(float halfSize, const XMFLOAT3& center, const XMFLOAT4& col, UINT id);
 	Primitive* CubeSolid(float halfSize, const XMFLOAT3& center, const XMFLOAT4& col, UINT id);
+
+	Primitive* RevolutionSurface(const std::vector<XMFLOAT3>& profile, UINT segments, const XMFLOAT4& col, UINT id);
 }

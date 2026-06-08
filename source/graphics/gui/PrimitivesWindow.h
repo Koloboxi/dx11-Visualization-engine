@@ -102,9 +102,6 @@ inline void Draw(Scene& scene, LuaUpdaterEditor& lua,
                  bool& blockMousePick, bool& blockMouseWheel) {
     static AddPrimState s_add;
     static int          s_savedSelIdx = 0;
-    static float        s_impLineCol[4]  = { 0.4f, 0.7f, 1.0f, 1.0f };
-    static float        s_impPointCol[4] = { 1.0f, 1.0f, 0.4f, 1.0f };
-    static int          s_impFmt = 0;
     static int          s_demoSelIdx  = 0;
     static std::unordered_set<const SceneNode*> s_expanded;
     static int          s_lastClickedIdx = -1;
@@ -183,59 +180,6 @@ inline void Draw(Scene& scene, LuaUpdaterEditor& lua,
             if (p->selected) lua.OnPrimitiveRemoved(p);
         scene.DeleteSelected();
         s_lastClickedIdx = -1;
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Import...")) ImGui::OpenPopup("ImportMesh");
-
-    ImGui::SetNextWindowSize({360, 0}, ImGuiCond_Always);
-    if (ImGui::BeginPopupModal("ImportMesh", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        static const char* fmtNames[] = { "CSV3D Temp Mesh  (.csv3d)", "Wavefront OBJ  (.obj)", "CSV Mesh  (.csv)" };
-        ImGui::Combo("Format", &s_impFmt, fmtNames, IM_ARRAYSIZE(fmtNames));
-        ImGui::Separator();
-        // CSV3D derives colours from the per-node temperature, so the manual
-        // colour pickers are hidden for that format.
-        const bool usesManualColors = (s_impFmt != 0);
-        if (usesManualColors) {
-            ImGui::ColorEdit4("Line color",  s_impLineCol,  ImGuiColorEditFlags_AlphaBar);
-            ImGui::ColorEdit4("Point color", s_impPointCol, ImGuiColorEditFlags_AlphaBar);
-        }
-        else {
-            ImGui::TextDisabled("Colors come from node temperature (blue=0, red=1)");
-        }
-        ImGui::Separator();
-        if (ImGui::Button("Browse & Import", {160, 0})) {
-            std::string path;
-            if (s_impFmt == 0)
-                path = BrowseForMeshFile("CSV3D Temp Mesh (*.csv3d)\0*.csv3d\0All files (*.*)\0*.*\0", "Open CSV3D file");
-            else if (s_impFmt == 1)
-                path = BrowseForMeshFile("Wavefront OBJ (*.obj)\0*.obj\0All files (*.*)\0*.*\0", "Open OBJ file");
-            else
-                path = BrowseForMeshFile("CSV Mesh (*.csv)\0*.csv\0All files (*.*)\0*.*\0", "Open CSV Mesh file");
-
-            if (!path.empty()) {
-                try {
-                    XMFLOAT4 lc(s_impLineCol[0],  s_impLineCol[1],  s_impLineCol[2],  s_impLineCol[3]);
-                    XMFLOAT4 pc(s_impPointCol[0], s_impPointCol[1], s_impPointCol[2], s_impPointCol[3]);
-                    if      (s_impFmt == 1) scene.AddFromOBJ(path, lc, pc);
-                    else if (s_impFmt == 2) scene.AddFromCSVMesh(path, lc, pc);
-                    else {
-                        Primitive* src = scene.AddFromCSV3D(path);
-                        if (src) {
-                            src->semSourcePath = path;
-                            scene.AttachVertexPointsGroup(src);
-                            scene.stagingEnabled = true;
-                            scene.SetStaged(src);
-                        }
-                    }
-                }
-                catch (const std::exception& e) { ErrorLogger::Log(std::string("Import failed: ") + e.what()); }
-                catch (...)                     { ErrorLogger::Log("Import failed: unknown exception."); }
-                ImGui::CloseCurrentPopup();
-            }
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel", {80, 0})) ImGui::CloseCurrentPopup();
-        ImGui::EndPopup();
     }
 
     ImGui::SetNextWindowSize({380, 0}, ImGuiCond_Always);
