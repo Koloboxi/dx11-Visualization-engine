@@ -355,6 +355,7 @@ public:
         if (!Alive(scene, m_mesh) || !m_thermalSolved) {
             Report(scene, silent, "Solve thermal first."); return false;
         }
+        bool revWasShown = Alive(scene, m_isoRevSurf) && m_isoRevSurf->visible;
         try {
             double v = isoValue;
             if (v < 0.0) v = 0.0; if (v > 1.0) v = 1.0;
@@ -371,6 +372,7 @@ public:
             const XMFLOAT4 green(0.0f, 1.0f, 0.0f, 1.0f);
             m_isoline = scene.AddFromCSV3D(p, "isoline_" + Stem(m_srcPath), AttachParent(), &green);
             m_isolinePath = p;
+            if (revWasShown && m_isoline) BuildIsolineRevolution(scene);
             snprintf(status, sizeof(status), "Isoline T=%.3f: %s", v, BaseName(p).c_str());
             return true;
         }
@@ -459,6 +461,7 @@ private:
         const XMFLOAT4 steel(0.70f, 0.72f, 0.78f, srcRevAlpha);
         m_srcRevSurf = scene.AddRevolutionSurface(prof, (UINT)revSegments, steel,
                                                   "revsurf_src_" + Stem(m_srcPath), AttachParent());
+		scene.UpdateLight();
         if (m_srcRevSurf) snprintf(status, sizeof(status), "Source revolution surface built.");
     }
 
@@ -470,8 +473,10 @@ private:
             Report(scene, false, "Revolution: cannot read isotherm contour."); return;
         }
         const XMFLOAT4 green(0.10f, 0.90f, 0.20f, isoRevAlpha);
+        SceneNode* parent = Alive(scene, m_isoline) ? static_cast<SceneNode*>(m_isoline) : AttachParent();
         m_isoRevSurf = scene.AddRevolutionSurface(prof, (UINT)revSegments, green,
-                                                  "revsurf_iso_" + Stem(m_srcPath), AttachParent());
+                                                  "revsurf_iso_" + Stem(m_srcPath), parent);
+        scene.UpdateLight();
         if (m_isoRevSurf) snprintf(status, sizeof(status), "Isotherm revolution surface built.");
     }
 
