@@ -71,6 +71,13 @@ void Primitive::SetColor(const XMFLOAT4& col)
 	this->transparent = (col.w < 1.0f);
 }
 
+void Primitive::SetAlpha(const float a)
+{
+	this->cb_ps_pixelshader.data.color[3] = a;
+	this->psCBDirty = true;
+	this->transparent = (a < 1.0f);
+}
+
 void Primitive::SetUseVertexColor(const bool v)
 {
 	this->cb_ps_pixelshader.data.useVertexColor = v ? 1 : 0;

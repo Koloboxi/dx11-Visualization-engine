@@ -1,8 +1,8 @@
 #include "Camera.h"
 #include <algorithm>
 
-static constexpr float SCALE_MIN = 0.0001f;
-static constexpr float SCALE_MAX = 100000.f;
+static constexpr float SCALE_MIN = 0.000001f;
+static constexpr float SCALE_MAX = 10000000.f;
 
 Camera::Camera() {
 	this->pos = XMFLOAT3(0.0f, 0.0f, 0.0f);

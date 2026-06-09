@@ -67,6 +67,18 @@ public:
 	bool showGrid = true;
 	bool showAxes = true;
 
+	// Visual cross-section: clip meshes (dim==2) against a single plane.
+	// axis selects the plane by its normal: 0 = YZ (normal X), 1 = XZ (normal Y),
+	// 2 = XY (normal Z). offset slides the plane along that normal; flip swaps
+	// which half is kept.
+	struct SectionPlane {
+		bool  enabled = false;
+		int   axis    = 0;
+		float offset  = 0.0f;
+		bool  flip    = false;
+	};
+	SectionPlane section;
+
 	SceneNode       root;
 	SceneController* controller = nullptr;
 
@@ -83,8 +95,15 @@ public:
 	void AddFromOBJ(const std::string& path, const XMFLOAT4& lineCol, const XMFLOAT4& pointCol);
 	void AddFromCSVMesh(const std::string& path, const XMFLOAT4& lineCol, const XMFLOAT4& pointCol);
 	// overrideColor: when non-null, every edge is drawn in this flat colour
-	// instead of the per-node temperature gradient (used for the green isoline).
-	Primitive* AddFromCSV3D(const std::string& path, const std::string& name = "", SceneNode* parent = nullptr, const XMFLOAT4* overrideColor = nullptr);
+	// instead of the per-node gradient (used for the green isoline).
+	// gradLow/gradHigh: gradient endpoints used to colour each node by its T
+	// value (T=0 -> gradLow, T=1 -> gradHigh). Defaults to the thermal
+	// blue->red gradient; callers pass a contrasting pair for non-thermal data.
+	// renderTrianglesAsLines: when true, triangle faces are not built as a
+	// filled ColoredTriangles surface but contribute their three sides to the
+	// ColoredLine wireframe instead (drawn like the rest of the edges).
+	Primitive* AddFromCSV3D(const std::string& path, const std::string& name = "", SceneNode* parent = nullptr, const XMFLOAT4* overrideColor = nullptr,
+		const XMFLOAT4& gradLow = Colors::BLUE, const XMFLOAT4& gradHigh = Colors::RED, bool renderTrianglesAsLines = false);
 	void AddCubeWireframe(float halfSize, const XMFLOAT3& center, const XMFLOAT4& col);
 	void AddCubeSolid(float halfSize, const XMFLOAT3& center, const XMFLOAT4& col);
 	Primitive* AddRevolutionSurface(const std::vector<XMFLOAT3>& profile, UINT segments, const XMFLOAT4& col, const std::string& name, SceneNode* parent = nullptr);
@@ -159,6 +178,7 @@ private:
 
 	Microsoft::WRL::ComPtr<ID3D11RasterizerState> rasterizerSolid;
 	Microsoft::WRL::ComPtr<ID3D11RasterizerState> rasterizerWireframe;
+	Microsoft::WRL::ComPtr<ID3D11RasterizerState> rasterizerSolidNoCull;
 
 	ID3D11DepthStencilView* dsView;
 	ID3D11DepthStencilView* dsViewNoMSAA;
@@ -203,6 +223,9 @@ private:
 
 	ConstantBuffer<CB_PS_pixelshaderOutline> cb_ps_outline{};
 	ConstantBuffer<CB_PS_id> cb_ps_id{};
+	ConstantBuffer<CB_VS_section> cb_vs_section{};
+
+	void ApplySectionCB(bool forceDisabled = false);
 
 	Timer tpsTimer;
 	void UpdateTime();

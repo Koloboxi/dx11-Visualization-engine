@@ -85,6 +85,23 @@ inline void LightbulbIcon(ImDrawList* dl, ImVec2 c, float r) {
     if (ry2 < c.y+r) dl->AddLine({c.x-bwb*.7f,ry2},{c.x+bwb*.7f,ry2},lc,.8f);
 }
 
+// Cube sliced by a cutting plane: a faint cube with a bright quad slicing
+// through it diagonally. Used for the section / clip-plane toggle.
+inline void SectionIcon(ImDrawList* dl, ImVec2 c, float r) {
+    float rx = r * .87f, ry = r * .5f;
+    ImVec2 T={c.x,c.y-r}, TR={c.x+rx,c.y-ry}, BR={c.x+rx,c.y+ry};
+    ImVec2 B={c.x,c.y+r}, BL={c.x-rx,c.y+ry}, TL={c.x-rx,c.y-ry};
+    ImU32 e = IM_COL32(150,165,205,140);
+    dl->AddLine(T,TR,e,.8f); dl->AddLine(T,TL,e,.8f);
+    dl->AddLine(TR,BR,e,.8f); dl->AddLine(TL,BL,e,.8f);
+    dl->AddLine(BR,B,e,.8f); dl->AddLine(BL,B,e,.8f);
+    // Cutting plane: a tilted quad crossing the cube.
+    ImVec2 P0={c.x-r,c.y-ry*.55f}, P1={c.x+r,c.y-ry*1.15f};
+    ImVec2 P2={c.x+r,c.y+ry*.55f}, P3={c.x-r,c.y+ry*1.15f};
+    dl->AddQuadFilled(P0,P1,P2,P3, IM_COL32(255,205,90,150));
+    dl->AddQuad(P0,P1,P2,P3, IM_COL32(255,225,120,225), 1.0f);
+}
+
 // Eye glyph used in the primitive tree to toggle visibility. When `open` is
 // false a diagonal slash is drawn across it (hidden state).
 inline void EyeIcon(ImDrawList* dl, ImVec2 c, float r, bool open, ImU32 col) {

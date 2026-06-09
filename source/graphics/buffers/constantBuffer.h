@@ -16,6 +16,16 @@ struct CB_GS_geometryshader
 	float AspectRatio;
 };
 
+// Global section / clip-plane state, bound once per frame on VS slot b1.
+// Geometry is kept where dot(worldPos, planeNormal) - planeD >= 0.
+struct CB_VS_section
+{
+	float planeNormal[4] = { 1, 0, 0, 0 };
+	float planeD         = 0.0f;
+	int   enabled        = 0;
+	float pad[2]         = { 0, 0 };
+};
+
 struct CB_PS_pixelshader
 {
 	float color[4] = { 1, 1, 0, 1 };

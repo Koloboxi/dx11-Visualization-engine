@@ -90,11 +90,14 @@ inline bool Load(const std::string& path, CSV3DData& out) {
 
         if (section == Section::Nodes) {
             auto tok = detail::SplitSemi(line);
-            if (tok.size() < 5) continue;
+            if (tok.size() < 4) continue;
             if (!detail::IsNumber(tok[1])) continue;   // skip header row
-            Node n;
+            Node n{};
             n.pos = { std::stof(tok[1]), std::stof(tok[2]), std::stof(tok[3]) };
-            n.T   = std::stof(tok[4]);
+
+            if (tok.size() == 5) {
+                n.T = std::stof(tok[4]);
+            }
             out.nodes.push_back(n);
         }
         else if (section == Section::Triangles) {

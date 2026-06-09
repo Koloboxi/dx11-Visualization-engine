@@ -39,6 +39,10 @@ public:
 	std::string semSourcePath;
 
 	void SetColor(const XMFLOAT4& col);
+	// Set only the opacity (alpha) of the pixel-shader colour, leaving RGB
+	// untouched. For vertex-coloured surfaces this acts as a global opacity
+	// multiplier (see pixelshader.hlsl); it also drives GetTransparent().
+	void SetAlpha(const float a);
 	void SetUseVertexColor(const bool v);
 	void SetIlluminationCapability(const bool l);
 	void SetLighting(const float ambient, const float intensity, const float shininess);
@@ -55,6 +59,11 @@ public:
 	void RotateAroundAxis(XMVECTOR axis, float angle);
 
 	void SetPrimitiveTopology(const D3D10_PRIMITIVE_TOPOLOGY& top);
+
+	// When true the scene renders this primitive without back-face culling
+	// (both sides visible). Default false.
+	void SetTwoSided(const bool v) { twoSided = v; }
+	bool GetTwoSided() const { return twoSided; }
 
 	XMFLOAT4 GetColor() const;
 	bool GetTransparent() const;
@@ -113,6 +122,7 @@ private:
 	bool illuminationCapability;
 	bool smoothShade = true;
 	bool transparent;
+	bool twoSided = false;
 
 	XMFLOAT3 pos{};
 	XMFLOAT4 rotQuat = { 0.0f, 0.0f, 0.0f, 1.0f };
@@ -130,9 +140,8 @@ namespace PrimitiveConstructor {
 
 	Primitive* Point(const XMFLOAT3& pos, const XMFLOAT4& col, UINT id);
 	Primitive* Line(const std::vector<XMFLOAT3>& poses, const XMFLOAT4& col, UINT id);
-	// Per-vertex coloured line. If asLineList is true the vertices are treated as
-	// independent segment pairs (LINELIST), otherwise as a connected strip.
 	Primitive* ColoredLine(const std::vector<XMFLOAT3>& poses, const std::vector<XMFLOAT4>& cols, bool asLineList, UINT id);
+	Primitive* ColoredTriangles(const std::vector<XMFLOAT3>& poses, const std::vector<XMFLOAT4>& cols, UINT id);
 	Primitive* Polygon(const std::vector<XMFLOAT3>& poses, const XMFLOAT4& col, UINT id);
 
 	Primitive* Sphere(float radius, const XMFLOAT3& pos, const UINT numSubdivides, const XMFLOAT4& col, UINT id);

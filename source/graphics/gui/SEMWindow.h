@@ -58,6 +58,28 @@ inline const char* MeshParamHelp(int m) {
     }
 }
 
+inline const char* TetParamLabel(int m) {
+    switch (m) {
+        case SEM_TET_QUALITY: return "Radius-edge (-q)";
+        case SEM_TET_NONE:    return "(no parameter)";
+        case SEM_TET_MAX_VOL: return "Max tet volume";
+        case SEM_TET_SIZING:  return "Max edge length";
+        default:              return "Parameter";
+    }
+}
+
+inline const char* TetParamHelp(int m) {
+    switch (m) {
+        case SEM_TET_QUALITY: return "TetGen -q: radius-edge quality bound. Lower => better-shaped\n"
+                                     "tetrahedra but more of them. Typical 1.4..2.0. Negative => default (~2.0).";
+        case SEM_TET_NONE:    return "-p only: conforming Delaunay, no size/quality refinement. Parameter ignored.";
+        case SEM_TET_MAX_VOL: return "TetGen -a: bounded tetrahedron volume, in model units^3.\n"
+                                     "Negative => automatic (~avg_edge^3/6).";
+        case SEM_TET_SIZING:  return "TetGen -a derived from a target edge length. Negative => default.";
+        default:              return "";
+    }
+}
+
 inline void DrawReadout(SemSessionNS::SemSession& S) {
     using namespace SemSessionNS;
     const Stats* st  = nullptr;
@@ -89,8 +111,7 @@ inline void DrawRevolutionSection(Scene& scene, SemSessionNS::SemSession& S) {
 
     bool rm = S.revolutionMode;
     if (ImGui::Checkbox("Revolution mode (around Y)", &rm)) {
-        if (rm) S.revolutionMode = S.ValidateRevolutionContour(scene);
-        else    S.revolutionMode = false;
+        S.SetRevolutionMode(scene, rm);
     }
     ImGui::SetItemTooltip("Treat the staged contour as a half-profile and build surfaces of\n"
                           "revolution around the Y axis. The contour must lie entirely on\n"
@@ -175,17 +196,52 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
                           "as the source of the SEM pipeline (replaces the current source).");
     ImGui::Separator();
 
+    const bool is3D = S.Dim() == 3;
+    if (is3D) ImGui::TextDisabled("Mode: 3D surface (tetrahedral pipeline)");
+    else      ImGui::TextDisabled("Mode: 2D contour");
+
     DrawReadout(S);
     ImGui::Separator();
 
     if (ImGui::Button("Run full pipeline", {kItemW, 0})) S.RunFullPipeline(scene);
-    ImGui::SetItemTooltip("Adaptive subdivide -> graded offsets (first gap = 1 mean edge\n"
-                          "length, grading 1.2, 8 offsets) -> max-area mesh (default area)\n"
-                          "-> thermal solve (default) -> isotherm at T=0.5.");
+    if (is3D)
+        ImGui::SetItemTooltip("Adaptive subdivide -> graded offset shells (first gap = 1 mean\n"
+                              "edge length, grading 1.2, 8 offsets) -> tetrahedral band mesh\n"
+                              "(auto volume) -> thermal solve (default) -> isosurface at T=0.5.");
+    else
+        ImGui::SetItemTooltip("Adaptive subdivide -> graded offsets (first gap = 1 mean edge\n"
+                              "length, grading 1.2, 8 offsets) -> max-area mesh (default area)\n"
+                              "-> thermal solve (default) -> isotherm at T=0.5.");
     ImGui::Separator();
 
-    DrawRevolutionSection(scene, S);
+    {
+        bool asLines = S.renderTrisAsLines;
+        if (ImGui::Checkbox("Triangles as wireframe", &asLines)) {
+            S.renderTrisAsLines = asLines;
+            S.RegenerateGeometry(scene);
+        }
+        ImGui::SetItemTooltip("Draw every triangle surface in the pipeline as edge wireframe\n"
+                              "(lines) instead of a filled surface, and back again. Rebuilds\n"
+                              "the existing pipeline primitives from their saved CSV3D files.");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Regenerate")) S.RegenerateGeometry(scene);
+        ImGui::SetItemTooltip("Rebuild the existing pipeline primitives from their saved\n"
+                              "geometry files using the current wireframe setting.");
+    }
     ImGui::Separator();
+
+    if (!is3D) {
+        DrawRevolutionSection(scene, S);
+        ImGui::Separator();
+    }
+    else {
+        float a = S.surf3dAlpha;
+        if (ImGui::DragFloat("Surface opacity", &a, 0.005f, 0.05f, 1.0f, "%.2f"))
+            S.SetSurf3dAlpha(scene, a);
+        ImGui::SetItemTooltip("Opacity of the 3D pipeline surfaces (source, offsets, mesh,\n"
+                              "isosurface). They are drawn two-sided (no back-face culling).");
+        ImGui::Separator();
+    }
 
     auto autoTag = [&](bool* autoFlag) {
         ImGui::SameLine();
@@ -286,6 +342,42 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         ImGui::BeginDisabled(!S.meshEnabled);
         ImGui::Indent();
         bool changed = false, released = false;
+        if (is3D) {
+            const char* tetItems =
+                "Quality (-q)\0" "None (-p)\0" "Max volume (-a)\0" "Sizing (edge len)\0";
+            if (ImGui::Combo("TetGen method", &S.tetMethod, tetItems)) {
+                S.tetParam = -1.0f;
+                changed = true;
+            }
+            if (S.tetMethod != SEM_TET_NONE) {
+                ImGui::DragFloat(TetParamLabel(S.tetMethod), &S.tetParam, 0.5f, -1.0f, 1e7f, "%.3f");
+                released |= ImGui::IsItemDeactivatedAfterEdit();
+                ImGui::SetItemTooltip("%s", TetParamHelp(S.tetMethod));
+                ImGui::SameLine();
+                if (ImGui::SmallButton("auto")) { S.tetParam = -1.0f; changed = true; }
+
+                bool lenVol = (S.tetMethod == SEM_TET_MAX_VOL ||
+                               S.tetMethod == SEM_TET_SIZING);
+                if (lenVol) {
+                    ImGui::SameLine();
+                    const char* ulabel = !S.tetParamEdgeUnits ? "units: model"
+                        : (S.tetMethod == SEM_TET_MAX_VOL ? "units: x edge^3"
+                                                          : "units: x edge");
+                    if (ImGui::SmallButton(ulabel)) {
+                        double f = S.TetParamFactor();
+                        if (S.tetParam > 0.0f && f > 0.0) {
+                            if (!S.tetParamEdgeUnits) S.tetParam = (float)(S.tetParam / f);
+                            else                      S.tetParam = (float)(S.tetParam * f);
+                        }
+                        S.tetParamEdgeUnits = !S.tetParamEdgeUnits;
+                    }
+                    ImGui::SetItemTooltip("Toggle the parameter's units between model units and\n"
+                                          "multiples of the source surface's mean edge length\n"
+                                          "(cubed for volume). The value is converted so meshing\n"
+                                          "is unaffected.");
+                }
+            }
+        } else {
         const char* methodItems =
             "Grid\0" "None (CDT)\0" "Min angle (-q)\0" "Max area (-a)\0"
             "Conforming (-D)\0" "Sizing (-u)\0";
@@ -324,6 +416,7 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
             ImGui::DragFloat("Steiner margin", &S.steinerMargin, 0.005f, 0.0f, 1.0f, "%.3f");
             released |= ImGui::IsItemDeactivatedAfterEdit();
         }
+        } // end 2D Steiner UI
 
         if (S.meshAuto) { if (changed || released) S.RecomputeFrom(scene, STAGE_MESH, true); }
         else if (ImGui::Button("Apply", {160, 0})) S.RecomputeFrom(scene, STAGE_MESH, false);
@@ -344,10 +437,16 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
 
         ImGui::BeginDisabled(!S.thermalEnabled);
         ImGui::Indent();
-        bool changed = ImGui::DragFloat("Isoline value (0..1)", &S.isoValue, 0.005f, 0.0f, 1.0f, "%.3f");
-        ImGui::SetItemTooltip("Steady-state heat conduction on the band mesh (source T=1,\n"
-                              "farthest offset T=0). The isotherm at this normalized\n"
-                              "temperature is drawn in green.");
+        bool changed = ImGui::DragFloat(is3D ? "Isosurface value (0..1)" : "Isoline value (0..1)",
+                                        &S.isoValue, 0.005f, 0.0f, 1.0f, "%.3f");
+        if (is3D)
+            ImGui::SetItemTooltip("Steady-state heat conduction on the tetrahedral band mesh\n"
+                                  "(source surface T=1, farthest shell T=0). The isosurface at\n"
+                                  "this normalized temperature is drawn in green.");
+        else
+            ImGui::SetItemTooltip("Steady-state heat conduction on the band mesh (source T=1,\n"
+                                  "farthest offset T=0). The isotherm at this normalized\n"
+                                  "temperature is drawn in green.");
         if (S.isoValue < 0.0f) S.isoValue = 0.0f;
         if (S.isoValue > 1.0f) S.isoValue = 1.0f;
 

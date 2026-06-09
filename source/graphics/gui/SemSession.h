@@ -6,7 +6,10 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <set>
+#include <cmath>
 #include <cstdio>
+#include <algorithm>
 #include <initializer_list>
 #include <excpt.h>
 
@@ -104,6 +107,71 @@ inline bool OrderedContourFromCSV3D(const std::string& path, std::vector<XMFLOAT
     return out.size() >= 2;
 }
 
+// True when the .csv3d at 'path' is an OPEN contour — a single polyline with
+// exactly two endpoints (degree-1 nodes) — whose two endpoints both lie on the
+// Y axis (x≈0, z≈0). That is the half-profile shape expected by surface-of-
+// revolution mode, so import can auto-enable it. A closed loop (no degree-1
+// nodes) or a branching/meshed contour returns false.
+inline bool IsOpenContourOnYAxis(const std::string& path) {
+    CSV3DLoader::CSV3DData d;
+    if (!CSV3DLoader::Load(path, d)) return false;
+    const size_t n = d.nodes.size();
+    if (n < 2) return false;
+
+    // Gather every edge (explicit edges, face boundaries, triangle sides), then
+    // dedupe so a shared edge is not counted twice when computing node degree.
+    std::set<std::pair<unsigned, unsigned>> uniq;
+    auto add = [&](unsigned a, unsigned b) {
+        if (a == b || a >= n || b >= n) return;
+        uniq.insert(a < b ? std::make_pair(a, b) : std::make_pair(b, a));
+    };
+    for (const auto& e : d.edges) add(e.first, e.second);
+    for (const auto& f : d.faces) {
+        const size_t m = f.size();
+        for (size_t i = 0; i + 1 < m; ++i) add(f[i], f[i + 1]);
+    }
+    for (const auto& t : d.triangles) { add(t.x, t.y); add(t.y, t.z); add(t.z, t.x); }
+    if (uniq.empty()) return false;
+
+    std::vector<int> degree(n, 0);
+    for (const auto& e : uniq) { ++degree[e.first]; ++degree[e.second]; }
+
+    std::vector<unsigned> ends;
+    for (size_t i = 0; i < n; ++i)
+        if (degree[i] == 1) ends.push_back((unsigned)i);
+    if (ends.size() != 2) return false;   // closed loop or branching → not an open profile
+
+    auto onYAxis = [](const XMFLOAT3& p) {
+        return std::fabs(p.x) < 1e-4f && std::fabs(p.z) < 1e-4f;
+    };
+    return onYAxis(d.nodes[ends[0]].pos) && onYAxis(d.nodes[ends[1]].pos);
+}
+
+// Decide whether a freshly imported .csv3d should drive the 2D contour
+// pipeline (SEM_LoadCSV3D + SEM_*) or the 3D surface pipeline (SEM_LoadSurface3D
+// + SEM_*3D). A 2D SEM source is a contour: edges only, lying in a plane. A 3D
+// source is a triangle surface mesh that spans all three axes. Rule: triangles
+// present AND the node cloud is not coplanar (its thinnest bounding-box extent
+// is a non-trivial fraction of the largest) => 3. Everything else — a pure
+// contour, a planar triangulated patch, or an unreadable file — => 2.
+inline int DetectSemDim(const std::string& path) {
+    CSV3DLoader::CSV3DData d;
+    if (!CSV3DLoader::Load(path, d) || d.nodes.empty()) return 2;
+    if (d.triangles.empty()) return 2;
+
+    XMFLOAT3 lo = d.nodes[0].pos, hi = d.nodes[0].pos;
+    for (const auto& nd : d.nodes) {
+        lo.x = std::min(lo.x, nd.pos.x); hi.x = std::max(hi.x, nd.pos.x);
+        lo.y = std::min(lo.y, nd.pos.y); hi.y = std::max(hi.y, nd.pos.y);
+        lo.z = std::min(lo.z, nd.pos.z); hi.z = std::max(hi.z, nd.pos.z);
+    }
+    float ex = hi.x - lo.x, ey = hi.y - lo.y, ez = hi.z - lo.z;
+    float maxE = std::max(ex, std::max(ey, ez));
+    float minE = std::min(ex, std::min(ey, ez));
+    if (maxE <= 1e-6f) return 2;
+    return (minE / maxE > 1e-3f) ? 3 : 2;
+}
+
 inline int SafeBuildMeshEx(const SEM_MeshParamsEx* params) {
     __try { return SEM_BuildMeshEx(params); }
     __except (EXCEPTION_EXECUTE_HANDLER) { return -100; }
@@ -119,8 +187,33 @@ inline int SafeExtractIsoline(double value) {
     __except (EXCEPTION_EXECUTE_HANDLER) { return -100; }
 }
 
+inline int SafeBuildMesh3D(const SEM_MeshParams3D* params) {
+    __try { return SEM_BuildMesh3D(params); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return -100; }
+}
+
+inline int SafeBuildMesh3DEx(const SEM_MeshParams3DEx* params) {
+    __try { return SEM_BuildMesh3DEx(params); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return -100; }
+}
+
+inline int SafeSolveThermal3D(double conductivity) {
+    __try { return SEM_SolveThermal3D(conductivity); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return -100; }
+}
+
+inline int SafeExtractIsosurface3D(double value) {
+    __try { return SEM_ExtractIsosurface3D(value); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return -100; }
+}
+
 class SemSession {
 public:
+    // Pipeline dimension of the staged source, auto-detected on Bind:
+    //   2 = contour pipeline (SEM_LoadCSV3D, SEM_*),
+    //   3 = triangle-surface pipeline (SEM_LoadSurface3D, SEM_*3D).
+    int   dim        = 2;
+
     int   subMode    = 1;
     int   subN       = 2;
     bool  subEnabled = true;
@@ -138,6 +231,15 @@ public:
     bool  meshEnabled   = true;
     bool  meshParamEdgeUnits = false;
 
+    // 3D (surface) mesh tuning — TetGen, via SEM_BuildMesh3DEx. Parallel to the
+    // 2D meshMethod/meshParam pair: tetMethod picks the refinement strategy
+    // (SEM_TetMethod), tetParam is its primary knob (<0 => per-method auto).
+    // tetParamEdgeUnits expresses the volume/length knob in multiples of the
+    // source surface's mean edge length instead of model units.
+    int   tetMethod    = SEM_TET_MAX_VOL;
+    float tetParam     = -1.0f;
+    bool  tetParamEdgeUnits = false;
+
     bool  thermalEnabled = true;
     float isoValue   = 0.5f;
 
@@ -151,6 +253,17 @@ public:
     float srcRevAlpha    = 0.8f;
     float isoRevAlpha    = 0.5f;
 
+    // Opacity applied to every ColoredTriangles surface built by the 3D SEM
+    // pipeline (source / offsets / mesh / isosurface). They are also drawn
+    // two-sided (no back-face culling). Default 0.5.
+    float surf3dAlpha    = 0.5f;
+
+    // When true, every triangle-bearing pipeline primitive is rebuilt as edge
+    // wireframe (ColoredLine) instead of a filled ColoredTriangles surface.
+    // Toggled from the SEM window; RegenerateGeometry applies it by reloading
+    // each primitive from its saved CSV3D file.
+    bool  renderTrisAsLines = false;
+
     char  status[256] = "Ready";
 
     const std::string& SourcePath() const { return m_srcPath; }
@@ -161,6 +274,7 @@ public:
     Primitive*  SrcRevSurf()  const { return m_srcRevSurf; }
     Primitive*  IsoRevSurf()  const { return m_isoRevSurf; }
     bool        HasSource()   const { return m_srcPrim != nullptr && !m_srcPath.empty(); }
+    int         Dim()         const { return dim; }
     bool        ThermalSolved() const { return m_thermalSolved; }
     bool        HasIsolinePath() const { return !m_isolinePath.empty(); }
 
@@ -168,6 +282,14 @@ public:
         double avg = SEM_GetAvgEdgeLen();
         if (avg <= 0.0) avg = 1.0;
         return (meshMethod == SEM_STEINER_MAX_AREA) ? avg * avg : avg;
+    }
+
+    // Edge-length multiplier for the 3D tet knob: cube of the mean surface edge
+    // length for the volume method, the length itself for sizing.
+    double TetParamFactor() const {
+        double avg = SEM_GetSurfaceAvgEdgeLen3D();
+        if (avg <= 0.0) avg = 1.0;
+        return (tetMethod == SEM_TET_MAX_VOL) ? avg * avg * avg : avg;
     }
 
     const Stats& SrcStats()  const { return m_srcStats; }
@@ -183,13 +305,20 @@ public:
         m_isoline   = nullptr;
         m_srcRevSurf = nullptr;
         m_isoRevSurf = nullptr;
+        m_offsetsPath.clear();
+        m_meshPath.clear();
         m_isolinePath.clear();
         m_thermalSolved = false;
         m_offStats  = Stats();
         m_meshStats = Stats();
         if (!m_srcPath.empty()) {
-            int rc = SEM_LoadCSV3D(m_srcPath.c_str());
-            if (rc != 0) Report(scene, false, "SEM_LoadCSV3D failed (" + std::to_string(rc) + ")");
+            dim = DetectSemDim(m_srcPath);
+            int rc = (dim == 3) ? SEM_LoadSurface3D(m_srcPath.c_str())
+                                : SEM_LoadCSV3D(m_srcPath.c_str());
+            if (rc != 0)
+                Report(scene, false, (dim == 3 ? "SEM_LoadSurface3D failed ("
+                                               : "SEM_LoadCSV3D failed (")
+                                    + std::to_string(rc) + ")");
         }
         m_srcStats = ComputeStats(m_srcPath);
         if (HasSource()) snprintf(status, sizeof(status), "Staged: %s", BaseName(m_srcPath).c_str());
@@ -200,7 +329,7 @@ public:
         m_srcPrim = nullptr; m_srcPath.clear();
         m_offsets = nullptr; m_mesh = nullptr; m_isoline = nullptr;
         m_srcRevSurf = nullptr; m_isoRevSurf = nullptr;
-        m_isolinePath.clear();
+        m_offsetsPath.clear(); m_meshPath.clear(); m_isolinePath.clear();
         m_thermalSolved = false;
         m_srcStats = m_offStats = m_meshStats = Stats();
         snprintf(status, sizeof(status), "Ready");
@@ -239,6 +368,8 @@ public:
                     scene.SetNodeVisibleCascade(m_isoline, thermalEnabled);
             }
         }
+
+        scene.UpdateLight();
     }
 
     Primitive* StagePrim(Stage st) const {
@@ -286,6 +417,37 @@ public:
         return true;
     }
 
+    // SEM_SetRevolution axis selector: 1 = X, 2 = Y, 3 = Z. Profiles revolve
+    // around the Y axis here.
+    static constexpr int kRevolutionAxisY = 2;
+
+    // Enable/disable revolution mode and keep the SEM core in sync via
+    // SEM_SetRevolution. When enabling, the staged contour is validated first
+    // and the core's own checks (endpoints on axis, no crossing) are surfaced.
+    // Returns the resulting revolutionMode state.
+    bool SetRevolutionMode(Scene& scene, bool enable) {
+        if (!enable) {
+            SEM_SetRevolution(0, kRevolutionAxisY);
+            revolutionMode = false;
+            return false;
+        }
+        if (!ValidateRevolutionContour(scene)) {
+            SEM_SetRevolution(0, kRevolutionAxisY);
+            revolutionMode = false;
+            return false;
+        }
+        int rc = SEM_SetRevolution(1, kRevolutionAxisY);
+        if (rc != 0) {
+            CheckRc(scene, false, "SEM_SetRevolution", rc,
+                    { "", "no source", "bad axis", "endpoints off axis", "contour crosses axis" });
+            SEM_SetRevolution(0, kRevolutionAxisY);
+            revolutionMode = false;
+            return false;
+        }
+        revolutionMode = true;
+        return true;
+    }
+
     void ShowSourceRevolution(Scene& scene, bool show) {
         if (show) BuildSourceRevolution(scene);
         else if (Alive(scene, m_srcRevSurf)) m_srcRevSurf->visible = false;
@@ -303,6 +465,13 @@ public:
     void SetIsoRevAlpha(Scene& scene, float a) {
         isoRevAlpha = a;
         if (Alive(scene, m_isoRevSurf)) { XMFLOAT4 c = m_isoRevSurf->GetColor(); c.w = a; m_isoRevSurf->SetColor(c); }
+    }
+
+    // Apply the 3D surface opacity to every currently-built 3D pipeline surface.
+    void SetSurf3dAlpha(Scene& scene, float a) {
+        surf3dAlpha = a;
+        for (Primitive* p : { m_srcPrim, m_offsets, m_mesh, m_isoline })
+            if (Alive(scene, p)) p->SetAlpha(a);
     }
 
     void DropSrcRev(Scene& scene) {
@@ -325,20 +494,23 @@ public:
         if (!HasSource()) return false;
         if (!Alive(scene, m_mesh)) { Report(scene, silent, "Build the mesh first."); return false; }
         try {
-            int rc = SafeSolveThermal(1.0);
+            int rc = (dim == 3) ? SafeSolveThermal3D(1.0) : SafeSolveThermal(1.0);
             if (rc == -100) {
                 Report(scene, silent, "Thermal solver crashed (access violation caught).");
                 return false;
             }
-            if (!CheckRc(scene, silent, "SEM_SolveThermal", rc,
+            if (!CheckRc(scene, silent, dim == 3 ? "SEM_SolveThermal3D" : "SEM_SolveThermal", rc,
                          { "", "No mesh built", "Invalid conductivity", "Solve failed" }))
                 return false;
 
-            const char* outPath = SEM_SerializeMesh(nullptr);
+            const char* outPath = (dim == 3) ? SEM_SerializeMesh3D(nullptr)
+                                             : SEM_SerializeMesh(nullptr);
             if (!outPath) { Report(scene, silent, "SEM_SerializeMesh failed."); return false; }
             std::string p(outPath);
             DropMesh(scene);
-            m_mesh = scene.AddFromCSV3D(p, "mesh_" + Stem(m_srcPath), AttachParent());
+            m_mesh = scene.AddFromCSV3D(p, "mesh_" + Stem(m_srcPath), AttachParent(), nullptr, Colors::BLUE, Colors::RED, renderTrisAsLines);
+            m_meshPath = p;
+            if (dim == 3 && !renderTrisAsLines) ConfigureSurface3D(m_mesh);
             if (m_mesh) scene.AttachVertexPointsGroup(m_mesh);
             m_meshStats = ComputeStats(p);
             m_thermalSolved = true;
@@ -359,21 +531,33 @@ public:
         try {
             double v = isoValue;
             if (v < 0.0) v = 0.0; if (v > 1.0) v = 1.0;
-            int rc = SafeExtractIsoline(v);
-            if (rc == -100) { Report(scene, silent, "Isoline extraction crashed (access violation caught)."); return false; }
-            if (!CheckRc(scene, silent, "SEM_ExtractIsoline", rc,
+            int rc = (dim == 3) ? SafeExtractIsosurface3D(v) : SafeExtractIsoline(v);
+            if (rc == -100) {
+                Report(scene, silent, (dim == 3 ? "Isosurface" : "Isoline")
+                       + std::string(" extraction crashed (access violation caught)."));
+                return false;
+            }
+            if (!CheckRc(scene, silent, dim == 3 ? "SEM_ExtractIsosurface3D" : "SEM_ExtractIsoline", rc,
                          { "", "No mesh/field", "Invalid value", "Extraction failed" }))
                 return false;
 
-            const char* outPath = SEM_SerializeIsoline(nullptr);
-            if (!outPath) { Report(scene, silent, "SEM_SerializeIsoline failed."); return false; }
+            const char* outPath = (dim == 3) ? SEM_SerializeIsosurface3D(nullptr)
+                                             : SEM_SerializeIsoline(nullptr);
+            if (!outPath) {
+                Report(scene, silent, dim == 3 ? "SEM_SerializeIsosurface3D failed."
+                                               : "SEM_SerializeIsoline failed.");
+                return false;
+            }
             std::string p(outPath);
             DropIsoline(scene);
             const XMFLOAT4 green(0.0f, 1.0f, 0.0f, 1.0f);
-            m_isoline = scene.AddFromCSV3D(p, "isoline_" + Stem(m_srcPath), AttachParent(), &green);
+            const std::string namePrefix = (dim == 3 ? "isosurface_" : "isoline_");
+            m_isoline = scene.AddFromCSV3D(p, namePrefix + Stem(m_srcPath), AttachParent(), &green, Colors::BLUE, Colors::RED, renderTrisAsLines);
+            if (dim == 3 && !renderTrisAsLines) ConfigureSurface3D(m_isoline);   // isosurface is a triangle mesh
             m_isolinePath = p;
             if (revWasShown && m_isoline) BuildIsolineRevolution(scene);
-            snprintf(status, sizeof(status), "Isoline T=%.3f: %s", v, BaseName(p).c_str());
+            snprintf(status, sizeof(status), "%s T=%.3f: %s",
+                     dim == 3 ? "Isosurface" : "Isoline", v, BaseName(p).c_str());
             return true;
         }
         catch (const std::exception& e) { Report(scene, silent, std::string("Isoline exception: ") + e.what()); }
@@ -392,6 +576,17 @@ public:
             scene.stagingEnabled = true;
             scene.SetStaged(src);
             Bind(scene, src);
+            // Bind auto-detects the pipeline dimension; a 3D source surface is a
+            // ColoredTriangles mesh, so make it two-sided and semi-transparent.
+            if (dim == 3) ConfigureSurface3D(src);
+            scene.UpdateLight();
+            // Revolution mode is a 2D-contour feature only. For a 2D source, an
+            // open half-profile whose endpoints sit on the Y axis is a surface-
+            // of-revolution contour — turn the mode on automatically (and sync
+            // the SEM core); otherwise make sure it is off. A 3D surface source
+            // never uses revolution.
+            if (dim == 2) SetRevolutionMode(scene, IsOpenContourOnYAxis(path));
+            else          { SEM_SetRevolution(0, kRevolutionAxisY); revolutionMode = false; }
         }
         catch (const std::exception& e) { Report(scene, false, std::string("Import failed: ") + e.what()); }
         catch (...)                     { Report(scene, false, "Import failed: unknown exception."); }
@@ -404,10 +599,16 @@ public:
         subEnabled = true;  subMode    = 1;
         offEnabled = true;  offsetMode = OFFSET_EVEN;
         firstGap   = 1.0f;  numOffsets = 8; grading = 1.2f;
-        meshEnabled = true; meshMethod = SEM_STEINER_MAX_AREA;
-        meshParam  = -1.0f; meshParamEdgeUnits = false;
+        meshEnabled = true;
         thermalEnabled = true;
         isoValue   = 0.5f;
+        if (dim == 3) {
+            tetMethod = SEM_TET_MAX_VOL;
+            tetParam  = -1.0f; tetParamEdgeUnits = false;
+        } else {
+            meshMethod = SEM_STEINER_MAX_AREA;
+            meshParam  = -1.0f; meshParamEdgeUnits = false;
+        }
 
         if (!ApplySubdivide(scene, false)) return;
         if (!ApplyOffsets(scene, false))   return;
@@ -417,8 +618,100 @@ public:
         snprintf(status, sizeof(status), "Pipeline complete.");
     }
 
+    // Rebuild every existing pipeline primitive from its saved CSV3D file using
+    // the current renderTrisAsLines setting, so triangle surfaces can be flipped
+    // between filled (ColoredTriangles) and wireframe (ColoredLine) without
+    // re-running the SEM algorithms. The SEM core caches and the serialized files
+    // are untouched, so the geometry is identical — only its representation
+    // changes. In 2D the source is a contour (lines) and is left in place (along
+    // with any revolution surfaces); only the derived stages are rebuilt. In 3D
+    // the source is itself a triangle surface and is rebuilt too.
+    void RegenerateGeometry(Scene& scene) {
+        if (!HasSource()) return;
+
+        // Snapshot stage presence, visibility and saved paths before teardown.
+        const bool haveOff  = Alive(scene, m_offsets);
+        const bool haveMesh = Alive(scene, m_mesh);
+        const bool haveIso  = Alive(scene, m_isoline);
+        const bool offVis  = haveOff  && m_offsets->visible;
+        const bool meshVis = haveMesh && m_mesh->visible;
+        const bool isoVis  = haveIso  && m_isoline->visible;
+        const std::string offP  = haveOff  ? m_offsetsPath : std::string();
+        const std::string meshP = haveMesh ? m_meshPath    : std::string();
+        const std::string isoP  = haveIso  ? m_isolinePath : std::string();
+        const bool wasThermal = m_thermalSolved;
+
+        // Drop the derived stages (DropMesh also drops the isoline). The captured
+        // paths above let us rebuild them from disk.
+        DropOffsets(scene);
+        DropMesh(scene);
+
+        // In 3D the source surface itself carries triangles — rebuild it so it can
+        // switch representation. In 2D it is a contour; leave it (and its
+        // revolution surfaces) untouched.
+        if (dim == 3) {
+            SceneNode* srcParent = m_srcPrim->parent;
+            const bool srcVis = m_srcPrim->visible;
+            scene.RemovePrimitive(m_srcPrim);
+            m_srcPrim = nullptr;
+            Primitive* src = scene.AddFromCSV3D(m_srcPath, "", srcParent, nullptr,
+                                                Colors::BLUE, Colors::RED, renderTrisAsLines);
+            if (!src) { Report(scene, false, "Regenerate: source rebuild failed."); return; }
+            src->semSourcePath = m_srcPath;
+            src->visible = srcVis;
+            if (!renderTrisAsLines) ConfigureSurface3D(src);
+            scene.AttachVertexPointsGroup(src);
+            scene.SetStaged(src);
+            m_srcPrim  = src;
+            m_srcStats = ComputeStats(m_srcPath);
+        }
+
+        if (!offP.empty()) {
+            m_offsets = scene.AddFromCSV3D(offP, "offsets_" + Stem(m_srcPath), AttachParent(),
+                                           nullptr, Colors::CYAN, Colors::YELLOW, renderTrisAsLines);
+            if (m_offsets) {
+                m_offsetsPath = offP;
+                if (dim == 3 && !renderTrisAsLines) ConfigureSurface3D(m_offsets);
+                scene.AttachVertexPointsGroup(m_offsets);
+                scene.SetNodeVisibleCascade(m_offsets, offVis);
+                m_offStats = ComputeStats(offP);
+            }
+        }
+
+        if (!meshP.empty()) {
+            m_mesh = scene.AddFromCSV3D(meshP, "mesh_" + Stem(m_srcPath), AttachParent(),
+                                        nullptr, Colors::CYAN, Colors::YELLOW, renderTrisAsLines);
+            if (m_mesh) {
+                m_meshPath = meshP;
+                if (dim == 3 && !renderTrisAsLines) ConfigureSurface3D(m_mesh);
+                scene.AttachVertexPointsGroup(m_mesh);
+                scene.SetNodeVisibleCascade(m_mesh, meshVis);
+                m_meshStats = ComputeStats(meshP);
+                m_thermalSolved = wasThermal;   // SEM core field is still cached
+            }
+        }
+
+        if (!isoP.empty()) {
+            const XMFLOAT4 green(0.0f, 1.0f, 0.0f, 1.0f);
+            const std::string namePrefix = (dim == 3 ? "isosurface_" : "isoline_");
+            m_isoline = scene.AddFromCSV3D(isoP, namePrefix + Stem(m_srcPath), AttachParent(),
+                                           &green, Colors::BLUE, Colors::RED, renderTrisAsLines);
+            if (m_isoline) {
+                m_isolinePath = isoP;
+                if (dim == 3 && !renderTrisAsLines) ConfigureSurface3D(m_isoline);
+                scene.SetNodeVisibleCascade(m_isoline, isoVis);
+            }
+        }
+
+        scene.UpdateLight();
+        snprintf(status, sizeof(status), "Regenerated as %s.",
+                 renderTrisAsLines ? "wireframe" : "surfaces");
+    }
+
 private:
     std::string m_srcPath;
+    std::string m_offsetsPath;   // last serialized offsets file (for regeneration)
+    std::string m_meshPath;      // last serialized mesh file (for regeneration)
     std::string m_isolinePath;
     Primitive*  m_srcPrim = nullptr;
     Primitive*  m_offsets = nullptr;
@@ -452,6 +745,15 @@ private:
 
     SceneNode* AttachParent() { return m_srcPrim ? static_cast<SceneNode*>(m_srcPrim) : nullptr; }
 
+    // Every ColoredTriangles surface produced by the 3D pipeline is drawn
+    // two-sided and at the configurable surface opacity. Called right after such
+    // a surface is created (only when dim == 3).
+    void ConfigureSurface3D(Primitive* p) {
+        if (!p) return;
+        p->SetTwoSided(true);
+        p->SetAlpha(surf3dAlpha);
+    }
+
     void BuildSourceRevolution(Scene& scene) {
         if (Alive(scene, m_srcRevSurf)) { m_srcRevSurf->visible = true; return; }
         std::vector<XMFLOAT3> prof;
@@ -482,11 +784,11 @@ private:
 
     void DropOffsets(Scene& scene) {
         if (Alive(scene, m_offsets)) scene.RemovePrimitive(m_offsets);
-        m_offsets = nullptr; m_offStats = Stats();
+        m_offsets = nullptr; m_offStats = Stats(); m_offsetsPath.clear();
     }
     void DropMesh(Scene& scene) {
         if (Alive(scene, m_mesh)) scene.RemovePrimitive(m_mesh);
-        m_mesh = nullptr; m_meshStats = Stats();
+        m_mesh = nullptr; m_meshStats = Stats(); m_meshPath.clear();
         m_thermalSolved = false;
         DropIsoline(scene);
     }
@@ -503,6 +805,11 @@ private:
                   : (subMode == 0) ? -1
                   : (subMode == 1) ? 0
                   : (subN < 1 ? 1 : subN);
+            if (dim == 3) {
+                int rc = SEM_SubdivideSurface3D(n);
+                return CheckRc(scene, silent, "SEM_SubdivideSurface3D", rc,
+                               { "", "No surface loaded", "Invalid argument" });
+            }
             int rc = SEM_SubdivideContour(n);
             return CheckRc(scene, silent, "SEM_SubdivideContour", rc,
                            { "", "No source loaded", "Invalid argument" });
@@ -518,19 +825,24 @@ private:
             if (offsetMode == OFFSET_GAPS) {
                 if (gaps.empty()) { Report(scene, silent, "Add at least one gap."); return false; }
                 std::vector<double> g(gaps.begin(), gaps.end());
-                rc = SEM_ComputeOffsetsAt(g.data(), (int)g.size());
+                rc = (dim == 3) ? SEM_ComputeOffsetsAt3D(g.data(), (int)g.size())
+                                : SEM_ComputeOffsetsAt(g.data(), (int)g.size());
             } else {
-                rc = SEM_ComputeOffsets(firstGap, numOffsets, grading);
+                rc = (dim == 3) ? SEM_ComputeOffsets3D(firstGap, numOffsets, grading)
+                                : SEM_ComputeOffsets(firstGap, numOffsets, grading);
             }
-            if (!CheckRc(scene, silent, "SEM_ComputeOffsets", rc,
+            if (!CheckRc(scene, silent, dim == 3 ? "SEM_ComputeOffsets3D" : "SEM_ComputeOffsets", rc,
                          { "", "No source loaded", "Invalid parameters" }))
                 return false;
 
-            const char* outPath = SEM_SerializeOffsets(nullptr);
+            const char* outPath = (dim == 3) ? SEM_SerializeOffsets3D(nullptr)
+                                             : SEM_SerializeOffsets(nullptr);
             if (!outPath) { Report(scene, silent, "SEM_SerializeOffsets failed."); return false; }
             std::string p(outPath);
             DropOffsets(scene);
-            m_offsets = scene.AddFromCSV3D(p, "offsets_" + Stem(m_srcPath), AttachParent());
+            m_offsets = scene.AddFromCSV3D(p, "offsets_" + Stem(m_srcPath), AttachParent(), nullptr, Colors::CYAN, Colors::YELLOW, renderTrisAsLines);
+            m_offsetsPath = p;
+            if (dim == 3 && !renderTrisAsLines) ConfigureSurface3D(m_offsets);
             if (m_offsets) scene.AttachVertexPointsGroup(m_offsets);
             m_offStats = ComputeStats(p);
             snprintf(status, sizeof(status), "Offsets: %s", BaseName(p).c_str());
@@ -543,27 +855,49 @@ private:
 
     bool ApplyMesh(Scene& scene, bool silent) {
         try {
-            double param = (double)meshParam;
-            if (meshParamEdgeUnits && meshParam > 0.0f &&
-                (meshMethod == SEM_STEINER_MAX_AREA || meshMethod == SEM_STEINER_SIZING))
-                param *= MeshParamFactor();
-            SEM_MeshParamsEx params{ meshMethod, param, (double)steinerMargin };
-            int rc = SafeBuildMeshEx(&params);
-            if (rc == -100) {
-                Report(scene, silent, "Mesher DLL crashed (access violation caught). "
-                                      "Try another Steiner method or a larger parameter.");
-                return false;
+            int rc;
+            if (dim == 3) {
+                double param = (double)tetParam;
+                if (tetParamEdgeUnits && tetParam > 0.0f &&
+                    (tetMethod == SEM_TET_MAX_VOL || tetMethod == SEM_TET_SIZING))
+                    param *= TetParamFactor();
+                SEM_MeshParams3DEx params3d{ tetMethod, param };
+                rc = SafeBuildMesh3DEx(&params3d);
+                if (rc == -100) {
+                    Report(scene, silent, "TetGen DLL crashed (access violation caught). "
+                                          "Try a larger volume or a looser quality bound.");
+                    return false;
+                }
+                if (!CheckRc(scene, silent, "SEM_BuildMesh3DEx", rc,
+                             { "", "No surface loaded", "Compute offsets first",
+                               "Tetrahedralization failed", "Invalid parameters", "Invalid method" }))
+                    return false;
+            } else {
+                double param = (double)meshParam;
+                if (meshParamEdgeUnits && meshParam > 0.0f &&
+                    (meshMethod == SEM_STEINER_MAX_AREA || meshMethod == SEM_STEINER_SIZING))
+                    param *= MeshParamFactor();
+                SEM_MeshParamsEx params{ meshMethod, param, (double)steinerMargin };
+                rc = SafeBuildMeshEx(&params);
+                if (rc == -100) {
+                    Report(scene, silent, "Mesher DLL crashed (access violation caught). "
+                                          "Try another Steiner method or a larger parameter.");
+                    return false;
+                }
+                if (!CheckRc(scene, silent, "SEM_BuildMeshEx", rc,
+                             { "", "No source loaded", "Compute offsets first",
+                               "Not enough valid lines", "Triangulation failed", "Invalid method" }))
+                    return false;
             }
-            if (!CheckRc(scene, silent, "SEM_BuildMeshEx", rc,
-                         { "", "No source loaded", "Compute offsets first",
-                           "Not enough valid lines", "Triangulation failed", "Invalid method" }))
-                return false;
 
-            const char* outPath = SEM_SerializeMesh(nullptr);
+            const char* outPath = (dim == 3) ? SEM_SerializeMesh3D(nullptr)
+                                             : SEM_SerializeMesh(nullptr);
             if (!outPath) { Report(scene, silent, "SEM_SerializeMesh failed."); return false; }
             std::string p(outPath);
             DropMesh(scene);
-            m_mesh = scene.AddFromCSV3D(p, "mesh_" + Stem(m_srcPath), AttachParent());
+            m_mesh = scene.AddFromCSV3D(p, "mesh_" + Stem(m_srcPath), AttachParent(), nullptr, Colors::CYAN, Colors::YELLOW, renderTrisAsLines);
+            m_meshPath = p;
+            if (dim == 3 && !renderTrisAsLines) ConfigureSurface3D(m_mesh);
             if (m_mesh) scene.AttachVertexPointsGroup(m_mesh);
             m_meshStats = ComputeStats(p);
             snprintf(status, sizeof(status), "Mesh: %s", BaseName(p).c_str());

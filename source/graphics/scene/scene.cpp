@@ -93,6 +93,10 @@ void Scene::Draw()
 	DrawGrid();
 	const std::vector<Primitive*>& primitivesOrdered = GetPrimitivesSorted();
 
+	// Bind the section clip-plane once; it persists on VS slot 1 across the
+	// per-primitive draws (Primitive::Draw only rebinds slot 0).
+	this->ApplySectionCB();
+
 	const bool doIDPass = !this->blockMousePick && this->idPassNeeded;
 	if (doIDPass)
 		this->deviceContext->ClearRenderTargetView(this->primitivesIDsRTV.Get(), Colors::clearColor);
@@ -110,7 +114,13 @@ void Scene::Draw()
 
 		XMMATRIX projectionMatrix = this->camera.GetProjectionMatrix();
 
-		this->deviceContext->RSSetState(this->rasterizerSolid.Get());
+		// While sectioning, render solids without backface culling so the
+		// interior revealed by the cut is filled in rather than see-through.
+		// Two-sided primitives (e.g. SEM 3D surfaces) also opt out of culling so
+		// both faces of an open / transparent surface are drawn.
+		const bool noCull = this->section.enabled || p->GetTwoSided();
+		this->deviceContext->RSSetState(
+			noCull ? this->rasterizerSolidNoCull.Get() : this->rasterizerSolid.Get());
 
 		if (doIDPass) {
 			this->deviceContext->OMSetRenderTargets(1, this->rtvIDs, this->dsViewNoMSAA);
@@ -182,6 +192,9 @@ void Scene::Draw()
 			p->SetIlluminationCapability(illumination);
 		}
 	}
+
+	// Auxiliary geometry (trajectories, velocity arrows, gizmo) must stay whole.
+	this->ApplySectionCB(true);
 
 	DrawTrajectories();
 
@@ -532,7 +545,8 @@ void Scene::AddFromCSVMesh(const std::string& path, const XMFLOAT4& lineCol, con
 	m_sortedDirty = true;
 }
 
-Primitive* Scene::AddFromCSV3D(const std::string& path, const std::string& name, SceneNode* parent, const XMFLOAT4* overrideColor)
+Primitive* Scene::AddFromCSV3D(const std::string& path, const std::string& name, SceneNode* parent, const XMFLOAT4* overrideColor,
+	const XMFLOAT4& gradLow, const XMFLOAT4& gradHigh, bool renderTrianglesAsLines)
 {
 	CSV3DLoader::CSV3DData data;
 	if (!CSV3DLoader::Load(path, data)) {
@@ -553,25 +567,40 @@ Primitive* Scene::AddFromCSV3D(const std::string& path, const std::string& name,
 	const auto& N = data.nodes;
 	const size_t numNodes = N.size();
 
-	// Temperature → colour: blue (T=0) … red (T=1).
-	auto tempColor = [](float T) -> XMFLOAT4 {
-		if (T < 0.0f) T = 0.0f;
-		if (T > 1.0f) T = 1.0f;
-		return XMFLOAT4(T, 0.0f, 1.0f - T, 1.0f);
+	// Colour a node by its T value along the gradLow→gradHigh gradient, unless
+	// an explicit override colour was supplied by the caller.
+	auto nodeColor = [&](unsigned i) -> XMFLOAT4 {
+		return overrideColor ? *overrideColor : Colors::Lerp(gradLow, gradHigh, N[i].T);
 	};
 
-	// Collect unique edges from triangles.
+	// Triangles are rendered as a filled TRIANGLELIST surface (flat-shaded,
+	// per-vertex coloured), not as wireframe. Expand each triangle into three
+	// independent vertices. When renderTrianglesAsLines is set the surface is
+	// skipped and the triangles contribute their sides to the wireframe below.
+	Primitive* surface = nullptr;
+	if (!data.triangles.empty() && !renderTrianglesAsLines) {
+		std::vector<XMFLOAT3> tposes;
+		std::vector<XMFLOAT4> tcols;
+		tposes.reserve(data.triangles.size() * 3);
+		tcols.reserve(data.triangles.size() * 3);
+		for (const auto& t : data.triangles) {
+			if (t.x >= numNodes || t.y >= numNodes || t.z >= numNodes) continue;
+			tposes.push_back(N[t.x].pos); tcols.push_back(nodeColor(t.x));
+			tposes.push_back(N[t.y].pos); tcols.push_back(nodeColor(t.y));
+			tposes.push_back(N[t.z].pos); tcols.push_back(nodeColor(t.z));
+		}
+		if (!tposes.empty())
+			surface = PrimitiveConstructor::ColoredTriangles(tposes, tcols, NextId());
+	}
+
+	// Collect unique edges from polygon faces and explicit edges. Triangles are
+	// drawn as a filled surface above, so they no longer contribute wireframe.
 	std::set<std::pair<unsigned, unsigned>> edges;
 	auto addEdge = [&](unsigned a, unsigned b) {
 		if (a == b) return;
 		if (a < numNodes && b < numNodes)
 			edges.insert(a < b ? std::make_pair(a, b) : std::make_pair(b, a));
 	};
-	for (const auto& t : data.triangles) {
-		addEdge(t.x, t.y);
-		addEdge(t.y, t.z);
-		addEdge(t.z, t.x);
-	}
 
 	// Polygon faces contribute their boundary edges (closed loop).
 	for (const auto& f : data.faces) {
@@ -584,29 +613,51 @@ Primitive* Scene::AddFromCSV3D(const std::string& path, const std::string& name,
 	for (const auto& e : data.edges)
 		addEdge(e.first, e.second);
 
-	if (edges.empty()) {
-		ErrorLogger::Log("CSV3D file contains no drawable edges: " + path);
+	// When the caller asked for a wireframe, triangles contribute their three
+	// sides here instead of being drawn as a filled surface above.
+	if (renderTrianglesAsLines)
+		for (const auto& t : data.triangles) {
+			addEdge(t.x, t.y);
+			addEdge(t.y, t.z);
+			addEdge(t.z, t.x);
+		}
+
+	// Build a single LINELIST: two vertices per edge, each coloured by its
+	// node's T value along the gradient so the rasteriser interpolates along
+	// the segment.
+	Primitive* lines = nullptr;
+	if (!edges.empty()) {
+		std::vector<XMFLOAT3> poses;
+		std::vector<XMFLOAT4> cols;
+		poses.reserve(edges.size() * 2);
+		cols.reserve(edges.size() * 2);
+		for (const auto& e : edges) {
+			poses.push_back(N[e.first].pos);
+			cols.push_back(nodeColor(e.first));
+			poses.push_back(N[e.second].pos);
+			cols.push_back(nodeColor(e.second));
+		}
+		lines = PrimitiveConstructor::ColoredLine(poses, cols, /*asLineList*/ true, NextId());
+	}
+
+	if (!surface && !lines) {
+		ErrorLogger::Log("CSV3D file contains no drawable geometry: " + path);
 		m_sortedDirty = true;
 		return nullptr;
 	}
 
-	// Build a single LINELIST: two vertices per edge, each coloured by its
-	// node's temperature so the rasteriser interpolates along the segment.
-	std::vector<XMFLOAT3> poses;
-	std::vector<XMFLOAT4> cols;
-	poses.reserve(edges.size() * 2);
-	cols.reserve(edges.size() * 2);
-	for (const auto& e : edges) {
-		poses.push_back(N[e.first].pos);
-		cols.push_back(overrideColor ? *overrideColor : tempColor(N[e.first].T));
-		poses.push_back(N[e.second].pos);
-		cols.push_back(overrideColor ? *overrideColor : tempColor(N[e.second].T));
-	}
-
-	auto* p = PrimitiveConstructor::ColoredLine(poses, cols, /*asLineList*/ true, NextId());
+	// Primary primitive: the surface when present, otherwise the wireframe.
+	Primitive* p = surface ? surface : lines;
 	p->name = primName;
 	this->primitives.push_back(p);
 	(parent ? parent : &root)->AddChild(p);
+
+	// When both exist, attach the wireframe as a child so they move together.
+	if (surface && lines) {
+		lines->name = primName + " (edges)";
+		this->primitives.push_back(lines);
+		surface->AddChild(lines);
+	}
 
 	m_sortedDirty = true;
 	return p;
@@ -760,6 +811,30 @@ void Scene::UpdateLight()
 		p->SetSmoothShading(this->smoothShade);
 	}
 	this->orientationTransformer.UpdateLighting(this->ambient, this->intensity, this->shininess, this->smoothShade);
+}
+
+void Scene::ApplySectionCB(bool forceDisabled)
+{
+	CB_VS_section& d = this->cb_vs_section.data;
+
+	const bool on = this->section.enabled && !forceDisabled;
+	d.enabled = on ? 1 : 0;
+
+	// Axis -> plane normal. 0: YZ (X), 1: XZ (Y), 2: XY (Z).
+	float n[3] = { 0, 0, 0 };
+	int axis = (this->section.axis >= 0 && this->section.axis <= 2) ? this->section.axis : 0;
+	n[axis] = this->section.flip ? -1.0f : 1.0f;
+
+	d.planeNormal[0] = n[0];
+	d.planeNormal[1] = n[1];
+	d.planeNormal[2] = n[2];
+	d.planeNormal[3] = 0.0f;
+	// Keep the half-space dot(p,n) - planeD >= 0. offset is along +axis, so the
+	// plane constant flips sign together with the normal when flipped.
+	d.planeD = this->section.flip ? -this->section.offset : this->section.offset;
+
+	this->cb_vs_section.ApplyChanges();
+	this->deviceContext->VSSetConstantBuffers(1, 1, this->cb_vs_section.GetAddressOf());
 }
 
 const std::vector<std::string>& Scene::GetSavedScenes() const
@@ -1076,6 +1151,11 @@ bool Scene::InitializeDirectX()
 			rasterizerDesc.FillMode = D3D11_FILL_WIREFRAME;
 			hr = this->device->CreateRasterizerState(&rasterizerDesc, this->rasterizerWireframe.GetAddressOf());
 			COM_ERROR_IF_FAILED(hr, "Failed to create rasterizer state.");
+
+			rasterizerDesc.CullMode = D3D11_CULL_NONE;
+			rasterizerDesc.FillMode = D3D11_FILL_SOLID;
+			hr = this->device->CreateRasterizerState(&rasterizerDesc, this->rasterizerSolidNoCull.GetAddressOf());
+			COM_ERROR_IF_FAILED(hr, "Failed to create no-cull rasterizer state.");
 		}
 
 		{
@@ -1122,6 +1202,8 @@ bool Scene::InitializeDirectX()
 			COM_ERROR_IF_FAILED(hr, "Failed to create cb ps outline.");
 			hr = this->cb_ps_id.Initialize(this->device, this->deviceContext);
 			COM_ERROR_IF_FAILED(hr, "Failed to create cb ps id.");
+			hr = this->cb_vs_section.Initialize(this->device, this->deviceContext);
+			COM_ERROR_IF_FAILED(hr, "Failed to create cb vs section.");
 
 			SetOutline(Colors::BLACK, 0.1f);
 		}

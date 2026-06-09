@@ -27,6 +27,13 @@ PS_OUTPUT PS_MAIN(PS_INPUT input)
 
     float4 baseCol = useVertexColor ? input.inColor : col;
 
+    // Per-vertex coloured surfaces carry their alpha in the vertex stream, so the
+    // constant-buffer col.a would otherwise have no effect on them. Fold col.a in
+    // as a global opacity multiplier so a single uniform (e.g. the SEM surface
+    // opacity slider) can fade a vertex-coloured surface. The flat-shaded path
+    // already uses col.a directly, so only multiply on the vertex-colour path.
+    float alpha = useVertexColor ? baseCol.a * col.a : baseCol.a;
+
     if (illuminated)
     {
         float3 lightDir = normalize(float3(1, 1, 1));
@@ -35,11 +42,11 @@ PS_OUTPUT PS_MAIN(PS_INPUT input)
         float3 reflectDir = reflect(-lightDir, input.inNormalCam);
         float spec = pow(max(dot(viewDir, reflectDir), 0.0f), shininess);
         float illumination = saturate(ambient + diff * intensity);
-        o.color = float4(baseCol.rgb * illumination + float3(0.5, 0.5, 0.5) * spec, baseCol.a);
+        o.color = float4(baseCol.rgb * illumination + float3(0.5, 0.5, 0.5) * spec, alpha);
     }
     else
     {
-        o.color = baseCol.rgba;
+        o.color = float4(baseCol.rgb, alpha);
     }
 
 

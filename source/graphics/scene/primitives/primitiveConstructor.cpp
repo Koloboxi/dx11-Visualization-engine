@@ -1,4 +1,5 @@
 #include "primitive.h"
+#include <algorithm>
 
 namespace PrimitiveConstructor
 {
@@ -61,6 +62,67 @@ Primitive* PrimitiveConstructor::ColoredLine(const std::vector<XMFLOAT3>& poses,
 	line->id = static_cast<UINT>(id);
 
 	return line;
+}
+
+Primitive* PrimitiveConstructor::ColoredTriangles(const std::vector<XMFLOAT3>& poses, const std::vector<XMFLOAT4>& cols, UINT id)
+{
+	Primitive* tri = new Primitive(device, deviceContext);
+
+	std::vector<Vertex> vertexData;
+	vertexData.reserve(poses.size());
+
+	const size_t triCount = poses.size() / 3;
+
+	// Reference point for orienting triangle winding: the centroid of every
+	// vertex. We flip any triangle whose face normal points toward the centroid
+	// so that all triangles end up wound counter-clockwise as seen from outside
+	// (outward-pointing normals). With back-face culling disabled this does not
+	// change visibility, but it gives the flat-shaded surface a single,
+	// consistent lit side instead of a patchwork of inward/outward facets.
+	XMFLOAT3 centroid{ 0, 0, 0 };
+	if (!poses.empty()) {
+		for (const XMFLOAT3& p : poses) { centroid.x += p.x; centroid.y += p.y; centroid.z += p.z; }
+		const float inv = 1.0f / (float)poses.size();
+		centroid.x *= inv; centroid.y *= inv; centroid.z *= inv;
+	}
+
+	for (size_t t = 0; t < triCount; ++t) {
+		// Local copies so we can swap two corners (and their colours together) to
+		// reverse the winding when the triangle faces inward.
+		size_t i0 = t * 3 + 0, i1 = t * 3 + 1, i2 = t * 3 + 2;
+		XMFLOAT3 a = poses[i0], b = poses[i1], c = poses[i2];
+		XMFLOAT3 n = math::ComputeNormal(a, b, c);
+
+		XMFLOAT3 faceCenter{ (a.x + b.x + c.x) / 3.0f,
+		                     (a.y + b.y + c.y) / 3.0f,
+		                     (a.z + b.z + c.z) / 3.0f };
+		XMFLOAT3 outward{ faceCenter.x - centroid.x,
+		                  faceCenter.y - centroid.y,
+		                  faceCenter.z - centroid.z };
+		if (n.x * outward.x + n.y * outward.y + n.z * outward.z < 0.0f) {
+			std::swap(i1, i2);              // reverse winding -> outward normal
+			std::swap(b, c);
+			n = math::ComputeNormal(a, b, c);
+		}
+
+		const size_t idx[3] = { i0, i1, i2 };
+		const XMFLOAT3 pos3[3] = { a, b, c };
+		for (int k = 0; k < 3; ++k) {
+			Vertex v(pos3[k], n);
+			v.color = (idx[k] < cols.size()) ? cols[idx[k]] : XMFLOAT4(1, 1, 1, 1);
+			vertexData.push_back(v);
+		}
+	}
+
+	tri->SetVertexIndexBuffers(vertexData.data(), static_cast<UINT>(vertexData.size()), nullptr, 0, 2);
+	tri->SetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	tri->SetPosition(BaseVectors::ORIGIN);
+	tri->SetColor(XMFLOAT4(1, 1, 1, 1));
+	tri->SetIlluminationCapability(true);
+	tri->SetUseVertexColor(true);
+	tri->id = static_cast<UINT>(id);
+
+	return tri;
 }
 
 Primitive* PrimitiveConstructor::Polygon(const std::vector<XMFLOAT3>& poses, const XMFLOAT4& col, UINT id)
@@ -506,12 +568,29 @@ Primitive* PrimitiveConstructor::RevolutionSurface(const std::vector<XMFLOAT3>& 
 {
 	if (profile.size() < 2) return nullptr;
 	if (segments < 3) segments = 3;
-	const UINT P = (UINT)profile.size();
+
+	// Ensure the profile is wound counter-clockwise in the XY plane so that
+	// the computed normals point outward and the triangle winding stays
+	// consistent. Use the shoelace signed area (treating the profile as a
+	// closed loop); negative area means clockwise, so reverse it.
+	std::vector<XMFLOAT3> prof = profile;
+	{
+		float area2 = 0.0f;
+		const size_t n = prof.size();
+		for (size_t i = 0; i < n; ++i) {
+			const XMFLOAT3& a = prof[i];
+			const XMFLOAT3& b = prof[(i + 1) % n];
+			area2 += a.x * b.y - b.x * a.y;
+		}
+		if (area2 < 0.0f) std::reverse(prof.begin(), prof.end());
+	}
+
+	const UINT P = (UINT)prof.size();
 
 	std::vector<XMFLOAT2> nrm2(P);
 	for (UINT i = 0; i < P; ++i) {
-		const XMFLOAT3& a = profile[i > 0 ? i - 1 : i];
-		const XMFLOAT3& b = profile[i + 1 < P ? i + 1 : i];
+		const XMFLOAT3& a = prof[i > 0 ? i - 1 : i];
+		const XMFLOAT3& b = prof[i + 1 < P ? i + 1 : i];
 		float dx = b.x - a.x;
 		float dy = b.y - a.y;
 		float nx = dy, ny = -dx;
@@ -523,8 +602,8 @@ Primitive* PrimitiveConstructor::RevolutionSurface(const std::vector<XMFLOAT3>& 
 	std::vector<Vertex> verts;
 	verts.reserve((size_t)P * segments);
 	for (UINT i = 0; i < P; ++i) {
-		float r = profile[i].x;
-		float y = profile[i].y;
+		float r = prof[i].x;
+		float y = prof[i].y;
 		for (UINT j = 0; j < segments; ++j) {
 			float a = (float)j / (float)segments * XM_2PI;
 			float ca = cosf(a), sa = sinf(a);
