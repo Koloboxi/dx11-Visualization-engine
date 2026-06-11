@@ -1,5 +1,9 @@
 #include "primitive.h"
 #include <algorithm>
+#include <cmath>
+#include <map>
+#include <queue>
+#include <tuple>
 
 namespace PrimitiveConstructor
 {
@@ -64,7 +68,7 @@ Primitive* PrimitiveConstructor::ColoredLine(const std::vector<XMFLOAT3>& poses,
 	return line;
 }
 
-Primitive* PrimitiveConstructor::ColoredTriangles(const std::vector<XMFLOAT3>& poses, const std::vector<XMFLOAT4>& cols, UINT id)
+Primitive* PrimitiveConstructor::ColoredTriangles(const std::vector<XMFLOAT3>& poses, const std::vector<XMFLOAT4>& cols, UINT id, bool ensureCCW)
 {
 	Primitive* tri = new Primitive(device, deviceContext);
 
@@ -73,42 +77,93 @@ Primitive* PrimitiveConstructor::ColoredTriangles(const std::vector<XMFLOAT3>& p
 
 	const size_t triCount = poses.size() / 3;
 
-	// Reference point for orienting triangle winding: the centroid of every
-	// vertex. We flip any triangle whose face normal points toward the centroid
-	// so that all triangles end up wound counter-clockwise as seen from outside
-	// (outward-pointing normals). With back-face culling disabled this does not
-	// change visibility, but it gives the flat-shaded surface a single,
-	// consistent lit side instead of a patchwork of inward/outward facets.
-	XMFLOAT3 centroid{ 0, 0, 0 };
-	if (!poses.empty()) {
-		for (const XMFLOAT3& p : poses) { centroid.x += p.x; centroid.y += p.y; centroid.z += p.z; }
-		const float inv = 1.0f / (float)poses.size();
-		centroid.x *= inv; centroid.y *= inv; centroid.z *= inv;
+	// Per-triangle face normal (with the current winding) and a flag telling us
+	// to reverse the winding when emitting vertices.
+	std::vector<XMFLOAT3> normals(triCount);
+	std::vector<char> flip(triCount, 0);
+	for (size_t t = 0; t < triCount; ++t)
+		normals[t] = math::ComputeNormal(poses[t * 3 + 0], poses[t * 3 + 1], poses[t * 3 + 2]);
+
+	// Orientation is made consistent not against a global centroid but locally:
+	// any two triangles sharing an edge must have a positive dot product of
+	// their normals. We flood-fill across the shared-edge adjacency graph and
+	// flip a neighbour whenever its normal disagrees with the already-fixed one.
+	// This keeps the flat-shaded surface lit on a single coherent side even for
+	// non-convex geometry, where the centroid test would fail. The first
+	// triangle of each connected component keeps its incoming winding as the
+	// reference. Disabled (ensureCCW == false) for the untouched source surface.
+	if (ensureCCW && triCount > 1) {
+		// Weld coincident vertices so triangles that share an edge are detected
+		// even though each triangle carries its own expanded copies. Positions
+		// are quantised to a fine grid to tolerate float round-off.
+		auto key = [](const XMFLOAT3& p) {
+			const float q = 1e5f;
+			return std::make_tuple((long long)std::lround(p.x * q),
+			                       (long long)std::lround(p.y * q),
+			                       (long long)std::lround(p.z * q));
+		};
+		std::map<std::tuple<long long, long long, long long>, int> vertId;
+		std::vector<int> canon(poses.size());
+		for (size_t i = 0; i < poses.size(); ++i) {
+			auto k = key(poses[i]);
+			auto it = vertId.find(k);
+			if (it == vertId.end()) it = vertId.emplace(k, (int)vertId.size()).first;
+			canon[i] = it->second;
+		}
+
+		// Map each undirected edge (canonical vertex pair) to the triangles that
+		// use it, then connect triangles sharing an edge.
+		std::map<std::pair<int, int>, std::vector<int>> edgeTris;
+		auto edgeKey = [](int a, int b) { return a < b ? std::make_pair(a, b) : std::make_pair(b, a); };
+		for (size_t t = 0; t < triCount; ++t) {
+			int v0 = canon[t * 3 + 0], v1 = canon[t * 3 + 1], v2 = canon[t * 3 + 2];
+			edgeTris[edgeKey(v0, v1)].push_back((int)t);
+			edgeTris[edgeKey(v1, v2)].push_back((int)t);
+			edgeTris[edgeKey(v2, v0)].push_back((int)t);
+		}
+		std::vector<std::vector<int>> adj(triCount);
+		for (const auto& e : edgeTris) {
+			const auto& ts = e.second;
+			for (size_t i = 0; i < ts.size(); ++i)
+				for (size_t j = i + 1; j < ts.size(); ++j) {
+					adj[ts[i]].push_back(ts[j]);
+					adj[ts[j]].push_back(ts[i]);
+				}
+		}
+
+		std::vector<char> visited(triCount, 0);
+		for (size_t s = 0; s < triCount; ++s) {
+			if (visited[s]) continue;
+			visited[s] = 1;
+			std::queue<int> q;
+			q.push((int)s);
+			while (!q.empty()) {
+				int t = q.front(); q.pop();
+				const XMFLOAT3& nt = normals[t];
+				for (int nb : adj[t]) {
+					if (visited[nb]) continue;
+					visited[nb] = 1;
+					const XMFLOAT3& nn = normals[nb];
+					if (nt.x * nn.x + nt.y * nn.y + nt.z * nn.z < 0.0f) {
+						flip[nb] = 1;
+						normals[nb] = XMFLOAT3(-nn.x, -nn.y, -nn.z);
+					}
+					q.push(nb);
+				}
+			}
+		}
 	}
 
 	for (size_t t = 0; t < triCount; ++t) {
 		// Local copies so we can swap two corners (and their colours together) to
-		// reverse the winding when the triangle faces inward.
+		// reverse the winding when this triangle was flagged for flipping.
 		size_t i0 = t * 3 + 0, i1 = t * 3 + 1, i2 = t * 3 + 2;
-		XMFLOAT3 a = poses[i0], b = poses[i1], c = poses[i2];
-		XMFLOAT3 n = math::ComputeNormal(a, b, c);
-
-		XMFLOAT3 faceCenter{ (a.x + b.x + c.x) / 3.0f,
-		                     (a.y + b.y + c.y) / 3.0f,
-		                     (a.z + b.z + c.z) / 3.0f };
-		XMFLOAT3 outward{ faceCenter.x - centroid.x,
-		                  faceCenter.y - centroid.y,
-		                  faceCenter.z - centroid.z };
-		if (n.x * outward.x + n.y * outward.y + n.z * outward.z < 0.0f) {
-			std::swap(i1, i2);              // reverse winding -> outward normal
-			std::swap(b, c);
-			n = math::ComputeNormal(a, b, c);
-		}
+		if (flip[t]) std::swap(i1, i2);
+		const XMFLOAT3& n = normals[t];
 
 		const size_t idx[3] = { i0, i1, i2 };
-		const XMFLOAT3 pos3[3] = { a, b, c };
 		for (int k = 0; k < 3; ++k) {
-			Vertex v(pos3[k], n);
+			Vertex v(poses[idx[k]], n);
 			v.color = (idx[k] < cols.size()) ? cols[idx[k]] : XMFLOAT4(1, 1, 1, 1);
 			vertexData.push_back(v);
 		}

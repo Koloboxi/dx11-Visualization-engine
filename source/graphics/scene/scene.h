@@ -55,6 +55,7 @@ public:
 
 	bool rsSolid = true;
 	bool rsWireframe = false;
+	bool rsNoCull = false;
 
 	float ambient = 0.4f;
 	float intensity = 0.6f;
@@ -102,8 +103,11 @@ public:
 	// renderTrianglesAsLines: when true, triangle faces are not built as a
 	// filled ColoredTriangles surface but contribute their three sides to the
 	// ColoredLine wireframe instead (drawn like the rest of the edges).
+	// ensureCCW: when true, the filled triangle surface has its winding made
+	// consistent across shared edges (see PrimitiveConstructor::ColoredTriangles).
+	// The untouched SEM source surface is loaded with ensureCCW = false.
 	Primitive* AddFromCSV3D(const std::string& path, const std::string& name = "", SceneNode* parent = nullptr, const XMFLOAT4* overrideColor = nullptr,
-		const XMFLOAT4& gradLow = Colors::BLUE, const XMFLOAT4& gradHigh = Colors::RED, bool renderTrianglesAsLines = false);
+		const XMFLOAT4& gradLow = Colors::BLUE, const XMFLOAT4& gradHigh = Colors::RED, bool renderTrianglesAsLines = false, bool ensureCCW = true);
 	void AddCubeWireframe(float halfSize, const XMFLOAT3& center, const XMFLOAT4& col);
 	void AddCubeSolid(float halfSize, const XMFLOAT3& center, const XMFLOAT4& col);
 	Primitive* AddRevolutionSurface(const std::vector<XMFLOAT3>& profile, UINT segments, const XMFLOAT4& col, const std::string& name, SceneNode* parent = nullptr);

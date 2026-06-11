@@ -114,11 +114,10 @@ void Scene::Draw()
 
 		XMMATRIX projectionMatrix = this->camera.GetProjectionMatrix();
 
-		// While sectioning, render solids without backface culling so the
-		// interior revealed by the cut is filled in rather than see-through.
-		// Two-sided primitives (e.g. SEM 3D surfaces) also opt out of culling so
-		// both faces of an open / transparent surface are drawn.
-		const bool noCull = this->section.enabled || p->GetTwoSided();
+		// Render solids without backface culling when the global no-cull toggle
+		// is on, or while sectioning so the interior revealed by the cut is
+		// filled in rather than see-through.
+		const bool noCull = this->rsNoCull || this->section.enabled;
 		this->deviceContext->RSSetState(
 			noCull ? this->rasterizerSolidNoCull.Get() : this->rasterizerSolid.Get());
 
@@ -546,7 +545,7 @@ void Scene::AddFromCSVMesh(const std::string& path, const XMFLOAT4& lineCol, con
 }
 
 Primitive* Scene::AddFromCSV3D(const std::string& path, const std::string& name, SceneNode* parent, const XMFLOAT4* overrideColor,
-	const XMFLOAT4& gradLow, const XMFLOAT4& gradHigh, bool renderTrianglesAsLines)
+	const XMFLOAT4& gradLow, const XMFLOAT4& gradHigh, bool renderTrianglesAsLines, bool ensureCCW)
 {
 	CSV3DLoader::CSV3DData data;
 	if (!CSV3DLoader::Load(path, data)) {
@@ -590,7 +589,7 @@ Primitive* Scene::AddFromCSV3D(const std::string& path, const std::string& name,
 			tposes.push_back(N[t.z].pos); tcols.push_back(nodeColor(t.z));
 		}
 		if (!tposes.empty())
-			surface = PrimitiveConstructor::ColoredTriangles(tposes, tcols, NextId());
+			surface = PrimitiveConstructor::ColoredTriangles(tposes, tcols, NextId(), ensureCCW);
 	}
 
 	// Collect unique edges from polygon faces and explicit edges. Triangles are

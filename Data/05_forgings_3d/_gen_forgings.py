@@ -30,9 +30,9 @@ def write_csv3d(path, nodes, triangles, edges, edge_closed):
     """nodes: list of (x,y,z,T); triangles: list of (i,j,k); edges: list of (i,j)."""
     lines = []
     lines.append("#nodes")
-    lines.append("node_id;x;y;z;T")
+    lines.append("node_id;x;y;z")
     for i, (x, y, z, t) in enumerate(nodes):
-        lines.append(f"{i};{x:.7f};{y:.7f};{z:.7f};{t:.7f}")
+        lines.append(f"{i};{x:.7f};{y:.7f};{z:.7f}")
     lines.append("#triangles")
     for (a, b, c) in triangles:
         lines.append(f"{a};{b};{c}")

@@ -6,6 +6,14 @@
 #  define SEM_API extern "C" __declspec(dllimport)
 #endif
 
+// Human-readable description of the most recent SEM_* failure (a call that
+// returned a negative code or NULL). Returns a verbose message — including the
+// underlying geometry/meshing-library text where available — to make coded
+// errors diagnosable. Never NULL: returns "" when nothing has failed. The
+// pointer is owned by the library and stays valid only until the next SEM_*
+// call; copy it immediately.
+SEM_API const char* SEM_GetLastError(void);
+
 // Load a CSV3D edge-only file into the internal cache (0 ok, <0 error).
 SEM_API int SEM_LoadCSV3D(const char* path);
 

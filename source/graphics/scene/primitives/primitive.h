@@ -60,11 +60,6 @@ public:
 
 	void SetPrimitiveTopology(const D3D10_PRIMITIVE_TOPOLOGY& top);
 
-	// When true the scene renders this primitive without back-face culling
-	// (both sides visible). Default false.
-	void SetTwoSided(const bool v) { twoSided = v; }
-	bool GetTwoSided() const { return twoSided; }
-
 	XMFLOAT4 GetColor() const;
 	bool GetTransparent() const;
 	bool GetIlluminationCapability() const;
@@ -122,7 +117,6 @@ private:
 	bool illuminationCapability;
 	bool smoothShade = true;
 	bool transparent;
-	bool twoSided = false;
 
 	XMFLOAT3 pos{};
 	XMFLOAT4 rotQuat = { 0.0f, 0.0f, 0.0f, 1.0f };
@@ -141,7 +135,7 @@ namespace PrimitiveConstructor {
 	Primitive* Point(const XMFLOAT3& pos, const XMFLOAT4& col, UINT id);
 	Primitive* Line(const std::vector<XMFLOAT3>& poses, const XMFLOAT4& col, UINT id);
 	Primitive* ColoredLine(const std::vector<XMFLOAT3>& poses, const std::vector<XMFLOAT4>& cols, bool asLineList, UINT id);
-	Primitive* ColoredTriangles(const std::vector<XMFLOAT3>& poses, const std::vector<XMFLOAT4>& cols, UINT id);
+	Primitive* ColoredTriangles(const std::vector<XMFLOAT3>& poses, const std::vector<XMFLOAT4>& cols, UINT id, bool ensureCCW = true);
 	Primitive* Polygon(const std::vector<XMFLOAT3>& poses, const XMFLOAT4& col, UINT id);
 
 	Primitive* Sphere(float radius, const XMFLOAT3& pos, const UINT numSubdivides, const XMFLOAT4& col, UINT id);

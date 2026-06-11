@@ -117,6 +117,25 @@ inline void EyeIcon(ImDrawList* dl, ImVec2 c, float r, bool open, ImU32 col) {
     }
 }
 
+// Double-sided / no-cull toggle: a face seen edge-on (vertical slab) with
+// arrows pointing out both sides, meaning front and back faces are both drawn.
+inline void NoCullIcon(ImDrawList* dl, ImVec2 c, float r) {
+    ImU32 face = IM_COL32(200,218,250,225);
+    float h = r * .82f, w = r * .22f;
+    // The slab (face viewed edge-on).
+    dl->AddQuadFilled({c.x-w,c.y-h},{c.x+w,c.y-h},{c.x+w,c.y+h},{c.x-w,c.y+h}, face);
+    ImU32 a = IM_COL32(245,210,95,235);
+    float t = 1.2f, ax = r * .92f, ah = r * .26f;
+    // Right arrow.
+    dl->AddLine({c.x+w,c.y},{c.x+ax,c.y}, a, t);
+    dl->AddLine({c.x+ax,c.y},{c.x+ax-ah,c.y-ah}, a, t);
+    dl->AddLine({c.x+ax,c.y},{c.x+ax-ah,c.y+ah}, a, t);
+    // Left arrow.
+    dl->AddLine({c.x-w,c.y},{c.x-ax,c.y}, a, t);
+    dl->AddLine({c.x-ax,c.y},{c.x-ax+ah,c.y-ah}, a, t);
+    dl->AddLine({c.x-ax,c.y},{c.x-ax+ah,c.y+ah}, a, t);
+}
+
 template<typename DrawFn>
 inline bool ToggleIconButton(const char* id, bool* toggled, float sz, DrawFn drawFn) {
     ImVec2 p = ImGui::GetCursorScreenPos();

@@ -214,22 +214,6 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
                               "-> thermal solve (default) -> isotherm at T=0.5.");
     ImGui::Separator();
 
-    {
-        bool asLines = S.renderTrisAsLines;
-        if (ImGui::Checkbox("Triangles as wireframe", &asLines)) {
-            S.renderTrisAsLines = asLines;
-            S.RegenerateGeometry(scene);
-        }
-        ImGui::SetItemTooltip("Draw every triangle surface in the pipeline as edge wireframe\n"
-                              "(lines) instead of a filled surface, and back again. Rebuilds\n"
-                              "the existing pipeline primitives from their saved CSV3D files.");
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Regenerate")) S.RegenerateGeometry(scene);
-        ImGui::SetItemTooltip("Rebuild the existing pipeline primitives from their saved\n"
-                              "geometry files using the current wireframe setting.");
-    }
-    ImGui::Separator();
-
     if (!is3D) {
         DrawRevolutionSection(scene, S);
         ImGui::Separator();
@@ -239,7 +223,8 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         if (ImGui::DragFloat("Surface opacity", &a, 0.005f, 0.05f, 1.0f, "%.2f"))
             S.SetSurf3dAlpha(scene, a);
         ImGui::SetItemTooltip("Opacity of the 3D pipeline surfaces (source, offsets, mesh,\n"
-                              "isosurface). They are drawn two-sided (no back-face culling).");
+                              "isosurface). Back-face culling is set globally via the\n"
+                              "NavCube no-cull toggle.");
         ImGui::Separator();
     }
 
@@ -250,11 +235,9 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
 
     {
         ImGui::PushID("sub");
-        bool en = S.subEnabled;
-        if (ImGui::Checkbox("Subdivide", &en)) { S.subEnabled = en; S.RecomputeFrom(scene, STAGE_SUBDIVIDE, false); }
+        ImGui::Text("Subdivide");
         autoTag(&S.subAuto);
 
-        ImGui::BeginDisabled(!S.subEnabled);
         ImGui::Indent();
         bool changed = false, released = false;
         changed |= ImGui::RadioButton("Clear",    &S.subMode, 0); ImGui::SameLine();
@@ -266,10 +249,10 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         }
         if (S.subN < 1) S.subN = 1;
 
-        if (S.subAuto) { if (changed || released) S.RecomputeFrom(scene, STAGE_SUBDIVIDE, true); }
-        else if (ImGui::Button("Apply", {160, 0})) S.RecomputeFrom(scene, STAGE_SUBDIVIDE, false);
+        if (changed || released) S.MarkStageDirty(STAGE_SUBDIVIDE);
+        if (S.subAuto) { if (changed || released) S.RecomputeUpTo(scene, STAGE_SUBDIVIDE, true); }
+        else if (ImGui::Button("Apply", {160, 0})) S.RecomputeUpTo(scene, STAGE_SUBDIVIDE, false);
         ImGui::Unindent();
-        ImGui::EndDisabled();
         ImGui::PopID();
     }
 
@@ -277,13 +260,11 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
 
     {
         ImGui::PushID("off");
-        bool en = S.offEnabled;
-        if (ImGui::Checkbox("Offsets", &en)) { S.offEnabled = en; S.SetStageVisible(scene, STAGE_OFFSETS, en); }
+        ImGui::Text("Offsets");
         autoTag(&S.offAuto);
         ImGui::SameLine();
         if (ImGui::SmallButton("Reset##off")) S.ResetStage(scene, STAGE_OFFSETS);
 
-        ImGui::BeginDisabled(!S.offEnabled);
         ImGui::Indent();
         bool changed = false, released = false;
         const char* modes = "Even spacing\0Custom gaps\0";
@@ -322,10 +303,10 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
             }
         }
 
-        if (S.offAuto) { if (changed || released) S.RecomputeFrom(scene, STAGE_OFFSETS, true); }
-        else if (ImGui::Button("Apply", {160, 0})) S.RecomputeFrom(scene, STAGE_OFFSETS, false);
+        if (changed || released) S.MarkStageDirty(STAGE_OFFSETS);
+        if (S.offAuto) { if (changed || released) S.RecomputeUpTo(scene, STAGE_OFFSETS, true); }
+        else if (ImGui::Button("Apply", {160, 0})) S.RecomputeUpTo(scene, STAGE_OFFSETS, false);
         ImGui::Unindent();
-        ImGui::EndDisabled();
         ImGui::PopID();
     }
 
@@ -333,13 +314,11 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
 
     {
         ImGui::PushID("mesh");
-        bool en = S.meshEnabled;
-        if (ImGui::Checkbox("Mesh", &en)) { S.meshEnabled = en; S.SetStageVisible(scene, STAGE_MESH, en); }
+        ImGui::Text("Mesh");
         autoTag(&S.meshAuto);
         ImGui::SameLine();
         if (ImGui::SmallButton("Reset##mesh")) S.ResetStage(scene, STAGE_MESH);
 
-        ImGui::BeginDisabled(!S.meshEnabled);
         ImGui::Indent();
         bool changed = false, released = false;
         if (is3D) {
@@ -418,10 +397,10 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         }
         } // end 2D Steiner UI
 
-        if (S.meshAuto) { if (changed || released) S.RecomputeFrom(scene, STAGE_MESH, true); }
-        else if (ImGui::Button("Apply", {160, 0})) S.RecomputeFrom(scene, STAGE_MESH, false);
+        if (changed || released) S.MarkStageDirty(STAGE_MESH);
+        if (S.meshAuto) { if (changed || released) S.RecomputeUpTo(scene, STAGE_MESH, true); }
+        else if (ImGui::Button("Apply", {160, 0})) S.RecomputeUpTo(scene, STAGE_MESH, false);
         ImGui::Unindent();
-        ImGui::EndDisabled();
         ImGui::PopID();
     }
 
@@ -429,13 +408,11 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
 
     {
         ImGui::PushID("thermal");
-        bool en = S.thermalEnabled;
-        if (ImGui::Checkbox("Thermal solve", &en)) { S.thermalEnabled = en; S.SetStageVisible(scene, STAGE_THERMAL, en); }
+        ImGui::Text("Thermal solve");
         autoTag(&S.thermalAuto);
         ImGui::SameLine();
         if (ImGui::SmallButton("Reset##thermal")) S.ResetStage(scene, STAGE_THERMAL);
 
-        ImGui::BeginDisabled(!S.thermalEnabled);
         ImGui::Indent();
         bool changed = ImGui::DragFloat(is3D ? "Isosurface value (0..1)" : "Isoline value (0..1)",
                                         &S.isoValue, 0.005f, 0.0f, 1.0f, "%.3f");
@@ -450,10 +427,10 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         if (S.isoValue < 0.0f) S.isoValue = 0.0f;
         if (S.isoValue > 1.0f) S.isoValue = 1.0f;
 
-        if (S.thermalAuto) { if (changed) S.RecomputeFrom(scene, STAGE_THERMAL, true); }
-        else if (ImGui::Button("Apply", {160, 0})) S.RecomputeFrom(scene, STAGE_THERMAL, false);
+        if (changed) S.MarkStageDirty(STAGE_THERMAL);
+        if (S.thermalAuto) { if (changed) S.RecomputeUpTo(scene, STAGE_THERMAL, true); }
+        else if (ImGui::Button("Apply", {160, 0})) S.RecomputeUpTo(scene, STAGE_THERMAL, false);
         ImGui::Unindent();
-        ImGui::EndDisabled();
         ImGui::PopID();
     }
 

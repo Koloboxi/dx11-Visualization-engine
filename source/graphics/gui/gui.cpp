@@ -50,7 +50,7 @@ void Graphics::Gui()
 
     bool navCubeHover = NavCube::Draw(
         ImVec2((float)windowWidth, (float)windowHeight), scene.camera,
-        ImGui::GetFrameHeight() + 8.f, scene.rsSolid, scene.rsWireframe);
+        ImGui::GetFrameHeight() + 8.f, scene.rsSolid, scene.rsWireframe, scene.rsNoCull);
     if (navCubeHover) blockMousePick = true;
 
     scene.blockMousePick  = blockMousePick;

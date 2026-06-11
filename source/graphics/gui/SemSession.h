@@ -207,6 +207,17 @@ inline int SafeExtractIsosurface3D(double value) {
     __except (EXCEPTION_EXECUTE_HANDLER) { return -100; }
 }
 
+// Verbose detail for the most recent SEM_* failure, taken from the library's
+// SEM_GetLastError(). Returned pre-formatted as " — <text>" so it can be
+// appended directly to a status/log message, or "" when the library has no
+// detail. MUST be evaluated immediately after the failing SEM_* call and
+// before any other SEM_* call — the library owns the buffer and overwrites it
+// on the next call.
+inline std::string SemDetail() {
+    const char* e = SEM_GetLastError();
+    return (e && *e) ? std::string(" — ") + e : std::string();
+}
+
 class SemSession {
 public:
     // Pipeline dimension of the staged source, auto-detected on Bind:
@@ -254,8 +265,7 @@ public:
     float isoRevAlpha    = 0.5f;
 
     // Opacity applied to every ColoredTriangles surface built by the 3D SEM
-    // pipeline (source / offsets / mesh / isosurface). They are also drawn
-    // two-sided (no back-face culling). Default 0.5.
+    // pipeline (source / offsets / mesh / isosurface). Default 0.5.
     float surf3dAlpha    = 0.5f;
 
     // When true, every triangle-bearing pipeline primitive is rebuilt as edge
@@ -311,6 +321,9 @@ public:
         m_thermalSolved = false;
         m_offStats  = Stats();
         m_meshStats = Stats();
+        // A fresh source clears the SEM core cache (SEM_LoadCSV3D below), so every
+        // stage must be recomputed before it can be shown.
+        m_dirty[0] = m_dirty[1] = m_dirty[2] = m_dirty[3] = true;
         if (!m_srcPath.empty()) {
             dim = DetectSemDim(m_srcPath);
             int rc = (dim == 3) ? SEM_LoadSurface3D(m_srcPath.c_str())
@@ -318,7 +331,7 @@ public:
             if (rc != 0)
                 Report(scene, false, (dim == 3 ? "SEM_LoadSurface3D failed ("
                                                : "SEM_LoadCSV3D failed (")
-                                    + std::to_string(rc) + ")");
+                                    + std::to_string(rc) + ")" + SemDetail());
         }
         m_srcStats = ComputeStats(m_srcPath);
         if (HasSource()) snprintf(status, sizeof(status), "Staged: %s", BaseName(m_srcPath).c_str());
@@ -344,30 +357,59 @@ public:
         if (m_isoRevSurf && !Alive(scene, m_isoRevSurf)) m_isoRevSurf = nullptr;
     }
 
-    void RecomputeFrom(Scene& scene, Stage from, bool silent) {
-        if (!HasSource()) return;
-        if (from <= STAGE_SUBDIVIDE && !ApplySubdivide(scene, silent)) return;
+    // Mark a stage's result stale because its own parameters changed. The next
+    // Apply (or auto-apply) of this or any later stage will recompute it.
+    void MarkStageDirty(Stage st) {
+        if (st >= STAGE_SUBDIVIDE && st <= STAGE_THERMAL) m_dirty[st] = true;
+    }
 
-        if (from <= STAGE_OFFSETS) {
+    // Bring the pipeline up to (and including) stage 'to', and no further. Each
+    // stage is recomputed only when its own parameters changed since it was last
+    // applied (m_dirty), or when an upstream stage was just rebuilt this pass and
+    // so invalidated its input. Stages downstream of 'to' are left untouched, but
+    // flagged dirty if anything was rebuilt, so a later Apply of theirs redoes
+    // them. This replaces the old "recompute everything from 'from' to the end".
+    void RecomputeUpTo(Scene& scene, Stage to, bool silent) {
+        if (!HasSource()) return;
+        bool ran = false;
+
+        if (m_dirty[STAGE_SUBDIVIDE]) {
+            if (!ApplySubdivide(scene, silent)) return;
+            m_dirty[STAGE_SUBDIVIDE] = false;
+            ran = true;
+        }
+
+        if (to >= STAGE_OFFSETS && (m_dirty[STAGE_OFFSETS] || ran)) {
             if (offEnabled || (m_offsets && Alive(scene, m_offsets))) {
                 if (!ApplyOffsets(scene, silent)) return;
                 if (m_offsets && Alive(scene, m_offsets)) scene.SetNodeVisibleCascade(m_offsets, offEnabled);
+                ran = true;
             }
+            m_dirty[STAGE_OFFSETS] = false;
         }
 
-        if (from <= STAGE_MESH) {
+        if (to >= STAGE_MESH && (m_dirty[STAGE_MESH] || ran)) {
             if (meshEnabled || (m_mesh && Alive(scene, m_mesh))) {
                 if (!ApplyMesh(scene, silent)) return;
                 if (m_mesh && Alive(scene, m_mesh)) scene.SetNodeVisibleCascade(m_mesh, meshEnabled);
+                ran = true;
             }
+            m_dirty[STAGE_MESH] = false;
         }
 
-        if (from <= STAGE_THERMAL) {
+        if (to >= STAGE_THERMAL && (m_dirty[STAGE_THERMAL] || ran)) {
             if (thermalEnabled || (m_isoline && Alive(scene, m_isoline))) {
                 if (ApplyThermalStage(scene, silent) && m_isoline && Alive(scene, m_isoline))
                     scene.SetNodeVisibleCascade(m_isoline, thermalEnabled);
+                ran = true;
             }
+            m_dirty[STAGE_THERMAL] = false;
         }
+
+        // Rebuilding a stage invalidates everything after 'to' that we did not
+        // touch — mark it stale so its own Apply rebuilds it on demand.
+        if (ran)
+            for (int s = (int)to + 1; s <= STAGE_THERMAL; ++s) m_dirty[s] = true;
 
         scene.UpdateLight();
     }
@@ -382,16 +424,19 @@ public:
     void SetStageVisible(Scene& scene, Stage st, bool show) {
         Primitive* p = StagePrim(st);
         if (show && !(p && Alive(scene, p))) {
-            RecomputeFrom(scene, st, false);
+            RecomputeUpTo(scene, st, false);
             p = StagePrim(st);
         }
         if (p && Alive(scene, p)) scene.SetNodeVisibleCascade(p, show);
     }
 
     void ResetStage(Scene& scene, Stage st) {
-        if (st <= STAGE_OFFSETS)      { DropOffsets(scene); DropMesh(scene); }
-        else if (st == STAGE_MESH)    { DropMesh(scene); }
-        else if (st == STAGE_THERMAL) { DropIsoline(scene); }
+        if (st <= STAGE_OFFSETS)      { DropOffsets(scene); DropMesh(scene);
+                                        m_dirty[STAGE_OFFSETS] = m_dirty[STAGE_MESH] = m_dirty[STAGE_THERMAL] = true; }
+        else if (st == STAGE_MESH)    { DropMesh(scene);
+                                        m_dirty[STAGE_MESH] = m_dirty[STAGE_THERMAL] = true; }
+        else if (st == STAGE_THERMAL) { DropIsoline(scene);
+                                        m_dirty[STAGE_THERMAL] = true; }
         snprintf(status, sizeof(status), "Reset stage.");
     }
 
@@ -505,7 +550,7 @@ public:
 
             const char* outPath = (dim == 3) ? SEM_SerializeMesh3D(nullptr)
                                              : SEM_SerializeMesh(nullptr);
-            if (!outPath) { Report(scene, silent, "SEM_SerializeMesh failed."); return false; }
+            if (!outPath) { Report(scene, silent, "SEM_SerializeMesh failed." + SemDetail()); return false; }
             std::string p(outPath);
             DropMesh(scene);
             m_mesh = scene.AddFromCSV3D(p, "mesh_" + Stem(m_srcPath), AttachParent(), nullptr, Colors::BLUE, Colors::RED, renderTrisAsLines);
@@ -544,8 +589,8 @@ public:
             const char* outPath = (dim == 3) ? SEM_SerializeIsosurface3D(nullptr)
                                              : SEM_SerializeIsoline(nullptr);
             if (!outPath) {
-                Report(scene, silent, dim == 3 ? "SEM_SerializeIsosurface3D failed."
-                                               : "SEM_SerializeIsoline failed.");
+                Report(scene, silent, (dim == 3 ? "SEM_SerializeIsosurface3D failed."
+                                                : "SEM_SerializeIsoline failed.") + SemDetail());
                 return false;
             }
             std::string p(outPath);
@@ -569,7 +614,8 @@ public:
         if (path.empty()) return nullptr;
         Primitive* src = nullptr;
         try {
-            src = scene.AddFromCSV3D(path);
+            // Source surface is shown exactly as authored: no winding fix-up.
+            src = scene.AddFromCSV3D(path, "", nullptr, nullptr, Colors::BLUE, Colors::RED, false, false);
             if (!src) { Report(scene, false, "Import failed: could not load CSV3D."); return nullptr; }
             src->semSourcePath = path;
             scene.AttachVertexPointsGroup(src);
@@ -577,7 +623,7 @@ public:
             scene.SetStaged(src);
             Bind(scene, src);
             // Bind auto-detects the pipeline dimension; a 3D source surface is a
-            // ColoredTriangles mesh, so make it two-sided and semi-transparent.
+            // ColoredTriangles mesh, so make it semi-transparent.
             if (dim == 3) ConfigureSurface3D(src);
             scene.UpdateLight();
             // Revolution mode is a 2D-contour feature only. For a 2D source, an
@@ -596,7 +642,7 @@ public:
     void RunFullPipeline(Scene& scene) {
         if (!HasSource()) return;
 
-        subEnabled = true;  subMode    = 1;
+        subEnabled = false;
         offEnabled = true;  offsetMode = OFFSET_EVEN;
         firstGap   = 1.0f;  numOffsets = 8; grading = 1.2f;
         meshEnabled = true;
@@ -615,97 +661,8 @@ public:
         if (!ApplyMesh(scene, false))      return;
         if (!ApplyThermal(scene, false))   return;
         if (!ApplyIsoline(scene, false))   return;
+        m_dirty[0] = m_dirty[1] = m_dirty[2] = m_dirty[3] = false;
         snprintf(status, sizeof(status), "Pipeline complete.");
-    }
-
-    // Rebuild every existing pipeline primitive from its saved CSV3D file using
-    // the current renderTrisAsLines setting, so triangle surfaces can be flipped
-    // between filled (ColoredTriangles) and wireframe (ColoredLine) without
-    // re-running the SEM algorithms. The SEM core caches and the serialized files
-    // are untouched, so the geometry is identical — only its representation
-    // changes. In 2D the source is a contour (lines) and is left in place (along
-    // with any revolution surfaces); only the derived stages are rebuilt. In 3D
-    // the source is itself a triangle surface and is rebuilt too.
-    void RegenerateGeometry(Scene& scene) {
-        if (!HasSource()) return;
-
-        // Snapshot stage presence, visibility and saved paths before teardown.
-        const bool haveOff  = Alive(scene, m_offsets);
-        const bool haveMesh = Alive(scene, m_mesh);
-        const bool haveIso  = Alive(scene, m_isoline);
-        const bool offVis  = haveOff  && m_offsets->visible;
-        const bool meshVis = haveMesh && m_mesh->visible;
-        const bool isoVis  = haveIso  && m_isoline->visible;
-        const std::string offP  = haveOff  ? m_offsetsPath : std::string();
-        const std::string meshP = haveMesh ? m_meshPath    : std::string();
-        const std::string isoP  = haveIso  ? m_isolinePath : std::string();
-        const bool wasThermal = m_thermalSolved;
-
-        // Drop the derived stages (DropMesh also drops the isoline). The captured
-        // paths above let us rebuild them from disk.
-        DropOffsets(scene);
-        DropMesh(scene);
-
-        // In 3D the source surface itself carries triangles — rebuild it so it can
-        // switch representation. In 2D it is a contour; leave it (and its
-        // revolution surfaces) untouched.
-        if (dim == 3) {
-            SceneNode* srcParent = m_srcPrim->parent;
-            const bool srcVis = m_srcPrim->visible;
-            scene.RemovePrimitive(m_srcPrim);
-            m_srcPrim = nullptr;
-            Primitive* src = scene.AddFromCSV3D(m_srcPath, "", srcParent, nullptr,
-                                                Colors::BLUE, Colors::RED, renderTrisAsLines);
-            if (!src) { Report(scene, false, "Regenerate: source rebuild failed."); return; }
-            src->semSourcePath = m_srcPath;
-            src->visible = srcVis;
-            if (!renderTrisAsLines) ConfigureSurface3D(src);
-            scene.AttachVertexPointsGroup(src);
-            scene.SetStaged(src);
-            m_srcPrim  = src;
-            m_srcStats = ComputeStats(m_srcPath);
-        }
-
-        if (!offP.empty()) {
-            m_offsets = scene.AddFromCSV3D(offP, "offsets_" + Stem(m_srcPath), AttachParent(),
-                                           nullptr, Colors::CYAN, Colors::YELLOW, renderTrisAsLines);
-            if (m_offsets) {
-                m_offsetsPath = offP;
-                if (dim == 3 && !renderTrisAsLines) ConfigureSurface3D(m_offsets);
-                scene.AttachVertexPointsGroup(m_offsets);
-                scene.SetNodeVisibleCascade(m_offsets, offVis);
-                m_offStats = ComputeStats(offP);
-            }
-        }
-
-        if (!meshP.empty()) {
-            m_mesh = scene.AddFromCSV3D(meshP, "mesh_" + Stem(m_srcPath), AttachParent(),
-                                        nullptr, Colors::CYAN, Colors::YELLOW, renderTrisAsLines);
-            if (m_mesh) {
-                m_meshPath = meshP;
-                if (dim == 3 && !renderTrisAsLines) ConfigureSurface3D(m_mesh);
-                scene.AttachVertexPointsGroup(m_mesh);
-                scene.SetNodeVisibleCascade(m_mesh, meshVis);
-                m_meshStats = ComputeStats(meshP);
-                m_thermalSolved = wasThermal;   // SEM core field is still cached
-            }
-        }
-
-        if (!isoP.empty()) {
-            const XMFLOAT4 green(0.0f, 1.0f, 0.0f, 1.0f);
-            const std::string namePrefix = (dim == 3 ? "isosurface_" : "isoline_");
-            m_isoline = scene.AddFromCSV3D(isoP, namePrefix + Stem(m_srcPath), AttachParent(),
-                                           &green, Colors::BLUE, Colors::RED, renderTrisAsLines);
-            if (m_isoline) {
-                m_isolinePath = isoP;
-                if (dim == 3 && !renderTrisAsLines) ConfigureSurface3D(m_isoline);
-                scene.SetNodeVisibleCascade(m_isoline, isoVis);
-            }
-        }
-
-        scene.UpdateLight();
-        snprintf(status, sizeof(status), "Regenerated as %s.",
-                 renderTrisAsLines ? "wireframe" : "surfaces");
     }
 
 private:
@@ -721,6 +678,11 @@ private:
     Primitive*  m_isoRevSurf = nullptr;
     bool        m_thermalSolved = false;
     Stats m_srcStats, m_offStats, m_meshStats;
+
+    // Per-stage staleness, indexed by Stage. A stage is dirty when its own
+    // parameters changed since it was last applied, or when it has never been
+    // applied against the currently loaded source (Bind resets all to true).
+    bool        m_dirty[4] = { true, true, true, true };
 
     bool Alive(Scene& scene, Primitive* q) const {
         if (!q) return false;
@@ -739,18 +701,18 @@ private:
         const char* msg = "";
         int idx = -rc, i = 0;
         for (const char* e : errs) { if (i == idx) { msg = e; break; } ++i; }
-        Report(scene, silent, std::string(call) + " failed (" + std::to_string(rc) + "): " + msg);
+        Report(scene, silent, std::string(call) + " failed (" + std::to_string(rc) + "): " + msg + SemDetail());
         return false;
     }
 
     SceneNode* AttachParent() { return m_srcPrim ? static_cast<SceneNode*>(m_srcPrim) : nullptr; }
 
-    // Every ColoredTriangles surface produced by the 3D pipeline is drawn
-    // two-sided and at the configurable surface opacity. Called right after such
-    // a surface is created (only when dim == 3).
+    // Every ColoredTriangles surface produced by the 3D pipeline is drawn at the
+    // configurable surface opacity. Called right after such a surface is created
+    // (only when dim == 3). Back-face culling is controlled globally from the
+    // NavCube no-cull toggle (Scene::rsNoCull).
     void ConfigureSurface3D(Primitive* p) {
         if (!p) return;
-        p->SetTwoSided(true);
         p->SetAlpha(surf3dAlpha);
     }
 
@@ -837,7 +799,7 @@ private:
 
             const char* outPath = (dim == 3) ? SEM_SerializeOffsets3D(nullptr)
                                              : SEM_SerializeOffsets(nullptr);
-            if (!outPath) { Report(scene, silent, "SEM_SerializeOffsets failed."); return false; }
+            if (!outPath) { Report(scene, silent, "SEM_SerializeOffsets failed." + SemDetail()); return false; }
             std::string p(outPath);
             DropOffsets(scene);
             m_offsets = scene.AddFromCSV3D(p, "offsets_" + Stem(m_srcPath), AttachParent(), nullptr, Colors::CYAN, Colors::YELLOW, renderTrisAsLines);
@@ -892,7 +854,7 @@ private:
 
             const char* outPath = (dim == 3) ? SEM_SerializeMesh3D(nullptr)
                                              : SEM_SerializeMesh(nullptr);
-            if (!outPath) { Report(scene, silent, "SEM_SerializeMesh failed."); return false; }
+            if (!outPath) { Report(scene, silent, "SEM_SerializeMesh failed." + SemDetail()); return false; }
             std::string p(outPath);
             DropMesh(scene);
             m_mesh = scene.AddFromCSV3D(p, "mesh_" + Stem(m_srcPath), AttachParent(), nullptr, Colors::CYAN, Colors::YELLOW, renderTrisAsLines);

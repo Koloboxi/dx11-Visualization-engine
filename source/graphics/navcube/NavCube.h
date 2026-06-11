@@ -12,7 +12,7 @@ public:
     static constexpr float PADDING = 10.f;
 
     static bool Draw(ImVec2 windowSize, Camera& camera,
-                     float yOffset, bool& rsSolid, bool& rsWireframe) {
+                     float yOffset, bool& rsSolid, bool& rsWireframe, bool& rsNoCull) {
         ImDrawList* dl = ImGui::GetForegroundDrawList();
 
         ImVec2 centre{
@@ -114,6 +114,8 @@ public:
         GuiIcons::ToggleIconButton("##solid", &rsSolid,      btnW, GuiIcons::SolidCube);
         ImGui::SameLine();
         GuiIcons::ToggleIconButton("##wire",  &rsWireframe,  btnW, GuiIcons::WireframeCube);
+
+        GuiIcons::ToggleIconButton("##nocull", &rsNoCull,    btnW, GuiIcons::NoCullIcon);
 
         bool panelHovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
         ImGui::End();
