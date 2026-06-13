@@ -59,7 +59,13 @@
       "Bash(py --version)",
       "PowerShell(& \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\2022\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\" \"dx11-Visualization-engine.sln\" /t:Build /p:Configuration=Debug /p:Platform=x64 /m /nologo /v:minimal 2>&1)",
       "Bash(grep -n \"SemSession\\\\|SEMWindow\\\\|<ClCompile Include=\\\\\"source\\\\\\\\\\\\\\\\graphics\\\\\\\\\\\\\\\\scene\" \"DirectX 11 Engine.vcxproj\")",
-      "PowerShell($msb = \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\2022\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\"; & $msb \"DirectX 11 Engine.vcxproj\" /t:ClCompile /p:Configuration=Debug /p:Platform=x64 /m /nologo /clp:NoSummary /v:quiet 2>&1 | Select-String -Pattern \"SemSession|error|warning C\" | Select-Object -First 60)"
+      "PowerShell($msb = \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\2022\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\"; & $msb \"DirectX 11 Engine.vcxproj\" /t:ClCompile /p:Configuration=Debug /p:Platform=x64 /m /nologo /clp:NoSummary /v:quiet 2>&1 | Select-String -Pattern \"SemSession|error|warning C\" | Select-Object -First 60)",
+      "Bash(git ls-tree *)",
+      "Bash(echo \"=== exit: $? ===\")",
+      "Bash(git show *)",
+      "Read(//tmp/**)",
+      "Bash(dumpbin //exports surface_extender_mesher.dll)",
+      "PowerShell($vs = & \"${env:ProgramFiles\\(x86\\)}\\\\Microsoft Visual Studio\\\\Installer\\\\vswhere.exe\" -latest -property installationPath 2>$null; if \\(-not $vs\\) { $vs = & \"${env:ProgramFiles}\\\\Microsoft Visual Studio\\\\Installer\\\\vswhere.exe\" -latest -property installationPath 2>$null }; Write-Output \"VS: $vs\"; $db = Get-ChildItem -Path $vs -Recurse -Filter dumpbin.exe -ErrorAction SilentlyContinue | Select-Object -First 1; Write-Output \"dumpbin: $\\($db.FullName\\)\")"
     ]
   }
 }

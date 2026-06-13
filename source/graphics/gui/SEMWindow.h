@@ -193,7 +193,7 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
     ImGui::PushItemWidth(kItemW);
 
     // While the 3D pipeline runs on its worker thread, show a progress bar
-    // (driven by SEM_GetProgress3D via the session) and disable every control
+    // (driven by SEM_GetProgress via the session) and disable every control
     // so parameters can't change mid-computation.
     const bool busy = S.AsyncRunning();
     if (busy) {

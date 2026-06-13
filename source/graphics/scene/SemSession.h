@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 #include <initializer_list>
+#include <thread>
+#include <atomic>
 
 namespace SemSessionNS {
 
@@ -143,6 +145,40 @@ public:
     Primitive* ImportSource(Scene& scene, const std::string& path);
     void RunFullPipeline(Scene& scene);
 
+    // ======================================================================
+    // Asynchronous 3D pipeline.
+    //
+    // The heavy 3D compute stages — SEM_ComputeOffsets3D, SEM_BuildMesh3D and
+    // SEM_SolveThermal3D (plus the quick isosurface extraction) — run on a
+    // worker thread so the UI thread stays responsive and can drive a progress
+    // bar from SEM_GetProgress(). The worker only ever touches the SEM library
+    // (compute; the core auto-serializes to the working dir); it never mutates
+    // the Scene. The serialized result files are loaded into the Scene on the
+    // main thread by PollAsync(), which the SEM window calls once per frame.
+    // ======================================================================
+
+    // True while the worker thread is computing. The window uses this to show
+    // the progress bar and disable the controls.
+    bool AsyncRunning() const;
+
+    // Short label for the stage currently executing on the worker.
+    const char* AsyncStageName() const;
+
+    // Overall progress in [0,1] across the stages actually planned for this run.
+    float AsyncProgress() const;
+
+    // Asynchronous counterpart of RecomputeUpTo(). For a 3D source it plans which
+    // heavy stages must run (identical dirty / cascade / enabled rules), runs the
+    // quick subdivide synchronously, then launches the worker for the planned
+    // stages; PollAsync() applies the results. For a 2D source it delegates to
+    // the synchronous RecomputeUpTo(). A no-op while a previous run is in flight.
+    void RecomputeUpToAsync(Scene& scene, Stage to, bool silent);
+
+    // Called once per frame on the main thread. When the worker has finished,
+    // joins it and loads whichever stages it produced into the scene, honoring
+    // the per-stage visibility snapshot. No-op while the worker runs or is idle.
+    void PollAsync(Scene& scene);
+
 private:
     std::string m_srcPath;
     std::string m_offsetsPath;   // last serialized offsets file (for regeneration)
@@ -162,6 +198,57 @@ private:
     // parameters changed since it was last applied, or when it has never been
     // applied against the currently loaded source (Bind resets all to true).
     bool        m_dirty[4] = { true, true, true, true };
+
+    // ---- Asynchronous 3D pipeline state -----------------------------------
+    // Worker thread + cross-thread state. The atomics are the only members the
+    // worker and UI thread touch concurrently; the plan/parameter snapshot is
+    // written by the launcher before the thread starts and read only by the
+    // worker, and the output paths are written by the worker and read only after
+    // join().
+    struct AsyncJob {
+        std::thread        worker;
+        std::atomic<bool>  running{ false };       // worker thread alive
+        std::atomic<bool>  done{ false };          // worker finished; results pending apply
+        std::atomic<bool>  ok{ false };            // worker succeeded
+        std::atomic<int>   stageKind{ 0 };         // label: 0 offsets,1 mesh,2 thermal,3 isosurface
+        std::atomic<int>   progressStage{ 0 };     // index of current stage among the planned ones
+        std::atomic<int>   totalStages{ 1 };       // number of progress-weighted stages planned
+
+        // Which heavy stages this run executes (planned on the main thread).
+        bool   runOffsets = false, runMesh = false, runThermal = false;
+        // Visibility to apply to each produced primitive (snapshot of *Enabled).
+        bool   offVisible = false, meshVisible = false, isoVisible = false;
+
+        // Parameter snapshot (written before launch, read only by the worker).
+        int                 offsetMode = OFFSET_EVEN;
+        double              firstGap = 1.0, grading = 1.2;
+        int                 numOffsets = 8;
+        std::vector<double> gaps;
+        int                 tetMethod = SEM_TET_MAX_VOL;
+        double              tetParam = -1.0;
+        double              isoValue = 0.5;
+
+        // Deterministic output paths the SEM core writes (computed at launch on
+        // the main thread, where OutPath/m_srcPath are stable).
+        std::string         expOffsets, expMesh, expIso;
+
+        // Worker outputs (read by the main thread after join()). Set from the
+        // exp* paths only once the corresponding stage has actually succeeded.
+        std::string         offsetsPath, meshPath, isoPath, error;
+
+        ~AsyncJob() { if (worker.joinable()) worker.join(); }
+    };
+    AsyncJob m_job;
+    mutable std::atomic<float> m_progressShown{ 0.0f };
+
+    // Worker-thread body. Runs the heavy 3D SEM stages; the core serializes each
+    // result to the working dir. Touches only the SEM library — never the Scene.
+    // On failure it records a message (incl. SEM_GetLastError detail) and stops.
+    void PipelineWorkerBody();
+
+    // Record a worker-thread failure. SemDetail() is read immediately so it
+    // reflects the call that just failed. Sets done so PollAsync surfaces it.
+    void Fail(const std::string& msg);
 
     // Full path the SEM core writes for a given pipeline product. The core
     // serializes into the working directory using the source file's stem plus a
