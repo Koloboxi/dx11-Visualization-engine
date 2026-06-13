@@ -57,7 +57,9 @@
       "PowerShell(& \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\2022\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\" \"dx11-Visualization-engine.sln\" /t:Build /p:Configuration=Debug /p:Platform=x64 /m /nologo /clp:ErrorsOnly /v:m)",
       "Bash(\"C:/Program Files/Microsoft Visual Studio/2022/Community/MSBuild/Current/Bin/MSBuild.exe\" \"dx11-Visualization-engine.sln\" -nologo -m -p:Configuration=Debug -p:Platform=x64 -v:minimal)",
       "Bash(py --version)",
-      "PowerShell(& \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\2022\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\" \"dx11-Visualization-engine.sln\" /t:Build /p:Configuration=Debug /p:Platform=x64 /m /nologo /v:minimal 2>&1)"
+      "PowerShell(& \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\2022\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\" \"dx11-Visualization-engine.sln\" /t:Build /p:Configuration=Debug /p:Platform=x64 /m /nologo /v:minimal 2>&1)",
+      "Bash(grep -n \"SemSession\\\\|SEMWindow\\\\|<ClCompile Include=\\\\\"source\\\\\\\\\\\\\\\\graphics\\\\\\\\\\\\\\\\scene\" \"DirectX 11 Engine.vcxproj\")",
+      "PowerShell($msb = \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\2022\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\"; & $msb \"DirectX 11 Engine.vcxproj\" /t:ClCompile /p:Configuration=Debug /p:Platform=x64 /m /nologo /clp:NoSummary /v:quiet 2>&1 | Select-String -Pattern \"SemSession|error|warning C\" | Select-Object -First 60)"
     ]
   }
 }

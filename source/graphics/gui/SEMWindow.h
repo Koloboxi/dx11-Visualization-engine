@@ -1,7 +1,7 @@
 #pragma once
 #include "../imgui/imgui.h"
 #include "../scene/scene.h"
-#include "SemSession.h"
+#include "../scene/SemSession.h"
 #include <cstdio>
 #include <string>
 #include <commdlg.h>

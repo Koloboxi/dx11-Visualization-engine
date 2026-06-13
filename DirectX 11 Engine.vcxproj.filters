@@ -80,7 +80,7 @@
     <ClInclude Include="source\graphics\scene\scene_node.h" />
     <ClInclude Include="source\external\sem_exports.h" />
     <ClInclude Include="source\loaders\Grid2DLoader.h" />
-    <ClInclude Include="source\graphics\gui\SemSession.h" />
+    <ClInclude Include="source\graphics\scene\SemSession.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="source\graphics\imgui\imgui.cpp" />
@@ -105,6 +105,7 @@
     <ClCompile Include="source\utils\Timer.cpp" />
     <ClCompile Include="source\window\windowContainer.cpp" />
     <ClCompile Include="source\graphics\scene\scene.cpp" />
+    <ClCompile Include="source\graphics\scene\SemSession.cpp" />
     <ClCompile Include="source\graphics\scene\loaders\scene_newton.cpp" />
     <ClCompile Include="source\graphics\scene\loaders\scene_ph.cpp" />
     <ClCompile Include="source\graphics\scene\loaders\scene_gr.cpp" />
