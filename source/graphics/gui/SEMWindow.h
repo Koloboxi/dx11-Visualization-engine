@@ -156,7 +156,11 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
     SemSession& S = Session();
 
     S.Validate(scene);
-    S.Bind(scene, scene.stagedPrimitive);
+    // Don't re-bind to a newly staged primitive while a background computation
+    // is in flight — that would reset the SEM cache the worker is using.
+    if (!S.AsyncRunning()) S.Bind(scene, scene.stagedPrimitive);
+    // Apply any finished background-pipeline results to the scene (main thread).
+    S.PollAsync(scene);
 
     ImGui::Begin("SEM");
 
@@ -188,6 +192,19 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
     const float kItemW = 180.0f;
     ImGui::PushItemWidth(kItemW);
 
+    // While the 3D pipeline runs on its worker thread, show a progress bar
+    // (driven by SEM_GetProgress3D via the session) and disable every control
+    // so parameters can't change mid-computation.
+    const bool busy = S.AsyncRunning();
+    if (busy) {
+        char overlay[32];
+        snprintf(overlay, sizeof(overlay), "%.0f%%", S.AsyncProgress() * 100.0f);
+        ImGui::Text("%s...", S.AsyncStageName());
+        ImGui::ProgressBar(S.AsyncProgress(), ImVec2(kItemW, 0.0f), overlay);
+        ImGui::Separator();
+    }
+    ImGui::BeginDisabled(busy);
+
     if (ImGui::Button("Import CSV3D...", {kItemW, 0})) {
         std::string p = BrowseCsv3dFile();
         if (!p.empty()) S.ImportSource(scene, p);
@@ -201,17 +218,6 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
     else      ImGui::TextDisabled("Mode: 2D contour");
 
     DrawReadout(S);
-    ImGui::Separator();
-
-    if (ImGui::Button("Run full pipeline", {kItemW, 0})) S.RunFullPipeline(scene);
-    if (is3D)
-        ImGui::SetItemTooltip("Adaptive subdivide -> graded offset shells (first gap = 1 mean\n"
-                              "edge length, grading 1.2, 8 offsets) -> tetrahedral band mesh\n"
-                              "(auto volume) -> thermal solve (default) -> isosurface at T=0.5.");
-    else
-        ImGui::SetItemTooltip("Adaptive subdivide -> graded offsets (first gap = 1 mean edge\n"
-                              "length, grading 1.2, 8 offsets) -> max-area mesh (default area)\n"
-                              "-> thermal solve (default) -> isotherm at T=0.5.");
     ImGui::Separator();
 
     if (!is3D) {
@@ -250,8 +256,8 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         if (S.subN < 1) S.subN = 1;
 
         if (changed || released) S.MarkStageDirty(STAGE_SUBDIVIDE);
-        if (S.subAuto) { if (changed || released) S.RecomputeUpTo(scene, STAGE_SUBDIVIDE, true); }
-        else if (ImGui::Button("Apply", {160, 0})) S.RecomputeUpTo(scene, STAGE_SUBDIVIDE, false);
+        if (S.subAuto) { if (changed || released) S.RecomputeUpToAsync(scene, STAGE_SUBDIVIDE, true); }
+        else if (ImGui::Button("Apply", {160, 0})) S.RecomputeUpToAsync(scene, STAGE_SUBDIVIDE, false);
         ImGui::Unindent();
         ImGui::PopID();
     }
@@ -304,8 +310,8 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         }
 
         if (changed || released) S.MarkStageDirty(STAGE_OFFSETS);
-        if (S.offAuto) { if (changed || released) S.RecomputeUpTo(scene, STAGE_OFFSETS, true); }
-        else if (ImGui::Button("Apply", {160, 0})) S.RecomputeUpTo(scene, STAGE_OFFSETS, false);
+        if (S.offAuto) { if (changed || released) S.RecomputeUpToAsync(scene, STAGE_OFFSETS, true); }
+        else if (ImGui::Button("Apply", {160, 0})) S.RecomputeUpToAsync(scene, STAGE_OFFSETS, false);
         ImGui::Unindent();
         ImGui::PopID();
     }
@@ -398,8 +404,8 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         } // end 2D Steiner UI
 
         if (changed || released) S.MarkStageDirty(STAGE_MESH);
-        if (S.meshAuto) { if (changed || released) S.RecomputeUpTo(scene, STAGE_MESH, true); }
-        else if (ImGui::Button("Apply", {160, 0})) S.RecomputeUpTo(scene, STAGE_MESH, false);
+        if (S.meshAuto) { if (changed || released) S.RecomputeUpToAsync(scene, STAGE_MESH, true); }
+        else if (ImGui::Button("Apply", {160, 0})) S.RecomputeUpToAsync(scene, STAGE_MESH, false);
         ImGui::Unindent();
         ImGui::PopID();
     }
@@ -428,11 +434,13 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         if (S.isoValue > 1.0f) S.isoValue = 1.0f;
 
         if (changed) S.MarkStageDirty(STAGE_THERMAL);
-        if (S.thermalAuto) { if (changed) S.RecomputeUpTo(scene, STAGE_THERMAL, true); }
-        else if (ImGui::Button("Apply", {160, 0})) S.RecomputeUpTo(scene, STAGE_THERMAL, false);
+        if (S.thermalAuto) { if (changed) S.RecomputeUpToAsync(scene, STAGE_THERMAL, true); }
+        else if (ImGui::Button("Apply", {160, 0})) S.RecomputeUpToAsync(scene, STAGE_THERMAL, false);
         ImGui::Unindent();
         ImGui::PopID();
     }
+
+    ImGui::EndDisabled();
 
     ImGui::Separator();
     ImGui::TextDisabled("%s", S.status);

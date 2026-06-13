@@ -230,3 +230,8 @@ SEM_API int SEM_ExtractIsosurface3D(double value);
 // immediately) or NULL on error.
 SEM_API const char* SEM_SerializeIsosurface3D(const char* output_dir);
 
+// Current progress of the active 3D computation stage (0..1). Updated during
+// SEM_ComputeOffsets3D, SEM_BuildMesh3D[Ex], and SEM_SolveThermal3D; reset to
+// 0 when each call completes (success or failure). Safe to call from any thread.
+SEM_API float SEM_GetProgress3D(void);
+

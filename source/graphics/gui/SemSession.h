@@ -11,6 +11,8 @@
 #include <cstdio>
 #include <algorithm>
 #include <initializer_list>
+#include <thread>
+#include <atomic>
 #include <excpt.h>
 
 namespace SemSessionNS {
@@ -639,30 +641,200 @@ public:
         return src;
     }
 
-    void RunFullPipeline(Scene& scene) {
-        if (!HasSource()) return;
+    // ======================================================================
+    // Asynchronous 3D pipeline.
+    //
+    // The heavy 3D compute stages — SEM_ComputeOffsets3D, SEM_BuildMesh3D[Ex]
+    // and SEM_SolveThermal3D (plus the quick isosurface extraction) — run on a
+    // worker thread so the UI thread stays responsive and can drive a progress
+    // bar from SEM_GetProgress3D(). The worker only ever touches the SEM library
+    // (compute + serialize-to-file); it never mutates the Scene. The serialized
+    // result files are loaded into the Scene on the main thread by PollAsync(),
+    // which the SEM window calls once per frame.
+    //
+    // RecomputeUpToAsync() is the async counterpart of RecomputeUpTo(): it plans
+    // which heavy stages need to run (same dirty/cascade/enabled rules), runs the
+    // quick subdivide synchronously, then hands the planned stages to the worker.
+    // ======================================================================
 
-        subEnabled = false;
-        offEnabled = true;  offsetMode = OFFSET_EVEN;
-        firstGap   = 1.0f;  numOffsets = 8; grading = 1.2f;
-        meshEnabled = true;
-        thermalEnabled = true;
-        isoValue   = 0.5f;
-        if (dim == 3) {
-            tetMethod = SEM_TET_MAX_VOL;
-            tetParam  = -1.0f; tetParamEdgeUnits = false;
-        } else {
-            meshMethod = SEM_STEINER_MAX_AREA;
-            meshParam  = -1.0f; meshParamEdgeUnits = false;
+    // True while the worker thread is computing. The window uses this to show
+    // the progress bar and disable the controls.
+    bool AsyncRunning() const { return m_job.running.load(); }
+
+    // Short label for the stage currently executing on the worker.
+    const char* AsyncStageName() const {
+        switch (m_job.stageKind.load()) {
+            case 0:  return "Computing offset shells";
+            case 1:  return "Building tetrahedral mesh";
+            case 2:  return "Solving thermal field";
+            default: return "Extracting isosurface";
+        }
+    }
+
+    // Overall progress in [0,1] across the stages actually planned for this run
+    // (totalStages). Within a stage the live SEM_GetProgress3D() value is used;
+    // the result is clamped to never run backwards (the library resets its
+    // per-call progress to 0 between stages, and the quick isosurface step does
+    // not report progress at all).
+    float AsyncProgress() const {
+        if (!m_job.running.load()) return 0.0f;
+        int total = m_job.totalStages.load();
+        if (total < 1) total = 1;
+        float p = SEM_GetProgress3D();
+        if (p < 0.0f) p = 0.0f;
+        if (p > 1.0f) p = 1.0f;
+        float overall = ((float)m_job.progressStage.load() + p) / (float)total;
+        float prev = m_progressShown.load();
+        if (overall < prev) overall = prev;
+        m_progressShown.store(overall);
+        return overall;
+    }
+
+    // Asynchronous counterpart of RecomputeUpTo(). For a 3D source it plans which
+    // heavy stages must run (identical dirty / cascade / enabled rules), runs the
+    // quick subdivide synchronously, then launches the worker for the planned
+    // stages; PollAsync() applies the results. For a 2D source — where the SEM
+    // library reports no progress — it simply delegates to the synchronous
+    // RecomputeUpTo(). A no-op while a previous run is still in flight.
+    void RecomputeUpToAsync(Scene& scene, Stage to, bool silent) {
+        if (!HasSource()) return;
+        if (dim != 3) { RecomputeUpTo(scene, to, silent); return; }
+        if (m_job.running.load()) return;
+        if (m_job.worker.joinable()) m_job.worker.join();
+
+        bool ran = false;
+
+        // Subdivide runs synchronously: it is quick, reports no progress and only
+        // updates the SEM cache (no scene work). It must precede the offsets.
+        if (m_dirty[STAGE_SUBDIVIDE]) {
+            if (!ApplySubdivide(scene, silent)) return;
+            m_dirty[STAGE_SUBDIVIDE] = false;
+            ran = true;
         }
 
-        if (!ApplySubdivide(scene, false)) return;
-        if (!ApplyOffsets(scene, false))   return;
-        if (!ApplyMesh(scene, false))      return;
-        if (!ApplyThermal(scene, false))   return;
-        if (!ApplyIsoline(scene, false))   return;
-        m_dirty[0] = m_dirty[1] = m_dirty[2] = m_dirty[3] = false;
-        snprintf(status, sizeof(status), "Pipeline complete.");
+        // Plan the heavy stages exactly as RecomputeUpTo would execute them.
+        bool runOff = false, runMesh = false, runTherm = false;
+        if (to >= STAGE_OFFSETS && (m_dirty[STAGE_OFFSETS] || ran)) {
+            if (offEnabled || (m_offsets && Alive(scene, m_offsets))) { runOff = true; ran = true; }
+            m_dirty[STAGE_OFFSETS] = false;
+        }
+        if (to >= STAGE_MESH && (m_dirty[STAGE_MESH] || ran)) {
+            if (meshEnabled || (m_mesh && Alive(scene, m_mesh))) { runMesh = true; ran = true; }
+            m_dirty[STAGE_MESH] = false;
+        }
+        if (to >= STAGE_THERMAL && (m_dirty[STAGE_THERMAL] || ran)) {
+            if (thermalEnabled || (m_isoline && Alive(scene, m_isoline))) { runTherm = true; ran = true; }
+            m_dirty[STAGE_THERMAL] = false;
+        }
+
+        // Rebuilding a stage invalidates everything after 'to' we did not touch.
+        if (ran)
+            for (int s = (int)to + 1; s <= STAGE_THERMAL; ++s) m_dirty[s] = true;
+
+        // No heavy work (e.g. just a subdivide, or nothing dirty): no worker,
+        // no progress bar — just refresh and return.
+        if (!runOff && !runMesh && !runTherm) { scene.UpdateLight(); return; }
+
+        // Precondition the worker cannot check itself (it has no Scene access):
+        // a thermal-only run needs a mesh already built and present.
+        if (runTherm && !runMesh && !(m_mesh && Alive(scene, m_mesh))) {
+            Report(scene, silent, "Build the mesh first.");
+            return;
+        }
+
+        // Snapshot the plan, parameters and visibility intent for the worker /
+        // PollAsync (mutable session state must not be read once running).
+        m_job.runOffsets  = runOff;
+        m_job.runMesh     = runMesh;
+        m_job.runThermal  = runTherm;
+        m_job.offVisible  = offEnabled;
+        m_job.meshVisible = meshEnabled;
+        m_job.isoVisible  = thermalEnabled;
+        m_job.totalStages.store((int)runOff + (int)runMesh + (int)runTherm);
+
+        m_job.offsetMode  = offsetMode;
+        m_job.firstGap    = firstGap;
+        m_job.numOffsets  = numOffsets;
+        m_job.grading     = grading;
+        m_job.gaps.assign(gaps.begin(), gaps.end());
+        m_job.tetMethod   = tetMethod;
+        {
+            double param = (double)tetParam;
+            if (tetParamEdgeUnits && tetParam > 0.0f &&
+                (tetMethod == SEM_TET_MAX_VOL || tetMethod == SEM_TET_SIZING))
+                param *= TetParamFactor();
+            m_job.tetParam = param;
+        }
+        m_job.isoValue = isoValue;
+
+        m_job.offsetsPath.clear();
+        m_job.meshPath.clear();
+        m_job.isoPath.clear();
+        m_job.error.clear();
+        m_job.stageKind.store(runOff ? 0 : runMesh ? 1 : 2);
+        m_job.progressStage.store(0);
+        m_job.ok.store(false);
+        m_job.done.store(false);
+        m_progressShown.store(0.0f);
+        m_job.running.store(true);
+
+        snprintf(status, sizeof(status), "Computing...");
+        m_job.worker = std::thread(&SemSession::PipelineWorkerBody, this);
+    }
+
+    // Called once per frame on the main thread. When the worker has finished,
+    // joins it and loads whichever stages it produced into the scene, honoring
+    // the per-stage visibility snapshot. No-op while the worker runs or is idle.
+    void PollAsync(Scene& scene) {
+        if (!m_job.running.load() || !m_job.done.load()) return;
+        if (m_job.worker.joinable()) m_job.worker.join();
+        m_job.running.store(false);
+        m_job.done.store(false);
+
+        if (!m_job.ok.load()) {
+            Report(scene, false, m_job.error.empty() ? "3D pipeline failed." : m_job.error);
+            return;
+        }
+
+        // Offset shells.
+        if (!m_job.offsetsPath.empty()) {
+            DropOffsets(scene);
+            m_offsets = scene.AddFromCSV3D(m_job.offsetsPath, "offsets_" + Stem(m_srcPath),
+                                           AttachParent(), nullptr, Colors::CYAN, Colors::YELLOW, renderTrisAsLines);
+            m_offsetsPath = m_job.offsetsPath;
+            if (!renderTrisAsLines) ConfigureSurface3D(m_offsets);
+            if (m_offsets) scene.AttachVertexPointsGroup(m_offsets);
+            m_offStats = ComputeStats(m_offsetsPath);
+            if (m_offsets && Alive(scene, m_offsets)) scene.SetNodeVisibleCascade(m_offsets, m_job.offVisible);
+        }
+
+        // Tetrahedral mesh. The worker re-serializes it after the thermal solve,
+        // so when the thermal stage ran this file carries the solved field in T.
+        if (!m_job.meshPath.empty()) {
+            DropMesh(scene);
+            m_mesh = scene.AddFromCSV3D(m_job.meshPath, "mesh_" + Stem(m_srcPath),
+                                        AttachParent(), nullptr, Colors::BLUE, Colors::RED, renderTrisAsLines);
+            m_meshPath = m_job.meshPath;
+            if (!renderTrisAsLines) ConfigureSurface3D(m_mesh);
+            if (m_mesh) scene.AttachVertexPointsGroup(m_mesh);
+            m_meshStats = ComputeStats(m_meshPath);
+            if (m_job.runThermal) m_thermalSolved = true;
+            if (m_mesh && Alive(scene, m_mesh)) scene.SetNodeVisibleCascade(m_mesh, m_job.meshVisible);
+        }
+
+        // Isosurface.
+        if (!m_job.isoPath.empty()) {
+            DropIsoline(scene);
+            const XMFLOAT4 green(0.0f, 1.0f, 0.0f, 1.0f);
+            m_isoline = scene.AddFromCSV3D(m_job.isoPath, "isosurface_" + Stem(m_srcPath),
+                                           AttachParent(), &green, Colors::BLUE, Colors::RED, renderTrisAsLines);
+            if (!renderTrisAsLines) ConfigureSurface3D(m_isoline);
+            m_isolinePath = m_job.isoPath;
+            if (m_isoline && Alive(scene, m_isoline)) scene.SetNodeVisibleCascade(m_isoline, m_job.isoVisible);
+        }
+
+        scene.UpdateLight();
+        snprintf(status, sizeof(status), "Done.");
     }
 
 private:
@@ -683,6 +855,112 @@ private:
     // parameters changed since it was last applied, or when it has never been
     // applied against the currently loaded source (Bind resets all to true).
     bool        m_dirty[4] = { true, true, true, true };
+
+    // ---- Asynchronous 3D pipeline state -----------------------------------
+    // Worker thread + cross-thread state. The atomics are the only members the
+    // worker and UI thread touch concurrently; the plan/parameter snapshot is
+    // written by the launcher before the thread starts and read only by the
+    // worker, and the output paths are written by the worker and read only after
+    // join().
+    struct AsyncJob {
+        std::thread        worker;
+        std::atomic<bool>  running{ false };       // worker thread alive
+        std::atomic<bool>  done{ false };          // worker finished; results pending apply
+        std::atomic<bool>  ok{ false };            // worker succeeded
+        std::atomic<int>   stageKind{ 0 };         // label: 0 offsets,1 mesh,2 thermal,3 isosurface
+        std::atomic<int>   progressStage{ 0 };     // index of current stage among the planned ones
+        std::atomic<int>   totalStages{ 1 };       // number of progress-weighted stages planned
+
+        // Which heavy stages this run executes (planned on the main thread).
+        bool   runOffsets = false, runMesh = false, runThermal = false;
+        // Visibility to apply to each produced primitive (snapshot of *Enabled).
+        bool   offVisible = false, meshVisible = false, isoVisible = false;
+
+        // Parameter snapshot (written before launch, read only by the worker).
+        int                 offsetMode = OFFSET_EVEN;
+        double              firstGap = 1.0, grading = 1.2;
+        int                 numOffsets = 8;
+        std::vector<double> gaps;
+        int                 tetMethod = SEM_TET_MAX_VOL;
+        double              tetParam = -1.0;
+        double              isoValue = 0.5;
+
+        // Worker outputs (read by the main thread after join()).
+        std::string         offsetsPath, meshPath, isoPath, error;
+
+        ~AsyncJob() { if (worker.joinable()) worker.join(); }
+    };
+    AsyncJob m_job;
+    mutable std::atomic<float> m_progressShown{ 0.0f };
+
+    // Worker-thread body. Runs the heavy 3D SEM stages and serializes each
+    // result to a file. Touches only the SEM library — never the Scene. On
+    // failure it records a message (incl. SEM_GetLastError detail) and stops.
+    void PipelineWorkerBody() {
+        int idx = 0;   // index of the current stage among the planned ones
+
+        // Offset shells — SEM_ComputeOffsets3D / SEM_ComputeOffsetsAt3D.
+        if (m_job.runOffsets) {
+            m_job.stageKind.store(0);
+            m_job.progressStage.store(idx);
+            int rc = (m_job.offsetMode == OFFSET_GAPS && !m_job.gaps.empty())
+                   ? SEM_ComputeOffsetsAt3D(m_job.gaps.data(), (int)m_job.gaps.size())
+                   : SEM_ComputeOffsets3D(m_job.firstGap, m_job.numOffsets, m_job.grading);
+            if (rc != 0) return Fail("SEM_ComputeOffsets3D failed (" + std::to_string(rc) + ")");
+            if (const char* p = SEM_SerializeOffsets3D(nullptr)) m_job.offsetsPath = p;
+            else return Fail("SEM_SerializeOffsets3D failed.");
+            ++idx;
+        }
+
+        // Tetrahedral band mesh — SEM_BuildMesh3DEx.
+        if (m_job.runMesh) {
+            m_job.stageKind.store(1);
+            m_job.progressStage.store(idx);
+            SEM_MeshParams3DEx params3d{ m_job.tetMethod, m_job.tetParam };
+            int rc = SafeBuildMesh3DEx(&params3d);
+            if (rc == -100) return Fail("TetGen DLL crashed (access violation caught). "
+                                        "Try a larger volume or a looser quality bound.");
+            if (rc != 0) return Fail("SEM_BuildMesh3DEx failed (" + std::to_string(rc) + ")");
+            if (const char* p = SEM_SerializeMesh3D(nullptr)) m_job.meshPath = p;
+            else return Fail("SEM_SerializeMesh3D failed.");
+            ++idx;
+        }
+
+        // Steady-state thermal solve + isosurface extraction.
+        if (m_job.runThermal) {
+            m_job.stageKind.store(2);
+            m_job.progressStage.store(idx);
+            int rc = SafeSolveThermal3D(1.0);
+            if (rc == -100) return Fail("Thermal solver crashed (access violation caught).");
+            if (rc != 0) return Fail("SEM_SolveThermal3D failed (" + std::to_string(rc) + ")");
+            if (const char* p = SEM_SerializeMesh3D(nullptr)) m_job.meshPath = p;   // now carries T
+            else return Fail("SEM_SerializeMesh3D failed.");
+
+            // Isosurface extraction (quick — no SEM progress; keep progressStage
+            // pinned so the bar holds at the end of the thermal stage).
+            m_job.stageKind.store(3);
+            double v = m_job.isoValue;
+            if (v < 0.0) v = 0.0;
+            if (v > 1.0) v = 1.0;
+            rc = SafeExtractIsosurface3D(v);
+            if (rc == -100) return Fail("Isosurface extraction crashed (access violation caught).");
+            if (rc != 0) return Fail("SEM_ExtractIsosurface3D failed (" + std::to_string(rc) + ")");
+            if (const char* p = SEM_SerializeIsosurface3D(nullptr)) m_job.isoPath = p;
+            else return Fail("SEM_SerializeIsosurface3D failed.");
+            ++idx;
+        }
+
+        m_job.ok.store(true);
+        m_job.done.store(true);
+    }
+
+    // Record a worker-thread failure. SemDetail() is read immediately so it
+    // reflects the call that just failed. Sets done so PollAsync surfaces it.
+    void Fail(const std::string& msg) {
+        m_job.error = msg + SemDetail();
+        m_job.ok.store(false);
+        m_job.done.store(true);
+    }
 
     bool Alive(Scene& scene, Primitive* q) const {
         if (!q) return false;
