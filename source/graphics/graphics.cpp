@@ -75,6 +75,12 @@ void Graphics::RenderFrame()
 
 	this->deviceContext->OMSetBlendState(this->blendState.Get(), NULL, 0xFFFFFFFF);
 
+	// Push the live line thickness into the GS constant buffer (already bound on
+	// GS slot b0) so the top-strip thickness popup edits the thick-line width
+	// without a resize.
+	this->cb_gs_geometryshader.data.Thickness = this->scene.lineThickness;
+	this->cb_gs_geometryshader.ApplyChanges();
+
 	this->scene.Draw();
 	this->Gui();
 

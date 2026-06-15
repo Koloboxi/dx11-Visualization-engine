@@ -12,7 +12,10 @@ cbuffer Color : register(b0)
     float intensity;
     float shininess;
     bool illuminated;
-    bool useVertexColor;
+    int  useVertexColor;
+    int  twoSided;
+    float2 pad;
+    float4 backCol;
 };
 
 struct PS_OUTPUT
@@ -21,25 +24,27 @@ struct PS_OUTPUT
     float4 mask : SV_Target1;
 };
 
-PS_OUTPUT PS_MAIN(PS_INPUT input)
+PS_OUTPUT PS_MAIN(PS_INPUT input, bool isFront : SV_IsFrontFace)
 {
     PS_OUTPUT o;
 
     float4 baseCol = useVertexColor ? input.inColor : col;
-
-    // Per-vertex coloured surfaces carry their alpha in the vertex stream, so the
-    // constant-buffer col.a would otherwise have no effect on them. Fold col.a in
-    // as a global opacity multiplier so a single uniform (e.g. the SEM surface
-    // opacity slider) can fade a vertex-coloured surface. The flat-shaded path
-    // already uses col.a directly, so only multiply on the vertex-colour path.
     float alpha = useVertexColor ? baseCol.a * col.a : baseCol.a;
+
+    float3 n = input.inNormalCam;
+    if (twoSided && !isFront)
+    {
+        baseCol = backCol;
+        alpha   = backCol.a;
+        n       = -n;
+    }
 
     if (illuminated)
     {
         float3 lightDir = normalize(float3(1, 1, 1));
         float3 viewDir = normalize(float3(0, 0, 1));
-        float diff = max(dot(input.inNormalCam, lightDir), 0.0f);
-        float3 reflectDir = reflect(-lightDir, input.inNormalCam);
+        float diff = max(dot(n, lightDir), 0.0f);
+        float3 reflectDir = reflect(-lightDir, n);
         float spec = pow(max(dot(viewDir, reflectDir), 0.0f), shininess);
         float illumination = saturate(ambient + diff * intensity);
         o.color = float4(baseCol.rgb * illumination + float3(0.5, 0.5, 0.5) * spec, alpha);
@@ -48,7 +53,6 @@ PS_OUTPUT PS_MAIN(PS_INPUT input)
     {
         o.color = float4(baseCol.rgb, alpha);
     }
-
 
     o.mask = float4(1, 0, 0, 1);
 

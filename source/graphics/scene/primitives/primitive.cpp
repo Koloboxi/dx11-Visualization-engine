@@ -84,6 +84,16 @@ void Primitive::SetUseVertexColor(const bool v)
 	this->psCBDirty = true;
 }
 
+void Primitive::SetTwoSided(bool enable, const XMFLOAT4& backColor)
+{
+	this->cb_ps_pixelshader.data.twoSided      = enable ? 1 : 0;
+	this->cb_ps_pixelshader.data.backColor[0]  = backColor.x;
+	this->cb_ps_pixelshader.data.backColor[1]  = backColor.y;
+	this->cb_ps_pixelshader.data.backColor[2]  = backColor.z;
+	this->cb_ps_pixelshader.data.backColor[3]  = backColor.w;
+	this->psCBDirty = true;
+}
+
 void Primitive::SetIlluminationCapability(const bool l)
 {
 	this->illuminationCapability = l;

@@ -37,6 +37,7 @@ public:
 	const XMVECTOR& GetUpwardVector();
 private:
 	void UpdateViewMatrix();
+	float DynamicHalfDepth() const;
 
 	XMVECTOR posVector;
 	XMFLOAT3 pos;
@@ -48,8 +49,6 @@ private:
 	float scale = 1.0;
 	float baseViewWidth;
 	float baseViewHeight;
-	float nearZ;
-	float farZ;
 
 	const XMVECTOR DEFAULT_FORWARD_VECTOR = XMVectorSet(0.0f, -1.0f, 0.0f, 0.0f);
 	const XMVECTOR DEFAULT_UP_VECTOR = XMVectorSet(0.0f, 0.0f, 1.0, 0.0f);

@@ -7,6 +7,7 @@
 
 #include "..\imgui\imgui.h"
 #include "auxiliaryObjects.h"
+#include "..\navcube\NavGizmo.h"
 #include "..\..\utils\Timer.h"
 #include "..\..\external\json.hpp"
 #include "scene_node.h"
@@ -37,10 +38,15 @@ public:
 
 	Camera camera;
 	OrientationTransformer orientationTransformer;
+	NavGizmo navGizmo;
 	void Draw();
 
 	void HandleSelection(Primitive* primitiveClicked);
 	void HandleLMouse(int px, int py, bool tPressfRelease);
+	// Forward an in-progress left-drag to the corner nav gizmo (arc → camera
+	// rotation). No-op unless a gizmo arc is being dragged.
+	bool NavGizmoActive() const { return navGizmo.HasActiveObject(); }
+	void HandleNavGizmoDrag(int px, int py) { navGizmo.HandleObjMove(px, py, width, height, camera); }
 	void DeleteSelected();
 
 	Primitive* stagedPrimitive = nullptr;
@@ -55,7 +61,18 @@ public:
 
 	bool rsSolid = true;
 	bool rsWireframe = false;
-	bool rsNoCull = false;
+	bool rsNoCull = true;
+
+	// Width of geometry-shader-thickened lines (dim==1 primitives), in clip-space
+	// half-width units. Pushed into CB_GS_geometryshader each frame by Graphics so
+	// the top-strip thickness popup edits it live.
+	float lineThickness = 0.001f;
+
+	// Standard-projection orientation for the iso/dim presets driven by the nav
+	// gizmo ball: which axis is "up" (0=X,1=Y,2=Z) and its sign (+1/-1). Set from
+	// the top-strip projection-params popup.
+	int projUpAxis = 2;
+	int projUpSign = 1;
 
 	float ambient = 0.4f;
 	float intensity = 0.6f;
@@ -95,35 +112,29 @@ public:
 	void AddFromSTL(const std::string& path, const XMFLOAT4& col, const std::string& name = "");
 	void AddFromOBJ(const std::string& path, const XMFLOAT4& lineCol, const XMFLOAT4& pointCol);
 	void AddFromCSVMesh(const std::string& path, const XMFLOAT4& lineCol, const XMFLOAT4& pointCol);
-	// overrideColor: when non-null, every edge is drawn in this flat colour
-	// instead of the per-node gradient (used for the green isoline).
-	// gradLow/gradHigh: gradient endpoints used to colour each node by its T
-	// value (T=0 -> gradLow, T=1 -> gradHigh). Defaults to the thermal
-	// blue->red gradient; callers pass a contrasting pair for non-thermal data.
-	// renderTrianglesAsLines: when true, triangle faces are not built as a
-	// filled ColoredTriangles surface but contribute their three sides to the
-	// ColoredLine wireframe instead (drawn like the rest of the edges).
-	// ensureCCW: when true, the filled triangle surface has its winding made
-	// consistent across shared edges (see PrimitiveConstructor::ColoredTriangles).
-	// The untouched SEM source surface is loaded with ensureCCW = false.
+	// overrideColor: when non-null, every node is drawn in this flat colour
+	// instead of the per-node T gradient.
+	// gradLow/gradHigh: gradient endpoints for the T-value colouring.
+	// ensureCCW: consistent winding for the triangle surface (disabled for the
+	// untouched SEM source surface).
 	Primitive* AddFromCSV3D(const std::string& path, const std::string& name = "", SceneNode* parent = nullptr, const XMFLOAT4* overrideColor = nullptr,
-		const XMFLOAT4& gradLow = Colors::BLUE, const XMFLOAT4& gradHigh = Colors::RED, bool renderTrianglesAsLines = false, bool ensureCCW = true);
+		const XMFLOAT4& gradLow = Colors::BLUE, const XMFLOAT4& gradHigh = Colors::RED, bool ensureCCW = true);
 	void AddCubeWireframe(float halfSize, const XMFLOAT3& center, const XMFLOAT4& col);
 	void AddCubeSolid(float halfSize, const XMFLOAT3& center, const XMFLOAT4& col);
 	Primitive* AddRevolutionSurface(const std::vector<XMFLOAT3>& profile, UINT segments, const XMFLOAT4& col, const std::string& name, SceneNode* parent = nullptr);
 
 	void RemovePrimitive(Primitive* p);
+	void RemoveNode(SceneNode* n);
 	void RemovePrimitivesByPrefix(const std::string& prefix);
 	void SetController(SceneController* ctrl);
 
-	// Per-vertex marker support. AttachVertexPointsGroup creates (or returns) an
-	// empty hidden grouping node under `src`; its yellow cross markers are
-	// generated lazily the first time the group is revealed. SetNodeVisibleCascade
-	// toggles a node and one-shot-cascades the new visibility to all descendants
-	// (lazily generating a vertex-points group on reveal).
-	VertexPointsGroup* AttachVertexPointsGroup(Primitive* src);
+	// Empty (non-primitive) grouping node, parented under `parent` (or root).
+	// Not tracked in `primitives`; removed via RemoveNode or with its subtree.
+	SceneNode* AddGroupNode(const std::string& name, SceneNode* parent = nullptr);
+
+	// Toggle a node's visibility and one-shot-cascade the new state to all
+	// descendants; afterwards each child toggles independently.
 	void SetNodeVisibleCascade(SceneNode* n, bool show);
-	void ShowVertexPointsFor(Primitive* src, bool show);
 
 	void LoadNewtonDemo();
 	void LoadPersistentHomologyScene();
@@ -174,7 +185,6 @@ private:
 
 	std::wstring shadersPath;
 	GeometryShader geometryshaderpoints;
-	GeometryShader geometryshaderpointscross;
 	GeometryShader geometryshaderthickness;
 
 	VertexShader* vsMain;
@@ -259,7 +269,6 @@ private:
 	UINT nextId = 1;
 	UINT NextId() { return nextId++; }
 
-	void GenerateVertexPoints(VertexPointsGroup* g);
 	void DestroyNodeRecursive(SceneNode* n);
 
 	std::vector<std::string> savedScenes;

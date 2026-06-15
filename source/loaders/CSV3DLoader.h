@@ -22,12 +22,15 @@ using namespace DirectX;
 //   i;j;k;l;...              — polygon face by node ids (0-based, any arity)
 //   #edge[;count]
 //   i;j                     — explicit edge by node ids (0-based)
+//   #tets[;count]
+//   i;j;k;l                 — tetrahedron by node ids (0-based, 4 ids)
 //
 // The optional number after a section tag (e.g. "#face;4") is an element
 // count hint and is ignored — rows are read until the next section header.
 //
 // The loader stores nodes indexed by node_id, triangles as index triples,
-// faces as variable-length index lists, and edges as index pairs.
+// faces as variable-length index lists, edges as index pairs, and tets as
+// index quads (the 3D band mesh: see SEM_LoadMesh3D / "#tets" in the docs).
 
 namespace CSV3DLoader {
 
@@ -41,6 +44,7 @@ struct CSV3DData {
     std::vector<XMUINT3>                    triangles;    // node-id triples (0-based)
     std::vector<std::vector<unsigned>>      faces;        // polygon faces (0-based)
     std::vector<std::pair<unsigned, unsigned>> edges;     // explicit edges (0-based)
+    std::vector<XMUINT4>                    tets;         // node-id quads (0-based)
 };
 
 namespace detail {
@@ -66,7 +70,7 @@ inline bool Load(const std::string& path, CSV3DData& out) {
     std::ifstream f(path);
     if (!f) return false;
 
-    enum class Section { None, Nodes, Triangles, Faces, Edges, Other };
+    enum class Section { None, Nodes, Triangles, Faces, Edges, Tets, Other };
     Section section = Section::None;
 
     std::string line;
@@ -84,6 +88,7 @@ inline bool Load(const std::string& path, CSV3DData& out) {
             else if (tag == "triangles") section = Section::Triangles;
             else if (tag == "face")      section = Section::Faces;
             else if (tag == "edge")      section = Section::Edges;
+            else if (tag == "tets")      section = Section::Tets;
             else                          section = Section::Other; // ignore unknown sections
             continue;
         }
@@ -126,6 +131,16 @@ inline bool Load(const std::string& path, CSV3DData& out) {
             unsigned a = (unsigned)std::stoul(tok[0]);
             unsigned b = (unsigned)std::stoul(tok[1]);
             out.edges.push_back({ a, b });
+        }
+        else if (section == Section::Tets) {
+            auto tok = detail::SplitSemi(line);
+            if (tok.size() < 4) continue;
+            if (!detail::IsNumber(tok[0])) continue;
+            unsigned a = (unsigned)std::stoul(tok[0]);
+            unsigned b = (unsigned)std::stoul(tok[1]);
+            unsigned c = (unsigned)std::stoul(tok[2]);
+            unsigned d = (unsigned)std::stoul(tok[3]);
+            out.tets.push_back({ a, b, c, d });
         }
         // Section::Other / None → ignore
     }

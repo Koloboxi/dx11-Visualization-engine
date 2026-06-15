@@ -10,7 +10,6 @@ public:
     virtual ~SceneNode() = default;
     virtual bool IsPrimitive()  const { return false; }
     virtual bool IsController() const { return false; }
-    virtual bool IsVertexPointsGroup() const { return false; }
 
     std::string name;
     SceneNode*  parent = nullptr;
@@ -33,14 +32,4 @@ public:
             children.erase(it);
         }
     }
-};
-
-// An empty grouping node that owns the per-vertex marker points of `source`.
-// Created hidden and empty; its marker children are generated lazily the first
-// time it is made visible (see Scene::SetNodeVisibleCascade).
-class VertexPointsGroup : public SceneNode {
-public:
-    bool IsVertexPointsGroup() const override { return true; }
-    Primitive* source = nullptr;
-    bool generated = false;
 };

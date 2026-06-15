@@ -240,24 +240,6 @@ inline void Draw(Scene& scene, LuaUpdaterEditor& lua,
         ImGui::EndPopup();
     }
 
-    // Point-skin selector for the current selection. Only shown when at least
-    // one selected primitive is a point (dimension 0); applies to all of them.
-    {
-        int ptCount = 0, firstSkin = Primitive::SKIN_RING;
-        for (Primitive* p : scene.primitives)
-            if (p->selected && p->GetDimension() == 0) {
-                if (ptCount == 0) firstSkin = p->pointSkin;
-                ++ptCount;
-            }
-        if (ptCount > 0) {
-            int skin = firstSkin;
-            ImGui::SetNextItemWidth(160);
-            if (ImGui::Combo("Point skin", &skin, "Ring\0Cross\0"))
-                for (Primitive* p : scene.primitives)
-                    if (p->selected && p->GetDimension() == 0) p->pointSkin = skin;
-        }
-    }
-
     ImGui::Separator();
 
     if (ImGui::BeginChild("##primlist", {0,0}, false)) {
@@ -280,9 +262,7 @@ inline void Draw(Scene& scene, LuaUpdaterEditor& lua,
         std::function<void(SceneNode*)> seedExpand = [&](SceneNode* n) {
             if (!s_known.count(n)) {
                 s_known.insert(n);
-                // Don't auto-expand a vertex-points group: it can hold thousands
-                // of markers and would flood the tree.
-                if (!n->children.empty() && !n->IsVertexPointsGroup())
+                if (!n->children.empty())
                     s_expanded.insert(n);
             }
             for (SceneNode* ch : n->children) seedExpand(ch);
@@ -370,9 +350,8 @@ inline void Draw(Scene& scene, LuaUpdaterEditor& lua,
                 dl->AddRect(rp, re, IM_COL32(90,205,165,220), 3.f, 0, 1.5f);
 
             // Visibility "eye" toggle, drawn at the right edge. Shown for
-            // primitives and for grouping nodes (incl. an as-yet-empty vertex-
-            // points group, whose first reveal lazily generates its markers).
-            bool showEye = (isPrim || hasCh || node->IsVertexPointsGroup()) && !isRoot && !isCtrl;
+            // primitives and for grouping nodes (e.g. the SEM "offsets" group).
+            bool showEye = (isPrim || hasCh) && !isRoot && !isCtrl;
             float eyeR  = rowH * 0.24f;
             float eyeCx = rp.x + avW - eyeR - 8.f;
             float eyeCy = rp.y + rowH * .5f;

@@ -66,15 +66,7 @@ public:
     float srcRevAlpha    = 0.8f;
     float isoRevAlpha    = 0.5f;
 
-    // Opacity applied to every ColoredTriangles surface built by the 3D SEM
-    // pipeline (source / offsets / mesh / isosurface). Default 0.5.
-    float surf3dAlpha    = 0.5f;
-
-    // When true, every triangle-bearing pipeline primitive is rebuilt as edge
-    // wireframe (ColoredLine) instead of a filled ColoredTriangles surface.
-    // Toggled from the SEM window; RegenerateGeometry applies it by reloading
-    // each primitive from its saved CSV3D file.
-    bool  renderTrisAsLines = false;
+    float surf3dAlpha    = 1.f;
 
     char  status[256] = "Ready";
 
@@ -84,7 +76,7 @@ public:
 
     const std::string& SourcePath() const;
     Primitive*  SourcePrim()  const;
-    Primitive*  OffsetsPrim() const;
+    SceneNode*  OffsetsNode() const;
     Primitive*  MeshPrim()    const;
     Primitive*  IsolinePrim() const;
     Primitive*  SrcRevSurf()  const;
@@ -93,6 +85,11 @@ public:
     int         Dim()         const;
     bool        ThermalSolved() const;
     bool        HasIsolinePath() const;
+
+    // Directory the SEM core serializes pipeline products into (system temp dir,
+    // set on Bind). Empty until a source is bound. Used to default the stage
+    // re-import dialogs to where those files actually live.
+    const std::string& WorkDir() const { return m_workDir; }
 
     double MeshParamFactor() const;
     double TetParamFactor() const;
@@ -115,7 +112,7 @@ public:
     // so invalidated its input.
     void RecomputeUpTo(Scene& scene, Stage to, bool silent);
 
-    Primitive* StagePrim(Stage st) const;
+    SceneNode* StagePrim(Stage st) const;
     void SetStageVisible(Scene& scene, Stage st, bool show);
     void ResetStage(Scene& scene, Stage st);
 
@@ -143,6 +140,17 @@ public:
     bool ApplyIsoline(Scene& scene, bool silent);
 
     Primitive* ImportSource(Scene& scene, const std::string& path);
+
+    // Reload previously serialized pipeline stages into the SEM cache instead of
+    // recomputing them (SEM_LoadOffsets[3D] / SEM_LoadMesh[3D]). The staged source
+    // must already be bound (Bind ran SEM_LoadCSV3D / SEM_LoadSurface3D). The
+    // reloaded stage and every stage upstream of it are marked clean so a later
+    // Apply does not recompute over the imported cache; downstream stages are
+    // marked stale. ImportOffsets reads the <stem>_offset[3d]_<i>.csv3d shells
+    // from `dir`; ImportMesh reads a single <..>_mesh[3d].csv3d file.
+    bool ImportOffsets(Scene& scene, const std::string& dir);
+    bool ImportMesh(Scene& scene, const std::string& path);
+
     void RunFullPipeline(Scene& scene);
 
     // ======================================================================
@@ -181,12 +189,11 @@ public:
 
 private:
     std::string m_srcPath;
-    std::string m_offsetsPath;   // last serialized offsets file (for regeneration)
     std::string m_meshPath;      // last serialized mesh file (for regeneration)
     std::string m_isolinePath;
     std::string m_workDir;       // directory the SEM core serializes into
     Primitive*  m_srcPrim = nullptr;
-    Primitive*  m_offsets = nullptr;
+    SceneNode*  m_offsets = nullptr;   // empty "offsets" group holding the shells
     Primitive*  m_mesh    = nullptr;
     Primitive*  m_isoline = nullptr;
     Primitive*  m_srcRevSurf = nullptr;
@@ -257,6 +264,7 @@ private:
     std::string OutPath(const char* suffix) const;
 
     bool Alive(Scene& scene, Primitive* q) const;
+    bool Alive(Scene& scene, SceneNode* q) const;
     void Report(Scene& scene, bool silent, const std::string& msg);
     bool CheckRc(Scene& scene, bool silent, const char* call, int rc,
                  std::initializer_list<const char*> errs);
@@ -273,6 +281,20 @@ private:
     void DropOffsets(Scene& scene);
     void DropMesh(Scene& scene);
     void DropIsoline(Scene& scene);
+
+    // Re-import the current mesh file in place so its nodes recolour by the T
+    // field the thermal solver just wrote into it. Preserves visibility, stats,
+    // path, the solved flag, and any extracted isotherm (unlike DropMesh).
+    void ReloadMeshColored(Scene& scene);
+
+    // Load the per-shell offset files (<stem>_offset[3d]_<i>.csv3d) the SEM core
+    // serialized, as primitives under a fresh empty "offsets" group parented to
+    // the source contour. Aggregates m_offStats. Returns false if none loaded.
+    bool LoadOffsetShells(Scene& scene, bool silent, const std::string& dir = std::string());
+
+    // Delete stale per-shell offset files in the working dir so a run producing
+    // fewer shells than a previous one does not reload leftovers.
+    void CleanupOffsetFiles();
 
     bool ApplySubdivide(Scene& scene, bool silent);
     bool ApplyOffsets(Scene& scene, bool silent);

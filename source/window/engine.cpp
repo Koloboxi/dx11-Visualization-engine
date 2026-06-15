@@ -81,7 +81,12 @@ void Engine::Update()
 			this->gfx.scene.HandleLMouse(me.GetPosX(), me.GetPosY(), false);
 		}
 		if (me.GetType() == MouseEvent::EventType::RAW_MOVE && this->mouse.IsLeftDown()) {
-			if (this->gfx.scene.orientationTransformer.HasActiveObject()) {
+			if (this->gfx.scene.NavGizmoActive()) {
+				POINT cp; GetCursorPos(&cp);
+				ScreenToClient(this->render_window.GetHWND(), &cp);
+				this->gfx.scene.HandleNavGizmoDrag(cp.x, cp.y);
+			}
+			else if (this->gfx.scene.orientationTransformer.HasActiveObject()) {
 				XMFLOAT2 actionAxisScreen = { static_cast<float>(me.GetPosX()), -static_cast<float>(me.GetPosY()) };
 
 				POINT actionPointPoint;

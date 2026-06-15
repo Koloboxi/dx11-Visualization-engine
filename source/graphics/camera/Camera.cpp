@@ -4,18 +4,32 @@
 static constexpr float SCALE_MIN = 0.000001f;
 static constexpr float SCALE_MAX = 10000000.f;
 
+// Depth range = max(viewWidth, viewHeight) * scale * DEPTH_FACTOR.
+// Factor 10 means the clip volume is 10 viewport-widths deep on each side —
+// large enough to contain any visible scene, small enough to give full
+// depth-buffer precision at every zoom level.
+static constexpr float DEPTH_FACTOR = 10.0f;
+
 Camera::Camera() {
 	this->pos = XMFLOAT3(0.0f, 0.0f, 0.0f);
 	this->posVector = XMLoadFloat3(&this->pos);
 	UpdateViewMatrix();
 }
 
-void Camera::SetProjectionValues(float viewWidth, float viewHeight, float nearZ, float farZ) {
-	this->baseViewWidth = viewWidth;
+float Camera::DynamicHalfDepth() const {
+	float maxDim = baseViewWidth > baseViewHeight ? baseViewWidth : baseViewHeight;
+	float h = maxDim * scale * DEPTH_FACTOR;
+	return h < 1.0f ? 1.0f : h;
+}
+
+void Camera::SetProjectionValues(float viewWidth, float viewHeight, float /*nearZ*/, float /*farZ*/) {
+	this->baseViewWidth  = viewWidth;
 	this->baseViewHeight = viewHeight;
-	this->nearZ = nearZ;
-	this->farZ = farZ;
-	this->projectionMatrix = XMMatrixOrthographicRH(this->baseViewWidth * this->scale, this->baseViewHeight * this->scale, this->nearZ, this->farZ);
+	float h = DynamicHalfDepth();
+	this->projectionMatrix = XMMatrixOrthographicRH(
+		this->baseViewWidth  * this->scale,
+		this->baseViewHeight * this->scale,
+		-h, h);
 }
 
 const XMVECTOR& Camera::GetForwardVector()
@@ -69,10 +83,11 @@ const float Camera::GetScale() const
 void Camera::SetScale(const float& scaleFactor)
 {
 	this->scale = std::clamp(scaleFactor, SCALE_MIN, SCALE_MAX);
+	float h = DynamicHalfDepth();
 	this->projectionMatrix = XMMatrixOrthographicRH(
 		this->baseViewWidth  * this->scale,
 		this->baseViewHeight * this->scale,
-		this->nearZ, this->farZ);
+		-h, h);
 	UpdateViewMatrix();
 }
 
@@ -93,7 +108,8 @@ void Camera::AdjustScale(const float& scaleFactor, XMFLOAT2 scaleCenterNDC)
 	XMVECTOR dPos = this->vec_left * dx + this->vec_upward * dy;
 	this->AdjustPosition(dPos);
 
-	this->projectionMatrix = XMMatrixOrthographicRH(newWidth, newHeight, nearZ, farZ);
+	float h = DynamicHalfDepth();
+	this->projectionMatrix = XMMatrixOrthographicRH(newWidth, newHeight, -h, h);
 	UpdateViewMatrix();
 }
 

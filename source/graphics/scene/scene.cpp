@@ -54,6 +54,8 @@ bool Scene::Initialize(ID3D11Device* device, ID3D11DeviceContext* deviceContext,
 	this->camera.SetPosition(BaseVectors::ORIGIN);
 
 	this->orientationTransformer.Initialize(device, deviceContext);
+	this->navGizmo.Initialize(device, deviceContext);
+	this->navGizmo.UpdateLighting(this->ambient, this->intensity, this->shininess, this->smoothShade);
 
 	this->UpdateLight();
 	this->scenesPath = ResolveScenesDir();
@@ -105,9 +107,7 @@ void Scene::Draw()
 		if (!p->visible) continue;
 		UCHAR dim = p->GetDimension();
 		switch (dim) {
-		case 0: this->deviceContext->GSSetShader(
-				(p->pointSkin == Primitive::SKIN_CROSS ? this->geometryshaderpointscross : this->geometryshaderpoints).GetShader(),
-				NULL, 0); break;
+		case 0: this->deviceContext->GSSetShader(this->geometryshaderpoints.GetShader(), NULL, 0); break;
 		case 1: this->deviceContext->GSSetShader(this->geometryshaderthickness.GetShader(), NULL, 0); break;
 		case 2: this->deviceContext->GSSetShader(nullptr, NULL, 0); break;
 		}
@@ -175,6 +175,30 @@ void Scene::Draw()
 
 			SetOutline(p->selected ? Colors::SelectedColor : Colors::BLACK, p->selected ? 0.3f : 0.1f);
 			this->RenderOutlineToTexture(this->outlineThroughObjets && p->selected);
+		}
+		// Wireframe-only mode: the solid block above is skipped, so a selected
+		// object would show no outline. Fill the mask with the primitive's
+		// silhouette (no solid fill on the main RTV) and produce the green
+		// selection outline from it.
+		else if (this->rsWireframe && p->selected) {
+			this->deviceContext->ClearRenderTargetView(this->maskRTV.Get(), Colors::clearColor);
+
+			this->deviceContext->OMSetRenderTargets(3, this->rtvsMask, this->dsView);
+			this->deviceContext->OMSetDepthStencilState(
+				this->outlineThroughObjets ? this->dsStateNoDepth.Get() : this->dsStateDepth.Get(), 0);
+			p->Draw(this->camera.GetViewMatrix(), projectionMatrix);
+
+			this->deviceContext->OMSetRenderTargets(1, this->rtvsMain, this->dsView);
+			this->deviceContext->OMSetDepthStencilState(this->dsStateDepth.Get(), 0);
+
+			this->deviceContext->ResolveSubresource(
+				this->geometryPresenceMaskResolved.Get(), 0,
+				this->geometryPresenceMask.Get(), 0,
+				DXGI_FORMAT_R8_UNORM
+			);
+
+			SetOutline(Colors::SelectedColor, 0.3f);
+			this->RenderOutlineToTexture(this->outlineThroughObjets);
 		}
 		if (this->rsWireframe) {
 			this->deviceContext->RSSetState(this->rasterizerWireframe.Get());
@@ -247,15 +271,64 @@ void Scene::Draw()
 	this->deviceContext->GSSetShader(nullptr, NULL, 0);
 	this->orientationTransformer.Draw(this->camera.GetViewMatrix(), this->camera.GetProjectionMatrix(), this->camera.GetScale());
 
+	// ---- Nav gizmo: a 3D orientation widget pinned in the top-right corner ----
+	// It is drawn with its own fixed orthographic view (camera rotation only) into
+	// a small corner viewport, so it stays constant size while reflecting the live
+	// orientation. Depth is cleared first so the gizmo self-occludes correctly;
+	// nothing after this uses dsView for colour.
+	const XMMATRIX gizmoView = NavGizmo::GizmoView(this->camera.GetViewMatrix());
+	const XMMATRIX gizmoProj = NavGizmo::GizmoProj();
+
+	D3D11_VIEWPORT fullVp{};
+	fullVp.TopLeftX = 0.f; fullVp.TopLeftY = 0.f;
+	fullVp.Width = (float)this->width; fullVp.Height = (float)this->height;
+	fullVp.MinDepth = 0.f; fullVp.MaxDepth = 1.f;
+
+	D3D11_VIEWPORT cornerVp = fullVp;
+	cornerVp.TopLeftX = (float)this->width - NavGizmo::RIGHT_MARGIN - NavGizmo::VIEW_PX;
+	cornerVp.TopLeftY = NavGizmo::TOP_MARGIN;
+	cornerVp.Width = NavGizmo::VIEW_PX; cornerVp.Height = NavGizmo::VIEW_PX;
+
+	this->deviceContext->IASetInputLayout(this->vsMain->GetInputLayout());
+	this->deviceContext->VSSetShader(this->vsMain->GetShader(), NULL, 0);
+	this->deviceContext->GSSetShader(nullptr, NULL, 0);
+	this->deviceContext->PSSetShader(this->pixelShaderMain.GetShader(), NULL, 0);
+	this->deviceContext->RSSetState(this->rasterizerSolidNoCull.Get());
+	this->deviceContext->OMSetRenderTargets(1, this->rtvsMain, this->dsView);
+	this->deviceContext->OMSetDepthStencilState(this->dsStateDepth.Get(), 0);
+	this->deviceContext->ClearDepthStencilView(this->dsView, D3D11_CLEAR_DEPTH, 1.0f, 0);
+	this->deviceContext->RSSetViewports(1, &cornerVp);
+	this->navGizmo.Draw(gizmoView, gizmoProj);
+	this->deviceContext->RSSetViewports(1, &fullVp);
+
 	if (doIDPass) {
 		this->deviceContext->OMSetRenderTargets(1, this->rtvIDs, this->dsViewNoMSAA);
 		this->deviceContext->PSSetShader(this->pixelShaderWriteIDs.GetShader(), NULL, 0);
 		this->deviceContext->PSSetConstantBuffers(1, 1, this->cb_ps_id.GetAddressOf());
+		// Transformer IDs are written depth-test-off so the gizmo stays pickable
+		// regardless of scene depth (as before this gizmo was added).
+		this->deviceContext->OMSetDepthStencilState(this->dsStateNoDepth.Get(), 0);
 		std::vector<UINT> idsAux = this->orientationTransformer.GetAuxiliaryObjectsIDs();
 		for (UINT id : idsAux) {
 			this->SetIDToWrite(id);
 			this->orientationTransformer.DrawID(this->camera.GetViewMatrix(), this->camera.GetProjectionMatrix(), this->camera.GetScale(), id);
 		}
+
+		// Gizmo IDs into the corner region, with its own depth (cleared first) so
+		// overlapping arcs/ball/faces resolve to the nearest one.
+		this->deviceContext->IASetInputLayout(this->vsMain->GetInputLayout());
+		this->deviceContext->VSSetShader(this->vsMain->GetShader(), NULL, 0);
+		this->deviceContext->GSSetShader(nullptr, NULL, 0);
+		this->deviceContext->RSSetState(this->rasterizerSolidNoCull.Get());
+		this->deviceContext->OMSetDepthStencilState(this->dsStateDepth.Get(), 0);
+		this->deviceContext->ClearDepthStencilView(this->dsViewNoMSAA, D3D11_CLEAR_DEPTH, 1.0f, 0);
+		this->deviceContext->RSSetViewports(1, &cornerVp);
+		for (UINT id : this->navGizmo.GetIDs()) {
+			this->SetIDToWrite(id);
+			this->navGizmo.DrawID(gizmoView, gizmoProj, id);
+		}
+		this->deviceContext->RSSetViewports(1, &fullVp);
+
 		this->idPassNeeded = false;
 	}
 
@@ -341,6 +414,17 @@ void Scene::HandleLMouse(int px, int py, bool tPressfRelease)
 		}
 
 		if (tPressfRelease) {
+			// Nav gizmo (corner): arcs rotate the camera (drag), faces snap views,
+			// the ball toggles iso/dim. Keep the projection preset in sync first.
+			this->navGizmo.SetProjection(this->projUpAxis, this->projUpSign);
+			for (UINT gid : this->navGizmo.GetIDs()) {
+				if (id == gid) {
+					this->navGizmo.HandleObjPress(id, this->camera);
+					blockNextLMouseRelease = true;
+					return;
+				}
+			}
+
 			std::vector<UINT> auxIDs = this->orientationTransformer.GetAuxiliaryObjectsIDs();
 			for (UINT auxID : auxIDs) {
 				if (id == auxID) {
@@ -352,6 +436,7 @@ void Scene::HandleLMouse(int px, int py, bool tPressfRelease)
 			return;
 		}
 		this->orientationTransformer.HandleObjRelease();
+		this->navGizmo.HandleObjRelease();
 
 		if (blockNextLMouseRelease) { blockNextLMouseRelease = false; return; }
 
@@ -545,7 +630,7 @@ void Scene::AddFromCSVMesh(const std::string& path, const XMFLOAT4& lineCol, con
 }
 
 Primitive* Scene::AddFromCSV3D(const std::string& path, const std::string& name, SceneNode* parent, const XMFLOAT4* overrideColor,
-	const XMFLOAT4& gradLow, const XMFLOAT4& gradHigh, bool renderTrianglesAsLines, bool ensureCCW)
+	const XMFLOAT4& gradLow, const XMFLOAT4& gradHigh, bool ensureCCW)
 {
 	CSV3DLoader::CSV3DData data;
 	if (!CSV3DLoader::Load(path, data)) {
@@ -553,8 +638,6 @@ Primitive* Scene::AddFromCSV3D(const std::string& path, const std::string& name,
 		return nullptr;
 	}
 
-	// Derive the primitive name from the file stem unless an explicit name
-	// was supplied by the caller.
 	std::string primName = name;
 	if (primName.empty()) {
 		auto slash = path.find_last_of("\\/");
@@ -566,18 +649,12 @@ Primitive* Scene::AddFromCSV3D(const std::string& path, const std::string& name,
 	const auto& N = data.nodes;
 	const size_t numNodes = N.size();
 
-	// Colour a node by its T value along the gradLow→gradHigh gradient, unless
-	// an explicit override colour was supplied by the caller.
 	auto nodeColor = [&](unsigned i) -> XMFLOAT4 {
 		return overrideColor ? *overrideColor : Colors::Lerp(gradLow, gradHigh, N[i].T);
 	};
 
-	// Triangles are rendered as a filled TRIANGLELIST surface (flat-shaded,
-	// per-vertex coloured), not as wireframe. Expand each triangle into three
-	// independent vertices. When renderTrianglesAsLines is set the surface is
-	// skipped and the triangles contribute their sides to the wireframe below.
 	Primitive* surface = nullptr;
-	if (!data.triangles.empty() && !renderTrianglesAsLines) {
+	if (!data.triangles.empty()) {
 		std::vector<XMFLOAT3> tposes;
 		std::vector<XMFLOAT4> tcols;
 		tposes.reserve(data.triangles.size() * 3);
@@ -592,8 +669,6 @@ Primitive* Scene::AddFromCSV3D(const std::string& path, const std::string& name,
 			surface = PrimitiveConstructor::ColoredTriangles(tposes, tcols, NextId(), ensureCCW);
 	}
 
-	// Collect unique edges from polygon faces and explicit edges. Triangles are
-	// drawn as a filled surface above, so they no longer contribute wireframe.
 	std::set<std::pair<unsigned, unsigned>> edges;
 	auto addEdge = [&](unsigned a, unsigned b) {
 		if (a == b) return;
@@ -601,29 +676,21 @@ Primitive* Scene::AddFromCSV3D(const std::string& path, const std::string& name,
 			edges.insert(a < b ? std::make_pair(a, b) : std::make_pair(b, a));
 	};
 
-	// Polygon faces contribute their boundary edges (closed loop).
 	for (const auto& f : data.faces) {
 		const size_t m = f.size();
 		for (size_t i = 0; i < m; ++i)
 			addEdge(f[i], f[(i + 1) % m]);
 	}
-
-	// Explicit edges.
 	for (const auto& e : data.edges)
 		addEdge(e.first, e.second);
+	// The 3D band mesh stores tetrahedra (#tets). Render each tet as its 6
+	// edges; the std::set dedupes shared edges so interior faces are not drawn
+	// repeatedly.
+	for (const auto& t : data.tets) {
+		addEdge(t.x, t.y); addEdge(t.x, t.z); addEdge(t.x, t.w);
+		addEdge(t.y, t.z); addEdge(t.y, t.w); addEdge(t.z, t.w);
+	}
 
-	// When the caller asked for a wireframe, triangles contribute their three
-	// sides here instead of being drawn as a filled surface above.
-	if (renderTrianglesAsLines)
-		for (const auto& t : data.triangles) {
-			addEdge(t.x, t.y);
-			addEdge(t.y, t.z);
-			addEdge(t.z, t.x);
-		}
-
-	// Build a single LINELIST: two vertices per edge, each coloured by its
-	// node's T value along the gradient so the rasteriser interpolates along
-	// the segment.
 	Primitive* lines = nullptr;
 	if (!edges.empty()) {
 		std::vector<XMFLOAT3> poses;
@@ -645,13 +712,11 @@ Primitive* Scene::AddFromCSV3D(const std::string& path, const std::string& name,
 		return nullptr;
 	}
 
-	// Primary primitive: the surface when present, otherwise the wireframe.
 	Primitive* p = surface ? surface : lines;
 	p->name = primName;
 	this->primitives.push_back(p);
 	(parent ? parent : &root)->AddChild(p);
 
-	// When both exist, attach the wireframe as a child so they move together.
 	if (surface && lines) {
 		lines->name = primName + " (edges)";
 		this->primitives.push_back(lines);
@@ -717,6 +782,19 @@ void Scene::RemovePrimitive(Primitive* p)
 	m_sortedDirty = true;
 }
 
+// Remove an arbitrary node (e.g. an empty grouping node) and its whole subtree.
+// Descendant primitives are erased from `primitives` by DestroyNodeRecursive.
+void Scene::RemoveNode(SceneNode* n)
+{
+	if (!n) return;
+	if (this->orientationTransformer.HasActiveObject())
+		this->orientationTransformer.HandleObjRelease();
+	this->orientationTransformer.SetTargetObjects({});
+	if (n->parent) n->parent->RemoveChild(n);
+	DestroyNodeRecursive(n);
+	m_sortedDirty = true;
+}
+
 // Recursively destroys a node and everything below it: child subtrees first,
 // then the node itself (erasing it from `primitives` if it is a Primitive).
 void Scene::DestroyNodeRecursive(SceneNode* n)
@@ -735,71 +813,28 @@ void Scene::DestroyNodeRecursive(SceneNode* n)
 	delete n;
 }
 
-VertexPointsGroup* Scene::AttachVertexPointsGroup(Primitive* src)
+SceneNode* Scene::AddGroupNode(const std::string& name, SceneNode* parent)
 {
-	if (!src) return nullptr;
-	for (SceneNode* ch : src->children)
-		if (ch->IsVertexPointsGroup()) return static_cast<VertexPointsGroup*>(ch);
-
-	auto* g = new VertexPointsGroup();
-	g->name    = "Vertex points";
-	g->source  = src;
-	g->visible = false;
-	src->AddChild(g);
-	return g;
-}
-
-// Lazily populate a vertex-points group with one yellow "+" cross per unique
-// source vertex. Idempotent.
-void Scene::GenerateVertexPoints(VertexPointsGroup* g)
-{
-	if (!g || g->generated || !g->source) return;
-
-	const XMFLOAT4 yellow(1.0f, 0.9f, 0.1f, 1.0f);
-	const std::vector<Vertex> verts = g->source->GetVertexData();
-
-	std::set<std::tuple<int, int, int>> seen;
-	for (const Vertex& v : verts) {
-		auto key = std::make_tuple((int)llround(v.pos.x * 1000.0),
-		                           (int)llround(v.pos.y * 1000.0),
-		                           (int)llround(v.pos.z * 1000.0));
-		if (!seen.insert(key).second) continue;
-
-		Primitive* pt = PrimitiveConstructor::Point(v.pos, yellow, NextId());
-		pt->pointSkin = Primitive::SKIN_CROSS;
-		pt->name      = "v";
-		pt->visible   = g->visible;
-		this->primitives.push_back(pt);
-		g->AddChild(pt);
-	}
-	g->generated = true;
+	auto* g = new SceneNode();
+	g->name = name;
+	(parent ? parent : &root)->AddChild(g);
 	m_sortedDirty = true;
+	return g;
 }
 
 void Scene::SetNodeVisibleCascade(SceneNode* n, bool show)
 {
 	if (!n) return;
 	n->visible = show;
-	if (show && n->IsVertexPointsGroup())
-		GenerateVertexPoints(static_cast<VertexPointsGroup*>(n));
 
 	std::function<void(SceneNode*)> rec = [&](SceneNode* m) {
 		for (SceneNode* ch : m->children) {
-			if (ch->IsVertexPointsGroup()) continue;
 			ch->visible = show;
 			rec(ch);
 		}
 	};
 	rec(n);
 	m_sortedDirty = true;
-}
-
-// Reveal (or hide) the vertex markers belonging to `src`, creating the group on
-// demand. Used by the SEM "Subdivide" action to force the markers on.
-void Scene::ShowVertexPointsFor(Primitive* src, bool show)
-{
-	VertexPointsGroup* g = AttachVertexPointsGroup(src);
-	if (g) SetNodeVisibleCascade(g, show);
 }
 
 void Scene::UpdateLight()
@@ -810,6 +845,7 @@ void Scene::UpdateLight()
 		p->SetSmoothShading(this->smoothShade);
 	}
 	this->orientationTransformer.UpdateLighting(this->ambient, this->intensity, this->shininess, this->smoothShade);
+	this->navGizmo.UpdateLighting(this->ambient, this->intensity, this->shininess, this->smoothShade);
 }
 
 void Scene::ApplySectionCB(bool forceDisabled)
@@ -1131,9 +1167,6 @@ bool Scene::InitializeDirectX()
 	if (!this->geometryshaderpoints.Initialize(this->device, this->shadersPath + L"geometryshaderpoints.cso"))
 		return false;
 
-	if (!this->geometryshaderpointscross.Initialize(this->device, this->shadersPath + L"geometryshaderpointscross.cso"))
-		return false;
-
 	if (!this->geometryshaderthickness.Initialize(this->device, this->shadersPath + L"geometryshaderthickness.cso"))
 		return false;
 
@@ -1147,9 +1180,13 @@ bool Scene::InitializeDirectX()
 			rasterizerDesc.MultisampleEnable = TRUE;
 			rasterizerDesc.FrontCounterClockwise = TRUE;
 			hr = this->device->CreateRasterizerState(&rasterizerDesc, this->rasterizerSolid.GetAddressOf());
+			// Wireframe: draw edges from both sides of two-sided surfaces, so
+			// disable back-face culling for it (the solid state keeps culling).
 			rasterizerDesc.FillMode = D3D11_FILL_WIREFRAME;
+			rasterizerDesc.CullMode = D3D11_CULL_NONE;
 			hr = this->device->CreateRasterizerState(&rasterizerDesc, this->rasterizerWireframe.GetAddressOf());
 			COM_ERROR_IF_FAILED(hr, "Failed to create rasterizer state.");
+			rasterizerDesc.CullMode = D3D11_CULL_BACK;
 
 			rasterizerDesc.CullMode = D3D11_CULL_NONE;
 			rasterizerDesc.FillMode = D3D11_FILL_SOLID;

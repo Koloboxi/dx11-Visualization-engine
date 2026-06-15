@@ -21,6 +21,9 @@ namespace Colors {
 	static const XMFLOAT4 MAGENTA = XMFLOAT4(1, 0, 1, 1);
 	static const XMFLOAT4 YELLOW = XMFLOAT4(1, 1, 0, 1);
 
+	static const XMFLOAT4 FRONT_FACE_WHITE = XMFLOAT4(0.94f, 0.93f, 0.91f, 1.0f);
+	static const XMFLOAT4 BACK_FACE_RED    = XMFLOAT4(0.81f, 0.20f, 0.16f, 1.0f);
+
 	// Linear interpolation between two colours by parameter T.
 	// T is clamped to [0,1]: T=0 returns 'a', T=1 returns 'b'.
 	// 'inline' (not 'static'): a single shared definition is emitted across

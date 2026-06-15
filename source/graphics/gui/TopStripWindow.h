@@ -12,6 +12,14 @@ static bool   s_sectionOpen   = false;
 static ImVec2 s_sectionBtnMin = {};
 static ImVec2 s_sectionBtnMax = {};
 
+static bool   s_thickOpen     = false;
+static ImVec2 s_thickBtnMin   = {};
+static ImVec2 s_thickBtnMax   = {};
+
+static bool   s_projOpen      = false;
+static ImVec2 s_projBtnMin    = {};
+static ImVec2 s_projBtnMax    = {};
+
 inline void DrawMenuBarContents(Scene& scene, bool& blockMousePick, const char* fpsText = nullptr) {
     if (!ImGui::BeginMenuBar()) return;
 
@@ -37,6 +45,27 @@ inline void DrawMenuBarContents(Scene& scene, bool& blockMousePick, const char* 
     GuiIcons::ToggleIconButton("##section", &s_sectionOpen,              btnSz, GuiIcons::SectionIcon);
     s_sectionBtnMin = ImGui::GetItemRectMin();
     s_sectionBtnMax = ImGui::GetItemRectMax();
+    ImGui::SameLine();
+
+    GuiIcons::ToggleIconButton("##thickness", &s_thickOpen,              btnSz, GuiIcons::LineWeightIcon);
+    s_thickBtnMin = ImGui::GetItemRectMin();
+    s_thickBtnMax = ImGui::GetItemRectMax();
+    ImGui::SameLine();
+
+    GuiIcons::ToggleIconButton("##projparams", &s_projOpen,              btnSz, GuiIcons::ProjectionIcon);
+    s_projBtnMin = ImGui::GetItemRectMin();
+    s_projBtnMax = ImGui::GetItemRectMax();
+    ImGui::SameLine();
+
+    // Render modes moved here from the nav-cube panel.
+    GuiIcons::ToggleIconButton("##solid",  &scene.rsSolid,     btnSz, GuiIcons::SolidCube);
+    ImGui::SetItemTooltip("Solid (filled) rendering.");
+    ImGui::SameLine();
+    GuiIcons::ToggleIconButton("##wire",   &scene.rsWireframe, btnSz, GuiIcons::WireframeCube);
+    ImGui::SetItemTooltip("Wireframe rendering.");
+    ImGui::SameLine();
+    GuiIcons::ToggleIconButton("##nocull", &scene.rsNoCull,    btnSz, GuiIcons::NoCullIcon);
+    ImGui::SetItemTooltip("Two-sided faces (disable back-face culling).");
 
     if (fpsText && fpsText[0]) {
         char buf[32];
@@ -113,6 +142,62 @@ inline void DrawMenuBarContents(Scene& scene, bool& blockMousePick, const char* 
         ImGui::SetItemTooltip("Keep the other half of the geometry.");
 
         ImGui::EndDisabled();
+
+        if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem))
+            blockMousePick = true;
+
+        ImGui::End();
+    }
+
+    if (s_thickOpen) {
+        float popW = 230.f;
+        float popX = s_thickBtnMin.x;
+        float vpRight = ImGui::GetMainViewport()->WorkPos.x + ImGui::GetMainViewport()->WorkSize.x;
+        if (popX + popW > vpRight) popX = vpRight - popW - 4.f;
+
+        ImGui::SetNextWindowPos({popX, s_thickBtnMax.y + 2.f}, ImGuiCond_Always);
+        ImGui::SetNextWindowSize({popW, 0.f}, ImGuiCond_Always);
+        ImGui::Begin("##thickpopup", nullptr,
+            ImGuiWindowFlags_NoTitleBar       | ImGuiWindowFlags_NoResize     |
+            ImGuiWindowFlags_NoMove           | ImGuiWindowFlags_AlwaysAutoResize |
+            ImGuiWindowFlags_NoSavedSettings  | ImGuiWindowFlags_NoFocusOnAppearing |
+            ImGuiWindowFlags_NoDocking        | ImGuiWindowFlags_NoCollapse);
+
+        ImGui::SetNextItemWidth(popW - 90.f);
+        ImGui::DragFloat("Line thickness", &scene.lineThickness, 0.0002f, 0.0002f, 0.05f, "%.4f");
+        ImGui::SetItemTooltip("Width of geometry-shader-thickened lines, in clip-space\n"
+                              "half-width units. Applies live to every thick line.");
+        if (scene.lineThickness < 0.0001f) scene.lineThickness = 0.0001f;
+
+        if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem))
+            blockMousePick = true;
+
+        ImGui::End();
+    }
+
+    if (s_projOpen) {
+        float popW = 220.f;
+        float popX = s_projBtnMin.x;
+        float vpRight = ImGui::GetMainViewport()->WorkPos.x + ImGui::GetMainViewport()->WorkSize.x;
+        if (popX + popW > vpRight) popX = vpRight - popW - 4.f;
+
+        ImGui::SetNextWindowPos({popX, s_projBtnMax.y + 2.f}, ImGuiCond_Always);
+        ImGui::SetNextWindowSize({popW, 0.f}, ImGuiCond_Always);
+        ImGui::Begin("##projpopup", nullptr,
+            ImGuiWindowFlags_NoTitleBar       | ImGuiWindowFlags_NoResize     |
+            ImGuiWindowFlags_NoMove           | ImGuiWindowFlags_AlwaysAutoResize |
+            ImGuiWindowFlags_NoSavedSettings  | ImGuiWindowFlags_NoFocusOnAppearing |
+            ImGuiWindowFlags_NoDocking        | ImGuiWindowFlags_NoCollapse);
+
+        ImGui::TextUnformatted("Standard projections (iso/dim)");
+        ImGui::TextDisabled("Vertical axis & direction the nav-cube\nball points up.");
+        ImGui::TextUnformatted("Up axis");
+        ImGui::RadioButton("X", &scene.projUpAxis, 0); ImGui::SameLine();
+        ImGui::RadioButton("Y", &scene.projUpAxis, 1); ImGui::SameLine();
+        ImGui::RadioButton("Z", &scene.projUpAxis, 2);
+        ImGui::TextUnformatted("Direction");
+        ImGui::RadioButton("+", &scene.projUpSign,  1); ImGui::SameLine();
+        ImGui::RadioButton("-", &scene.projUpSign, -1);
 
         if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem))
             blockMousePick = true;

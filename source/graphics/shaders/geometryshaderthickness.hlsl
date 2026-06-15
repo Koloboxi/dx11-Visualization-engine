@@ -1,6 +1,7 @@
 cbuffer AspectRatio : register(b0)
 {
     float aspectRatio;
+    float thickness;
 }
 
 struct VS_OUT
@@ -20,8 +21,6 @@ struct GS_OUT
 [maxvertexcount(4)]
 void gs_thick_line(line VS_OUT input[2], inout TriangleStream<GS_OUT> stream)
 {
-    float thickness = 0.001;
-
     float4 p0 = input[0].pos;
     float4 p1 = input[1].pos;
 

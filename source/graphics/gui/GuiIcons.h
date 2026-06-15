@@ -136,6 +136,30 @@ inline void NoCullIcon(ImDrawList* dl, ImVec2 c, float r) {
     dl->AddLine({c.x-ax,c.y},{c.x-ax+ah,c.y+ah}, a, t);
 }
 
+// Three stacked horizontal bars of increasing weight — the line-thickness control.
+inline void LineWeightIcon(ImDrawList* dl, ImVec2 c, float r) {
+    ImU32 col = IM_COL32(205,218,248,230);
+    float w = r * .92f;
+    dl->AddLine({c.x-w,c.y-r*.55f},{c.x+w,c.y-r*.55f}, col, 1.0f);
+    dl->AddLine({c.x-w,c.y},       {c.x+w,c.y},        col, 2.2f);
+    dl->AddLine({c.x-w,c.y+r*.62f},{c.x+w,c.y+r*.62f}, col, 4.0f);
+}
+
+// A small isometric cube with a green "up" arrow — the standard-projection params.
+inline void ProjectionIcon(ImDrawList* dl, ImVec2 c, float r) {
+    float rx = r * .80f, ry = r * .46f;
+    ImVec2 T={c.x,c.y-r*.55f}, TR={c.x+rx,c.y-ry+r*.1f}, BR={c.x+rx,c.y+ry*.65f};
+    ImVec2 B={c.x,c.y+r*.78f}, BL={c.x-rx,c.y+ry*.65f}, TL={c.x-rx,c.y-ry+r*.1f}, M={c.x,c.y+r*.12f};
+    ImU32 e=IM_COL32(200,214,246,215); float t=.9f;
+    dl->AddLine(T,TR,e,t); dl->AddLine(T,TL,e,t);
+    dl->AddLine(TR,BR,e,t); dl->AddLine(TL,BL,e,t);
+    dl->AddLine(BR,B,e,t); dl->AddLine(BL,B,e,t);
+    dl->AddLine(T,M,e,t); dl->AddLine(M,BR,e,t); dl->AddLine(M,BL,e,t);
+    ImU32 g=IM_COL32(95,225,110,235);
+    dl->AddLine({c.x+r*.62f,c.y+r*.55f},{c.x+r*.62f,c.y-r*.7f}, g, 1.3f);
+    dl->AddTriangleFilled({c.x+r*.62f,c.y-r*.86f},{c.x+r*.45f,c.y-r*.56f},{c.x+r*.79f,c.y-r*.56f}, g);
+}
+
 template<typename DrawFn>
 inline bool ToggleIconButton(const char* id, bool* toggled, float sz, DrawFn drawFn) {
     ImVec2 p = ImGui::GetCursorScreenPos();

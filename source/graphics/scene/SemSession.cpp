@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <algorithm>
 #include <filesystem>
+#include <functional>
 #include <excpt.h>
 
 namespace fs = std::filesystem;
@@ -44,6 +45,10 @@ Stats ComputeStats(const std::string& path) {
         for (size_t i = 0; i < m; ++i) add(f[i], f[(i + 1) % m]);
     }
     for (const auto& e : d.edges) add(e.first, e.second);
+    for (const auto& t : d.tets) {
+        add(t.x, t.y); add(t.x, t.z); add(t.x, t.w);
+        add(t.y, t.z); add(t.y, t.w); add(t.z, t.w);
+    }
 
     s.edges = (int)edgeUse.size();
     if (s.tris > 0)
@@ -204,7 +209,7 @@ std::string SemDetail() {
 
 const std::string& SemSession::SourcePath() const { return m_srcPath; }
 Primitive*  SemSession::SourcePrim()  const { return m_srcPrim; }
-Primitive*  SemSession::OffsetsPrim() const { return m_offsets; }
+SceneNode*  SemSession::OffsetsNode() const { return m_offsets; }
 Primitive*  SemSession::MeshPrim()    const { return m_mesh; }
 Primitive*  SemSession::IsolinePrim() const { return m_isoline; }
 Primitive*  SemSession::SrcRevSurf()  const { return m_srcRevSurf; }
@@ -245,7 +250,6 @@ void SemSession::Bind(Scene& scene, Primitive* prim) {
     m_isoline   = nullptr;
     m_srcRevSurf = nullptr;
     m_isoRevSurf = nullptr;
-    m_offsetsPath.clear();
     m_meshPath.clear();
     m_isolinePath.clear();
     m_thermalSolved = false;
@@ -277,7 +281,7 @@ void SemSession::Unbind() {
     m_srcPrim = nullptr; m_srcPath.clear();
     m_offsets = nullptr; m_mesh = nullptr; m_isoline = nullptr;
     m_srcRevSurf = nullptr; m_isoRevSurf = nullptr;
-    m_offsetsPath.clear(); m_meshPath.clear(); m_isolinePath.clear();
+    m_meshPath.clear(); m_isolinePath.clear();
     m_thermalSolved = false;
     m_srcStats = m_offStats = m_meshStats = Stats();
     snprintf(status, sizeof(status), "Ready");
@@ -341,15 +345,15 @@ void SemSession::RecomputeUpTo(Scene& scene, Stage to, bool silent) {
     scene.UpdateLight();
 }
 
-Primitive* SemSession::StagePrim(Stage st) const {
+SceneNode* SemSession::StagePrim(Stage st) const {
     return st == STAGE_OFFSETS ? m_offsets
-         : st == STAGE_MESH    ? m_mesh
-         : st == STAGE_THERMAL ? m_isoline
+         : st == STAGE_MESH    ? static_cast<SceneNode*>(m_mesh)
+         : st == STAGE_THERMAL ? static_cast<SceneNode*>(m_isoline)
          : nullptr;
 }
 
 void SemSession::SetStageVisible(Scene& scene, Stage st, bool show) {
-    Primitive* p = StagePrim(st);
+    SceneNode* p = StagePrim(st);
     if (show && !(p && Alive(scene, p))) {
         RecomputeUpTo(scene, st, false);
         p = StagePrim(st);
@@ -433,8 +437,18 @@ void SemSession::SetIsoRevAlpha(Scene& scene, float a) {
 
 void SemSession::SetSurf3dAlpha(Scene& scene, float a) {
     surf3dAlpha = a;
-    for (Primitive* p : { m_srcPrim, m_offsets, m_mesh, m_isoline })
+    for (Primitive* p : { m_srcPrim, m_mesh, m_isoline })
         if (Alive(scene, p)) p->SetAlpha(a);
+    // The offsets are a group of shell primitives; apply alpha to each.
+    if (Alive(scene, m_offsets)) {
+        std::function<void(SceneNode*)> rec = [&](SceneNode* n) {
+            for (SceneNode* ch : n->children) {
+                if (ch->IsPrimitive()) static_cast<Primitive*>(ch)->SetAlpha(a);
+                rec(ch);
+            }
+        };
+        rec(m_offsets);
+    }
 }
 
 void SemSession::DropSrcRev(Scene& scene) {
@@ -457,9 +471,9 @@ bool SemSession::ApplyThermal(Scene& scene, bool silent) {
     if (!HasSource()) return false;
     if (!Alive(scene, m_mesh)) { Report(scene, silent, "Build the mesh first."); return false; }
     // SEM_SolveThermal overwrites each cached mesh node's T with the steady-state
-    // temperature in place; the field is consumed by the isotherm/isosurface
-    // extraction below. The core no longer serializes the mesh here, so the
-    // displayed mesh keeps its build-time (distance-field) colouring.
+    // temperature in place AND rewrites the serialized mesh file (the pre-solve
+    // <stem>_mesh[3d].csv3d had T = 0). Re-import it below so the displayed mesh
+    // recolours by the solved field; the same field feeds the isotherm/isosurface.
     int rc = (dim == 3) ? SafeSolveThermal3D() : SafeSolveThermal();
     if (rc == -100) {
         Report(scene, silent, "Thermal solver crashed (access violation caught).");
@@ -470,6 +484,7 @@ bool SemSession::ApplyThermal(Scene& scene, bool silent) {
                    "", "No boundary nodes", "Solve failed" }))
         return false;
     m_thermalSolved = true;
+    ReloadMeshColored(scene);
     snprintf(status, sizeof(status), "Thermal solved.");
     return true;
 }
@@ -497,8 +512,8 @@ bool SemSession::ApplyIsoline(Scene& scene, bool silent) {
         DropIsoline(scene);
         const XMFLOAT4 green(0.0f, 1.0f, 0.0f, 1.0f);
         const std::string namePrefix = (dim == 3 ? "isosurface_" : "isoline_");
-        m_isoline = scene.AddFromCSV3D(p, namePrefix + Stem(m_srcPath), AttachParent(), &green, Colors::BLUE, Colors::RED, renderTrisAsLines);
-        if (dim == 3 && !renderTrisAsLines) ConfigureSurface3D(m_isoline);   // isosurface is a triangle mesh
+        m_isoline = scene.AddFromCSV3D(p, namePrefix + Stem(m_srcPath), AttachParent(), &green, Colors::BLUE, Colors::RED);
+        if (dim == 3) ConfigureSurface3D(m_isoline);
         m_isolinePath = p;
         if (revWasShown && m_isoline) BuildIsolineRevolution(scene);
         snprintf(status, sizeof(status), "%s T=%.3f: %s",
@@ -514,17 +529,21 @@ Primitive* SemSession::ImportSource(Scene& scene, const std::string& path) {
     if (path.empty()) return nullptr;
     Primitive* src = nullptr;
     try {
-        // Source surface is shown exactly as authored: no winding fix-up.
-        src = scene.AddFromCSV3D(path, "", nullptr, nullptr, Colors::BLUE, Colors::RED, false, false);
+        src = scene.AddFromCSV3D(path, "", nullptr, nullptr, Colors::BLUE, Colors::RED, false);
         if (!src) { Report(scene, false, "Import failed: could not load CSV3D."); return nullptr; }
         src->semSourcePath = path;
-        scene.AttachVertexPointsGroup(src);
         scene.stagingEnabled = true;
         scene.SetStaged(src);
         Bind(scene, src);
-        // Bind auto-detects the pipeline dimension; a 3D source surface is a
-        // ColoredTriangles mesh, so make it semi-transparent.
-        if (dim == 3) ConfigureSurface3D(src);
+        if (dim == 3) {
+            ConfigureSurface3D(src);
+            src->SetColor(Colors::FRONT_FACE_WHITE);
+            src->SetUseVertexColor(false);
+            src->SetTwoSided(true, Colors::BACK_FACE_RED);
+        } else {
+            src->SetColor(Colors::WHITE);
+            src->SetUseVertexColor(false);
+        }
         scene.UpdateLight();
         // Revolution mode is a 2D-contour feature only. For a 2D source, an
         // open half-profile whose endpoints sit on the Y axis is a surface-
@@ -537,6 +556,62 @@ Primitive* SemSession::ImportSource(Scene& scene, const std::string& path) {
     catch (const std::exception& e) { Report(scene, false, std::string("Import failed: ") + e.what()); }
     catch (...)                     { Report(scene, false, "Import failed: unknown exception."); }
     return src;
+}
+
+bool SemSession::ImportOffsets(Scene& scene, const std::string& dir) {
+    if (!HasSource()) { Report(scene, false, "Import offsets: no staged source."); return false; }
+    if (AsyncRunning()) return false;
+    // dir null/empty => the SEM core reads from its working dir; pass the chosen
+    // directory through so both the core and the shell loader agree on location.
+    const char* d = dir.empty() ? nullptr : dir.c_str();
+    int rc = (dim == 3) ? SEM_LoadOffsets3D(d) : SEM_LoadOffsets(d);
+    if (!CheckRc(scene, false, dim == 3 ? "SEM_LoadOffsets3D" : "SEM_LoadOffsets", rc,
+                 { "", "No source loaded", "No offset files found" }))
+        return false;
+
+    DropOffsets(scene);
+    if (!LoadOffsetShells(scene, false, dir)) return false;
+    if (m_offsets && Alive(scene, m_offsets)) scene.SetNodeVisibleCascade(m_offsets, true);
+
+    // The reloaded offsets (and the subdivide they came from) now populate the
+    // cache; recomputing either would clobber it, so mark both clean. The mesh
+    // and everything downstream is stale relative to the imported offsets.
+    DropMesh(scene);
+    m_dirty[STAGE_SUBDIVIDE] = false;
+    m_dirty[STAGE_OFFSETS]   = false;
+    m_dirty[STAGE_MESH]      = true;
+    m_dirty[STAGE_THERMAL]   = true;
+    scene.UpdateLight();
+    snprintf(status, sizeof(status), "Imported offsets.");
+    return true;
+}
+
+bool SemSession::ImportMesh(Scene& scene, const std::string& path) {
+    if (!HasSource()) { Report(scene, false, "Import mesh: no staged source."); return false; }
+    if (AsyncRunning()) return false;
+    int rc = (dim == 3) ? SEM_LoadMesh3D(path.c_str()) : SEM_LoadMesh(path.c_str());
+    if (!CheckRc(scene, false, dim == 3 ? "SEM_LoadMesh3D" : "SEM_LoadMesh", rc,
+                 { "", "No source loaded", "Load failed", "Missing #tets section" }))
+        return false;
+
+    DropMesh(scene);
+    m_mesh = scene.AddFromCSV3D(path, "mesh_" + Stem(m_srcPath), AttachParent(),
+                                nullptr, Colors::CYAN, Colors::YELLOW);
+    if (!m_mesh) { Report(scene, false, "Import mesh: file has no drawable geometry."); return false; }
+    m_meshPath = path;
+    if (dim == 3) ConfigureSurface3D(m_mesh);
+    m_meshStats = ComputeStats(path);
+    if (m_mesh && Alive(scene, m_mesh)) scene.SetNodeVisibleCascade(m_mesh, true);
+
+    // The reloaded mesh satisfies subdivide + offsets + mesh (BCs are distance-
+    // based, so the offsets are not needed to re-solve). Require an explicit
+    // thermal solve before an isotherm can be extracted.
+    m_dirty[STAGE_SUBDIVIDE] = m_dirty[STAGE_OFFSETS] = m_dirty[STAGE_MESH] = false;
+    m_dirty[STAGE_THERMAL]   = true;
+    m_thermalSolved = false;
+    scene.UpdateLight();
+    snprintf(status, sizeof(status), "Imported mesh: %s", BaseName(path).c_str());
+    return true;
 }
 
 void SemSession::RunFullPipeline(Scene& scene) {
@@ -639,6 +714,10 @@ void SemSession::RecomputeUpToAsync(Scene& scene, Stage to, bool silent) {
         return;
     }
 
+    // Clear stale per-shell offset files before the worker recomputes, so a run
+    // producing fewer shells does not leave leftovers for the loader to pick up.
+    if (runOff) CleanupOffsetFiles();
+
     // Snapshot the plan, parameters and visibility intent for the worker /
     // PollAsync (mutable session state must not be read once running).
     m_job.runOffsets  = runOff;
@@ -698,27 +777,27 @@ void SemSession::PollAsync(Scene& scene) {
     // Offset shells.
     if (!m_job.offsetsPath.empty()) {
         DropOffsets(scene);
-        m_offsets = scene.AddFromCSV3D(m_job.offsetsPath, "offsets_" + Stem(m_srcPath),
-                                       AttachParent(), nullptr, Colors::CYAN, Colors::YELLOW, renderTrisAsLines);
-        m_offsetsPath = m_job.offsetsPath;
-        if (!renderTrisAsLines) ConfigureSurface3D(m_offsets);
-        if (m_offsets) scene.AttachVertexPointsGroup(m_offsets);
-        m_offStats = ComputeStats(m_offsetsPath);
+        LoadOffsetShells(scene, true);
         if (m_offsets && Alive(scene, m_offsets)) scene.SetNodeVisibleCascade(m_offsets, m_job.offVisible);
     }
 
-    // Tetrahedral mesh (build-time colouring; the thermal solve updates T in the
-    // SEM cache only and does not re-serialize, matching the synchronous path).
+    // Tetrahedral mesh.
     if (!m_job.meshPath.empty()) {
         DropMesh(scene);
         m_mesh = scene.AddFromCSV3D(m_job.meshPath, "mesh_" + Stem(m_srcPath),
-                                    AttachParent(), nullptr, Colors::CYAN, Colors::YELLOW, renderTrisAsLines);
+                                    AttachParent(), nullptr, Colors::CYAN, Colors::YELLOW);
         m_meshPath = m_job.meshPath;
-        if (!renderTrisAsLines) ConfigureSurface3D(m_mesh);
-        if (m_mesh) scene.AttachVertexPointsGroup(m_mesh);
+        ConfigureSurface3D(m_mesh);
         m_meshStats = ComputeStats(m_meshPath);
         if (m_job.runThermal) m_thermalSolved = true;
         if (m_mesh && Alive(scene, m_mesh)) scene.SetNodeVisibleCascade(m_mesh, m_job.meshVisible);
+    }
+    else if (m_job.runThermal) {
+        // Thermal-only run: the mesh was not rebuilt above, but SEM_SolveThermal3D
+        // overwrote its file with the solved T. Re-import in place so the existing
+        // mesh recolours by the new field (same gradient AddFromCSV3D applies).
+        m_thermalSolved = true;
+        ReloadMeshColored(scene);
     }
 
     // Isosurface.
@@ -726,8 +805,8 @@ void SemSession::PollAsync(Scene& scene) {
         DropIsoline(scene);
         const XMFLOAT4 green(0.0f, 1.0f, 0.0f, 1.0f);
         m_isoline = scene.AddFromCSV3D(m_job.isoPath, "isosurface_" + Stem(m_srcPath),
-                                       AttachParent(), &green, Colors::BLUE, Colors::RED, renderTrisAsLines);
-        if (!renderTrisAsLines) ConfigureSurface3D(m_isoline);
+                                       AttachParent(), &green, Colors::BLUE, Colors::RED);
+        ConfigureSurface3D(m_isoline);
         m_isolinePath = m_job.isoPath;
         if (m_isoline && Alive(scene, m_isoline)) scene.SetNodeVisibleCascade(m_isoline, m_job.isoVisible);
     }
@@ -801,6 +880,18 @@ bool SemSession::Alive(Scene& scene, Primitive* q) const {
     return false;
 }
 
+// A non-primitive grouping node (e.g. the offsets group) is not in
+// scene.primitives, so locate it by walking the scene tree from the root.
+bool SemSession::Alive(Scene& scene, SceneNode* q) const {
+    if (!q) return false;
+    std::function<bool(SceneNode*)> rec = [&](SceneNode* n) -> bool {
+        if (n == q) return true;
+        for (SceneNode* ch : n->children) if (rec(ch)) return true;
+        return false;
+    };
+    return rec(&scene.root);
+}
+
 void SemSession::Report(Scene& scene, bool silent, const std::string& msg) {
     (void)scene;
     snprintf(status, sizeof(status), "%s", msg.c_str());
@@ -830,9 +921,10 @@ void SemSession::BuildSourceRevolution(Scene& scene) {
     if (!OrderedContourFromCSV3D(m_srcPath, prof)) {
         Report(scene, false, "Revolution: cannot read source contour."); return;
     }
-    const XMFLOAT4 steel(0.70f, 0.72f, 0.78f, srcRevAlpha);
-    m_srcRevSurf = scene.AddRevolutionSurface(prof, (UINT)revSegments, steel,
+    const XMFLOAT4 frontCol(Colors::FRONT_FACE_WHITE.x, Colors::FRONT_FACE_WHITE.y, Colors::FRONT_FACE_WHITE.z, srcRevAlpha);
+    m_srcRevSurf = scene.AddRevolutionSurface(prof, (UINT)revSegments, frontCol,
                                               "revsurf_src_" + Stem(m_srcPath), AttachParent());
+    if (m_srcRevSurf) m_srcRevSurf->SetTwoSided(true, Colors::BACK_FACE_RED);
     scene.UpdateLight();
     if (m_srcRevSurf) snprintf(status, sizeof(status), "Source revolution surface built.");
 }
@@ -844,23 +936,103 @@ void SemSession::BuildIsolineRevolution(Scene& scene) {
     if (!OrderedContourFromCSV3D(m_isolinePath, prof)) {
         Report(scene, false, "Revolution: cannot read isotherm contour."); return;
     }
-    const XMFLOAT4 green(0.10f, 0.90f, 0.20f, isoRevAlpha);
+    const XMFLOAT4 frontCol(Colors::FRONT_FACE_WHITE.x, Colors::FRONT_FACE_WHITE.y, Colors::FRONT_FACE_WHITE.z, isoRevAlpha);
     SceneNode* parent = Alive(scene, m_isoline) ? static_cast<SceneNode*>(m_isoline) : AttachParent();
-    m_isoRevSurf = scene.AddRevolutionSurface(prof, (UINT)revSegments, green,
+    m_isoRevSurf = scene.AddRevolutionSurface(prof, (UINT)revSegments, frontCol,
                                               "revsurf_iso_" + Stem(m_srcPath), parent);
+    if (m_isoRevSurf) m_isoRevSurf->SetTwoSided(true, Colors::BACK_FACE_RED);
     scene.UpdateLight();
     if (m_isoRevSurf) snprintf(status, sizeof(status), "Isotherm revolution surface built.");
 }
 
 void SemSession::DropOffsets(Scene& scene) {
-    if (Alive(scene, m_offsets)) scene.RemovePrimitive(m_offsets);
-    m_offsets = nullptr; m_offStats = Stats(); m_offsetsPath.clear();
+    if (Alive(scene, m_offsets)) scene.RemoveNode(m_offsets);
+    m_offsets = nullptr; m_offStats = Stats();
+}
+
+// Called BEFORE a compute (never after) so a run producing fewer shells than a
+// previous one does not reload leftovers — the per-shell loader probes indices
+// 0.. until a file is missing.
+void SemSession::CleanupOffsetFiles() {
+    if (m_workDir.empty() || m_srcPath.empty()) return;
+    const std::string stem  = Stem(m_srcPath);
+    const std::string pfx2d = stem + "_offset_";
+    const std::string pfx3d = stem + "_offset3d_";
+    std::error_code ec;
+    for (const auto& e : fs::directory_iterator(m_workDir, ec)) {
+        if (ec) break;
+        if (!e.is_regular_file()) continue;
+        const std::string fn = e.path().filename().string();
+        if (fn.rfind(pfx2d, 0) == 0 || fn.rfind(pfx3d, 0) == 0)
+            fs::remove(e.path(), ec);
+    }
+}
+
+bool SemSession::LoadOffsetShells(Scene& scene, bool silent, const std::string& dir) {
+    m_offsets = scene.AddGroupNode("offsets", m_srcPrim);
+    const char* prefix = (dim == 3) ? "_offset3d_" : "_offset_";
+    const std::string base = dir.empty() ? m_workDir : dir;
+
+    Stats agg;
+    int loaded = 0;
+    for (int i = 0; ; ++i) {
+        std::string suffix = std::string(prefix) + std::to_string(i) + ".csv3d";
+        std::string p = (fs::path(base) / (Stem(m_srcPath) + suffix)).string();
+        if (!fs::exists(p)) break;
+
+        Primitive* shell = scene.AddFromCSV3D(p, "offset_" + std::to_string(i),
+                                              m_offsets, nullptr, Colors::CYAN, Colors::YELLOW);
+        if (!shell) continue;
+        if (dim == 3) {
+            ConfigureSurface3D(shell);
+            shell->SetColor(Colors::FRONT_FACE_WHITE);
+            shell->SetUseVertexColor(false);
+            shell->SetTwoSided(true, Colors::BACK_FACE_RED);
+        } else {
+            shell->SetColor(Colors::WHITE);
+            shell->SetUseVertexColor(false);
+        }
+
+        Stats s = ComputeStats(p);
+        agg.valid = true;
+        agg.verts += s.verts; agg.edges += s.edges;
+        agg.tris  += s.tris;  agg.boundary += s.boundary;
+        ++loaded;
+    }
+
+    if (loaded == 0) {
+        scene.RemoveNode(m_offsets);
+        m_offsets = nullptr; m_offStats = Stats();
+        Report(scene, silent, "Offsets: no shell files produced.");
+        return false;
+    }
+    m_offStats = agg;
+    snprintf(status, sizeof(status), "Offsets: %d shells.", loaded);
+    return true;
 }
 void SemSession::DropMesh(Scene& scene) {
     if (Alive(scene, m_mesh)) scene.RemovePrimitive(m_mesh);
     m_mesh = nullptr; m_meshStats = Stats(); m_meshPath.clear();
     m_thermalSolved = false;
     DropIsoline(scene);
+}
+void SemSession::ReloadMeshColored(Scene& scene) {
+    if (m_meshPath.empty() || !Alive(scene, m_mesh)) return;
+    // Snapshot what a focused reload must preserve; unlike DropMesh this neither
+    // clears m_meshPath/m_thermalSolved nor drops the isotherm.
+    const std::string path = m_meshPath;
+    const bool wasVisible = m_mesh->visible;
+    const Stats keepStats = m_meshStats;
+
+    scene.RemovePrimitive(m_mesh);
+    m_mesh = scene.AddFromCSV3D(path, "mesh_" + Stem(m_srcPath), AttachParent(),
+                                nullptr, Colors::BLUE, Colors::RED);
+    if (!m_mesh) { Report(scene, true, "Recolour mesh: reload failed."); return; }
+    m_meshPath  = path;
+    m_meshStats = keepStats;
+    if (dim == 3) ConfigureSurface3D(m_mesh);
+    if (Alive(scene, m_mesh)) scene.SetNodeVisibleCascade(m_mesh, wasVisible);
+    scene.UpdateLight();
 }
 void SemSession::DropIsoline(Scene& scene) {
     if (Alive(scene, m_isoline)) scene.RemovePrimitive(m_isoline);
@@ -891,6 +1063,8 @@ bool SemSession::ApplySubdivide(Scene& scene, bool silent) {
 
 bool SemSession::ApplyOffsets(Scene& scene, bool silent) {
     try {
+        DropOffsets(scene);
+        CleanupOffsetFiles();
         int rc;
         if (offsetMode == OFFSET_GAPS) {
             if (gaps.empty()) { Report(scene, silent, "Add at least one gap."); return false; }
@@ -905,15 +1079,7 @@ bool SemSession::ApplyOffsets(Scene& scene, bool silent) {
                      { "", "No source loaded", "Invalid parameters" }))
             return false;
 
-        std::string p = OutPath(dim == 3 ? "_offsets3d.csv3d" : "_offsets.csv3d");
-        DropOffsets(scene);
-        m_offsets = scene.AddFromCSV3D(p, "offsets_" + Stem(m_srcPath), AttachParent(), nullptr, Colors::CYAN, Colors::YELLOW, renderTrisAsLines);
-        m_offsetsPath = p;
-        if (dim == 3 && !renderTrisAsLines) ConfigureSurface3D(m_offsets);
-        if (m_offsets) scene.AttachVertexPointsGroup(m_offsets);
-        m_offStats = ComputeStats(p);
-        snprintf(status, sizeof(status), "Offsets: %s", BaseName(p).c_str());
-        return true;
+        return LoadOffsetShells(scene, silent);
     }
     catch (const std::exception& e) { Report(scene, silent, std::string("Offsets exception: ") + e.what()); }
     catch (...)                     { Report(scene, silent, "Offsets: unknown exception."); }
@@ -959,10 +1125,9 @@ bool SemSession::ApplyMesh(Scene& scene, bool silent) {
 
         std::string p = OutPath(dim == 3 ? "_mesh3d.csv3d" : "_mesh.csv3d");
         DropMesh(scene);
-        m_mesh = scene.AddFromCSV3D(p, "mesh_" + Stem(m_srcPath), AttachParent(), nullptr, Colors::CYAN, Colors::YELLOW, renderTrisAsLines);
+        m_mesh = scene.AddFromCSV3D(p, "mesh_" + Stem(m_srcPath), AttachParent(), nullptr, Colors::CYAN, Colors::YELLOW);
         m_meshPath = p;
-        if (dim == 3 && !renderTrisAsLines) ConfigureSurface3D(m_mesh);
-        if (m_mesh) scene.AttachVertexPointsGroup(m_mesh);
+        if (dim == 3) ConfigureSurface3D(m_mesh);
         m_meshStats = ComputeStats(p);
         snprintf(status, sizeof(status), "Mesh: %s", BaseName(p).c_str());
         return true;

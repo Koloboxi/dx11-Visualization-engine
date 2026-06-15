@@ -29,22 +29,15 @@ public:
 	void Draw(const XMMATRIX& viewMatrix, const XMMATRIX& projectionMatrix);
 	bool selected = false;
 
-	// Render style for dimension-0 (point) primitives. 0 = ring (default),
-	// 1 = "+" cross. Ignored by line / triangle primitives.
-	enum PointSkin { SKIN_RING = 0, SKIN_CROSS = 1 };
-	int pointSkin = SKIN_RING;
-
 	bool staging = false;
 
 	std::string semSourcePath;
 
 	void SetColor(const XMFLOAT4& col);
-	// Set only the opacity (alpha) of the pixel-shader colour, leaving RGB
-	// untouched. For vertex-coloured surfaces this acts as a global opacity
-	// multiplier (see pixelshader.hlsl); it also drives GetTransparent().
 	void SetAlpha(const float a);
 	void SetUseVertexColor(const bool v);
 	void SetIlluminationCapability(const bool l);
+	void SetTwoSided(bool enable, const XMFLOAT4& backColor = XMFLOAT4(1, 0, 0, 1));
 	void SetLighting(const float ambient, const float intensity, const float shininess);
 	void SetSmoothShading(const bool sh);
 

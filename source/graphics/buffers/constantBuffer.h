@@ -14,6 +14,8 @@ struct CB_VS_vertexshader
 struct CB_GS_geometryshader
 {
 	float AspectRatio;
+	float Thickness = 0.001f;
+	float pad[2]    = { 0, 0 };
 };
 
 // Global section / clip-plane state, bound once per frame on VS slot b1.
@@ -32,8 +34,11 @@ struct CB_PS_pixelshader
 	float ambient;
 	float intensity;
 	float shininess;
-	bool illuminated;
-	int  useVertexColor = 0;
+	bool  illuminated;
+	int   useVertexColor = 0;
+	int   twoSided       = 0;
+	float pad[2]         = { 0, 0 };
+	float backColor[4]   = { 1, 0, 0, 1 };
 };
 
 struct CB_PS_pixelshaderOutline

@@ -40,6 +40,14 @@ struct SEM_MeshParams {
 
 SEM_API int SEM_BuildMesh(const SEM_MeshParams* params);
 
+// Reload previously serialized stages into the cache (skip recomputation).
+// A source contour must already be loaded (SEM_LoadCSV3D) so the stem/closedness
+// are known. SEM_LoadOffsets reads <stem>_offset_<i>.csv3d (i = 0..) from `dir`
+// (null/empty = current working dir); SEM_LoadMesh reads one <..>_mesh.csv3d.
+SEM_API int SEM_LoadOffsets(const char* dir);
+
+SEM_API int SEM_LoadMesh(const char* path);
+
 SEM_API int SEM_SolveThermal(void);
 
 SEM_API int SEM_ExtractIsoline(double value);
@@ -68,6 +76,14 @@ struct SEM_MeshParams3D {
 };
 
 SEM_API int SEM_BuildMesh3D(const SEM_MeshParams3D* params);
+
+// Reload previously serialized 3D stages into the cache (skip recomputation).
+// A source surface must already be loaded (SEM_LoadSurface3D). SEM_LoadOffsets3D
+// reads <stem>_offset3d_<i>.csv3d (i = 0..) from `dir` (null/empty = current
+// working dir); SEM_LoadMesh3D reads one <..>_mesh3d.csv3d (must contain #tets).
+SEM_API int SEM_LoadOffsets3D(const char* dir);
+
+SEM_API int SEM_LoadMesh3D(const char* path);
 
 SEM_API int SEM_SolveThermal3D(void);
 

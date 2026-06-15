@@ -49,8 +49,7 @@ void Graphics::Gui()
     VectorPick::Process(scene, luaEditor);
 
     bool navCubeHover = NavCube::Draw(
-        ImVec2((float)windowWidth, (float)windowHeight), scene.camera,
-        ImGui::GetFrameHeight() + 8.f, scene.rsSolid, scene.rsWireframe, scene.rsNoCull);
+        ImVec2((float)windowWidth, (float)windowHeight), scene.camera);
     if (navCubeHover) blockMousePick = true;
 
     scene.blockMousePick  = blockMousePick;

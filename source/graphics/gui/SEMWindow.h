@@ -4,6 +4,7 @@
 #include "../scene/SemSession.h"
 #include <cstdio>
 #include <string>
+#include <filesystem>
 #include <commdlg.h>
 
 namespace SEMWindow {
@@ -13,12 +14,17 @@ inline SemSessionNS::SemSession& Session() {
     return s;
 }
 
-inline std::string BrowseCsv3dFile() {
-    char exe[MAX_PATH] = {};
-    GetModuleFileNameA(nullptr, exe, MAX_PATH);
-    std::string s(exe);
-    auto pos = s.find_last_of("\\/");
-    std::string dataDir = (pos != std::string::npos ? s.substr(0, pos) : s) + "\\Data";
+// initialDir: folder the dialog opens in. Empty => the exe-relative Data folder
+// (used for the first source import); stage re-imports pass the SEM working dir.
+inline std::string BrowseCsv3dFile(const std::string& initialDir = {}) {
+    std::string startDir = initialDir;
+    if (startDir.empty()) {
+        char exe[MAX_PATH] = {};
+        GetModuleFileNameA(nullptr, exe, MAX_PATH);
+        std::string s(exe);
+        auto pos = s.find_last_of("\\/");
+        startDir = (pos != std::string::npos ? s.substr(0, pos) : s) + "\\Data";
+    }
 
     char fileBuf[MAX_PATH] = {};
     OPENFILENAMEA ofn   = {};
@@ -26,12 +32,22 @@ inline std::string BrowseCsv3dFile() {
     ofn.lpstrFilter     = "CSV3D contour (*.csv3d)\0*.csv3d\0All files (*.*)\0*.*\0";
     ofn.lpstrFile       = fileBuf;
     ofn.nMaxFile        = MAX_PATH;
-    ofn.lpstrInitialDir = dataDir.c_str();
+    ofn.lpstrInitialDir = startDir.c_str();
     ofn.lpstrTitle      = "Import CSV3D contour";
     ofn.Flags           = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
 
     if (GetOpenFileNameA(&ofn)) return std::string(fileBuf);
     return {};
+}
+
+// Folder the stage re-import dialogs (offsets/mesh) default to: the session's
+// SEM working dir if a source is bound, otherwise the system temp dir computed
+// dynamically so it resolves per-user.
+inline std::string StageImportDir(const SemSessionNS::SemSession& S) {
+    if (!S.WorkDir().empty()) return S.WorkDir();
+    std::error_code ec;
+    auto tmp = std::filesystem::temp_directory_path(ec);
+    return ec ? std::string() : tmp.string();
 }
 
 inline const char* MeshParamLabel(int m) {
@@ -85,7 +101,7 @@ inline void DrawReadout(SemSessionNS::SemSession& S) {
     const Stats* st  = nullptr;
     const char*  tag = "Source";
     if      (S.MeshPrim()    && S.MeshStats().valid) { st = &S.MeshStats(); tag = "Mesh";    }
-    else if (S.OffsetsPrim() && S.OffStats().valid)  { st = &S.OffStats();  tag = "Offsets"; }
+    else if (S.OffsetsNode() && S.OffStats().valid)  { st = &S.OffStats();  tag = "Offsets"; }
     else if (S.SrcStats().valid)                     { st = &S.SrcStats();  tag = "Source";  }
 
     char line[256];
@@ -234,7 +250,10 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         ImGui::Separator();
     }
 
+    // The 3D pipeline stages have no auto-apply: their compute is heavy and runs
+    // on a worker thread, so every stage is driven explicitly by its Apply button.
     auto autoTag = [&](bool* autoFlag) {
+        if (is3D) return;
         ImGui::SameLine();
         ImGui::Checkbox("Auto-apply", autoFlag);
     };
@@ -256,7 +275,7 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         if (S.subN < 1) S.subN = 1;
 
         if (changed || released) S.MarkStageDirty(STAGE_SUBDIVIDE);
-        if (S.subAuto) { if (changed || released) S.RecomputeUpToAsync(scene, STAGE_SUBDIVIDE, true); }
+        if (!is3D && S.subAuto) { if (changed || released) S.RecomputeUpToAsync(scene, STAGE_SUBDIVIDE, true); }
         else if (ImGui::Button("Apply", {160, 0})) S.RecomputeUpToAsync(scene, STAGE_SUBDIVIDE, false);
         ImGui::Unindent();
         ImGui::PopID();
@@ -270,6 +289,17 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         autoTag(&S.offAuto);
         ImGui::SameLine();
         if (ImGui::SmallButton("Reset##off")) S.ResetStage(scene, STAGE_OFFSETS);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Import##off")) {
+            std::string f = BrowseCsv3dFile(StageImportDir(S));
+            if (!f.empty()) {
+                auto slash = f.find_last_of("\\/");
+                S.ImportOffsets(scene, slash != std::string::npos ? f.substr(0, slash) : std::string());
+            }
+        }
+        ImGui::SetItemTooltip("Reload previously serialized offset shells\n"
+                              "(<stem>_offset[3d]_<i>.csv3d) from a folder instead of\n"
+                              "recomputing them. Pick any shell file in that folder.");
 
         ImGui::Indent();
         bool changed = false, released = false;
@@ -310,7 +340,7 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         }
 
         if (changed || released) S.MarkStageDirty(STAGE_OFFSETS);
-        if (S.offAuto) { if (changed || released) S.RecomputeUpToAsync(scene, STAGE_OFFSETS, true); }
+        if (!is3D && S.offAuto) { if (changed || released) S.RecomputeUpToAsync(scene, STAGE_OFFSETS, true); }
         else if (ImGui::Button("Apply", {160, 0})) S.RecomputeUpToAsync(scene, STAGE_OFFSETS, false);
         ImGui::Unindent();
         ImGui::PopID();
@@ -324,6 +354,14 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         autoTag(&S.meshAuto);
         ImGui::SameLine();
         if (ImGui::SmallButton("Reset##mesh")) S.ResetStage(scene, STAGE_MESH);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Import##mesh")) {
+            std::string f = BrowseCsv3dFile(StageImportDir(S));
+            if (!f.empty()) S.ImportMesh(scene, f);
+        }
+        ImGui::SetItemTooltip("Reload a previously serialized band mesh\n"
+                              "(<stem>_mesh[3d].csv3d) instead of recomputing it.\n"
+                              "Solve the thermal field afterwards to extract an isotherm.");
 
         ImGui::Indent();
         bool changed = false, released = false;
@@ -404,7 +442,7 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         } // end 2D Steiner UI
 
         if (changed || released) S.MarkStageDirty(STAGE_MESH);
-        if (S.meshAuto) { if (changed || released) S.RecomputeUpToAsync(scene, STAGE_MESH, true); }
+        if (!is3D && S.meshAuto) { if (changed || released) S.RecomputeUpToAsync(scene, STAGE_MESH, true); }
         else if (ImGui::Button("Apply", {160, 0})) S.RecomputeUpToAsync(scene, STAGE_MESH, false);
         ImGui::Unindent();
         ImGui::PopID();
@@ -415,27 +453,33 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
     {
         ImGui::PushID("thermal");
         ImGui::Text("Thermal solve");
-        autoTag(&S.thermalAuto);
         ImGui::SameLine();
         if (ImGui::SmallButton("Reset##thermal")) S.ResetStage(scene, STAGE_THERMAL);
 
         ImGui::Indent();
+        // Apply solves the steady-state field; it sits ABOVE the iso value so the
+        // (expensive) solve and the (cheap) iso extraction read top to bottom.
+        if (ImGui::Button("Apply", {160, 0})) S.RecomputeUpToAsync(scene, STAGE_THERMAL, false);
+        ImGui::SetItemTooltip(is3D
+            ? "Solve steady-state heat conduction on the tetrahedral band mesh\n"
+              "(source surface T=1, farthest shell T=0), then extract the isosurface."
+            : "Solve steady-state heat conduction on the band mesh (source T=1,\n"
+              "farthest offset T=0), then extract the isotherm.");
+
         bool changed = ImGui::DragFloat(is3D ? "Isosurface value (0..1)" : "Isoline value (0..1)",
                                         &S.isoValue, 0.005f, 0.0f, 1.0f, "%.3f");
-        if (is3D)
-            ImGui::SetItemTooltip("Steady-state heat conduction on the tetrahedral band mesh\n"
-                                  "(source surface T=1, farthest shell T=0). The isosurface at\n"
-                                  "this normalized temperature is drawn in green.");
-        else
-            ImGui::SetItemTooltip("Steady-state heat conduction on the band mesh (source T=1,\n"
-                                  "farthest offset T=0). The isotherm at this normalized\n"
-                                  "temperature is drawn in green.");
+        ImGui::SetItemTooltip("Normalized temperature of the extracted %s. Changing it does NOT\n"
+                              "re-solve the thermal field — it just re-extracts the %s at the\n"
+                              "new temperature (applied automatically once a solve exists).",
+                              is3D ? "isosurface" : "isotherm",
+                              is3D ? "isosurface" : "isotherm");
         if (S.isoValue < 0.0f) S.isoValue = 0.0f;
         if (S.isoValue > 1.0f) S.isoValue = 1.0f;
 
-        if (changed) S.MarkStageDirty(STAGE_THERMAL);
-        if (S.thermalAuto) { if (changed) S.RecomputeUpToAsync(scene, STAGE_THERMAL, true); }
-        else if (ImGui::Button("Apply", {160, 0})) S.RecomputeUpToAsync(scene, STAGE_THERMAL, false);
+        // The iso value only selects a level set of the already-solved field, so
+        // editing it re-extracts the isotherm/isosurface in place (auto-apply by
+        // default) without touching the thermal solve.
+        if (changed && S.ThermalSolved()) S.ApplyIsoline(scene, true);
         ImGui::Unindent();
         ImGui::PopID();
     }
