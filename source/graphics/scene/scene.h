@@ -123,6 +123,13 @@ public:
 	void AddCubeSolid(float halfSize, const XMFLOAT3& center, const XMFLOAT4& col);
 	Primitive* AddRevolutionSurface(const std::vector<XMFLOAT3>& profile, UINT segments, const XMFLOAT4& col, const std::string& name, SceneNode* parent = nullptr);
 
+	// Add a flat triangle-soup surface from explicit per-vertex positions/colours
+	// (poses.size() must be a multiple of 3). ensureCCW makes the winding/normals
+	// locally consistent; pass false to keep the supplied winding (e.g. a single
+	// quad whose normal orientation is already chosen by the caller).
+	Primitive* AddColoredTriangles(const std::vector<XMFLOAT3>& poses, const std::vector<XMFLOAT4>& cols,
+		const std::string& name, SceneNode* parent = nullptr, bool ensureCCW = true);
+
 	void RemovePrimitive(Primitive* p);
 	void RemoveNode(SceneNode* n);
 	void RemovePrimitivesByPrefix(const std::string& prefix);
@@ -240,6 +247,13 @@ private:
 	ConstantBuffer<CB_VS_section> cb_vs_section{};
 
 	void ApplySectionCB(bool forceDisabled = false);
+
+	// Push the current scene lighting (ambient/intensity/shininess/smooth shading)
+	// onto a single primitive, if it is illuminated. Called right after a
+	// primitive is created so it never renders with default (zero) lighting — a
+	// black surface with a harsh specular highlight — before the next
+	// UpdateLight(); UpdateLight() itself fans this out over every primitive.
+	void ApplyCurrentLighting(Primitive* p);
 
 	Timer tpsTimer;
 	void UpdateTime();

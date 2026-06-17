@@ -41,7 +41,7 @@ public:
     static constexpr UINT ID_FXY  = MAXUINT - 19;  // quad in XY plane (normal Z)
 
     void Initialize(ID3D11Device* device, ID3D11DeviceContext* deviceContext) {
-        const float axisLength = 90.f, axisRadius = 3.f, ballRadius = 9.f;
+        const float axisLength = 108.f, axisRadius = 3.6f, ballRadius = 10.8f;  // ~1.2x larger geometry
         const XMFLOAT3 O = BaseVectors::ORIGIN;
 
         xAx = PrimitiveConstructor::Line3d(axisRadius, { O, XMFLOAT3(axisLength,0,0) }, 12, Colors::RED,   ID_XAX);
@@ -181,10 +181,14 @@ private:
 
     // Build a camera rotation matrix that looks along `fwd` with up `up`, matching
     // the Camera conventions: row0 = world-left, row1 = -world-forward, row2 = up.
+    // The engine's orientation matrices (Projections::ISO/DIM/XY/YZ...) are improper
+    // (det = -1): they use row0 = forward × up. We must follow the SAME handedness,
+    // otherwise the camera rotMatrix becomes a mirror of the rest of the engine and
+    // mouse drag-rotation feels inverted until the ball (which uses ISO/DIM) resets it.
     static XMMATRIX BuildRot(XMVECTOR fwd, XMVECTOR up) {
         XMVECTOR f = XMVector3Normalize(fwd);
         XMVECTOR u = XMVector3Normalize(XMVectorSubtract(up, XMVectorScale(f, XMVectorGetX(XMVector3Dot(f, up)))));
-        XMVECTOR l = XMVector3Normalize(XMVector3Cross(u, f));   // left = up × forward
+        XMVECTOR l = XMVector3Normalize(XMVector3Cross(f, u));   // engine convention: row0 = forward × up
         XMMATRIX m;
         m.r[0] = XMVectorSetW(l, 0.f);
         m.r[1] = XMVectorSetW(XMVectorNegate(f), 0.f);

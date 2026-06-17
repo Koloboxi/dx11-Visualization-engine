@@ -56,6 +56,20 @@ Stats ComputeStats(const std::string& path) {
     return s;
 }
 
+// Axis-aligned bounding box of a .csv3d node cloud. Returns false on an empty or
+// unreadable file.
+bool SourceBBox(const std::string& path, XMFLOAT3& lo, XMFLOAT3& hi) {
+    CSV3DLoader::CSV3DData d;
+    if (!CSV3DLoader::Load(path, d) || d.nodes.empty()) return false;
+    lo = hi = d.nodes[0].pos;
+    for (const auto& nd : d.nodes) {
+        lo.x = std::min(lo.x, nd.pos.x); hi.x = std::max(hi.x, nd.pos.x);
+        lo.y = std::min(lo.y, nd.pos.y); hi.y = std::max(hi.y, nd.pos.y);
+        lo.z = std::min(lo.z, nd.pos.z); hi.z = std::max(hi.z, nd.pos.z);
+    }
+    return true;
+}
+
 bool OrderedContourFromCSV3D(const std::string& path, std::vector<XMFLOAT3>& out) {
     out.clear();
     CSV3DLoader::CSV3DData d;
@@ -181,8 +195,8 @@ int SafeSolveThermal() {
     __try { return SEM_SolveThermal(); }
     __except (EXCEPTION_EXECUTE_HANDLER) { return -100; }
 }
-int SafeSolveThermal3D() {
-    __try { return SEM_SolveThermal3D(); }
+int SafeSolveThermal3D(float max_inward) {
+    __try { return SEM_SolveThermal3D(max_inward); }
     __except (EXCEPTION_EXECUTE_HANDLER) { return -100; }
 }
 int SafeExtractIsoline(double value) {
@@ -219,6 +233,14 @@ int         SemSession::Dim()         const { return dim; }
 bool        SemSession::ThermalSolved() const { return m_thermalSolved; }
 bool        SemSession::HasIsolinePath() const { return !m_isolinePath.empty(); }
 
+double SemSession::TotalTimeMs() const {
+    double t = 0.0;
+    if (m_offsetsMs >= 0.0) t += m_offsetsMs;
+    if (m_meshMs    >= 0.0) t += m_meshMs;
+    if (m_thermalMs >= 0.0) t += m_thermalMs;
+    return t;
+}
+
 double SemSession::MeshParamFactor() const {
     double avg = SEM_GetAvgEdgeLen();
     if (avg <= 0.0) avg = 1.0;
@@ -241,6 +263,60 @@ std::string SemSession::OutPath(const char* suffix) const {
     return (fs::path(m_workDir) / (Stem(m_srcPath) + suffix)).string();
 }
 
+std::string SemSession::SessionRoot() {
+    std::error_code ec;
+    auto tmp = fs::temp_directory_path(ec);
+    if (ec) return std::string();
+    return (tmp / "sem").string();
+}
+
+// Parse the trailing _<N> of a session folder name "<stem>_<N>". Returns 0 (not
+// a session) unless the name is exactly stem + '_' + digits.
+static int SessionIndex(const std::string& folderName, const std::string& stem) {
+    const std::string prefix = stem + "_";
+    if (folderName.size() <= prefix.size() ||
+        folderName.compare(0, prefix.size(), prefix) != 0)
+        return 0;
+    const std::string num = folderName.substr(prefix.size());
+    if (num.empty()) return 0;
+    for (char c : num) if (c < '0' || c > '9') return 0;
+    try { return std::stoi(num); } catch (...) { return 0; }
+}
+
+std::vector<std::string> SemSession::ListSessions(const std::string& srcPath) {
+    std::vector<std::string> dirs;
+    const std::string root = SessionRoot();
+    if (root.empty() || srcPath.empty()) return dirs;
+    const std::string stem = Stem(srcPath);
+
+    std::vector<std::pair<int, std::string>> found;
+    std::error_code ec;
+    for (const auto& e : fs::directory_iterator(root, ec)) {
+        if (ec) break;
+        if (!e.is_directory()) continue;
+        int n = SessionIndex(e.path().filename().string(), stem);
+        if (n > 0) found.emplace_back(n, e.path().string());
+    }
+    std::sort(found.begin(), found.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+    for (auto& f : found) dirs.push_back(std::move(f.second));
+    return dirs;
+}
+
+std::string SemSession::NewSessionDir(const std::string& srcPath) {
+    const std::string root = SessionRoot();
+    if (root.empty() || srcPath.empty()) return std::string();
+    const std::string stem = Stem(srcPath);
+    int maxN = 0;
+    std::error_code ec;
+    for (const auto& e : fs::directory_iterator(root, ec)) {
+        if (ec) break;
+        if (!e.is_directory()) continue;
+        maxN = std::max(maxN, SessionIndex(e.path().filename().string(), stem));
+    }
+    return (fs::path(root) / (stem + "_" + std::to_string(maxN + 1))).string();
+}
+
 void SemSession::Bind(Scene& scene, Primitive* prim) {
     if (prim == m_srcPrim) return;
     m_srcPrim   = prim;
@@ -250,19 +326,32 @@ void SemSession::Bind(Scene& scene, Primitive* prim) {
     m_isoline   = nullptr;
     m_srcRevSurf = nullptr;
     m_isoRevSurf = nullptr;
+    m_clipViz   = nullptr;
     m_meshPath.clear();
     m_isolinePath.clear();
     m_thermalSolved = false;
     m_offStats  = Stats();
     m_meshStats = Stats();
+    // A fresh source resets the SEM core (SEM_LoadSurface3D/SEM_LoadCSV3D below),
+    // which also clears its clip planes; drop ours and the measured stage times.
+    clipPlanes.clear();
+    m_offsetsMs = m_meshMs = m_thermalMs = -1.0;
     // A fresh source clears the SEM core cache (SEM_LoadCSV3D below), so every
     // stage must be recomputed before it can be shown.
     m_dirty[0] = m_dirty[1] = m_dirty[2] = m_dirty[3] = true;
     if (!m_srcPath.empty()) {
-        // Point the SEM core at a working directory we control, so the
+        // Point the SEM core at this source's session folder, so the
         // deterministic output paths it writes (stem + suffix) can be
-        // reconstructed by OutPath after each compute/build/extract call.
-        m_workDir = fs::temp_directory_path().string();
+        // reconstructed by OutPath after each compute/build/extract call. The
+        // folder is chosen at import (prim->semWorkDir); when a source is staged
+        // without one (e.g. tree double-click), allocate a fresh session.
+        m_workDir = prim ? prim->semWorkDir : std::string();
+        if (m_workDir.empty()) {
+            m_workDir = NewSessionDir(m_srcPath);
+            if (prim) prim->semWorkDir = m_workDir;
+        }
+        std::error_code ec;
+        fs::create_directories(m_workDir, ec);
         SEM_SetWorkingDir(m_workDir.c_str());
         dim = DetectSemDim(m_srcPath);
         int rc = (dim == 3) ? SEM_LoadSurface3D(m_srcPath.c_str())
@@ -294,6 +383,7 @@ void SemSession::Validate(Scene& scene) {
     if (m_isoline && !Alive(scene, m_isoline)) { m_isoline = nullptr; }
     if (m_srcRevSurf && !Alive(scene, m_srcRevSurf)) m_srcRevSurf = nullptr;
     if (m_isoRevSurf && !Alive(scene, m_isoRevSurf)) m_isoRevSurf = nullptr;
+    if (m_clipViz    && !Alive(scene, m_clipViz))    m_clipViz    = nullptr;
 }
 
 void SemSession::MarkStageDirty(Stage st) {
@@ -451,6 +541,123 @@ void SemSession::SetSurf3dAlpha(Scene& scene, float a) {
     }
 }
 
+void SemSession::SetClipPlanes3D(Scene& scene) {
+    if (dim != 3) { Report(scene, false, "Clip planes apply to the 3D pipeline only."); return; }
+    if (AsyncRunning()) return;
+    // Flatten to the (nx, ny, nz, d) layout SEM_SetClipPlanes3D expects.
+    std::vector<double> flat;
+    flat.reserve(clipPlanes.size() * 4);
+    for (const auto& p : clipPlanes) {
+        flat.push_back(p.x); flat.push_back(p.y); flat.push_back(p.z); flat.push_back(p.w);
+    }
+    int rc = SEM_SetClipPlanes3D(flat.empty() ? nullptr : flat.data(), (int)clipPlanes.size());
+    if (!CheckRc(scene, false, "SEM_SetClipPlanes3D", rc,
+                 { "", "No surface loaded", "Invalid planes" }))
+        return;
+
+    BuildClipPlaneViz(scene);
+    // Clipping is applied during SEM_BuildMesh3D, so the cached mesh (and the
+    // thermal field/isosurface downstream) is now stale.
+    DropMesh(scene);
+    m_dirty[STAGE_MESH] = m_dirty[STAGE_THERMAL] = true;
+    scene.UpdateLight();
+    snprintf(status, sizeof(status), "Clip planes: %d set.", (int)clipPlanes.size());
+}
+
+void SemSession::ClearClipPlanes3D(Scene& scene) {
+    if (AsyncRunning()) return;
+    int rc = SEM_ClearClipPlanes3D();
+    CheckRc(scene, false, "SEM_ClearClipPlanes3D", rc, { "", "No surface loaded" });
+    clipPlanes.clear();
+    DropClipPlaneViz(scene);
+    DropMesh(scene);
+    m_dirty[STAGE_MESH] = m_dirty[STAGE_THERMAL] = true;
+    scene.UpdateLight();
+    snprintf(status, sizeof(status), "Clip planes cleared.");
+}
+
+void SemSession::RebuildClipPlaneViz(Scene& scene) {
+    BuildClipPlaneViz(scene);
+}
+
+void SemSession::BuildClipPlaneViz(Scene& scene) {
+    DropClipPlaneViz(scene);
+    if (dim != 3 || clipPlanes.empty() || !HasSource()) return;
+
+    XMFLOAT3 lo, hi;
+    if (!SourceBBox(m_srcPath, lo, hi)) return;
+    const XMFLOAT3 corners[8] = {
+        { lo.x, lo.y, lo.z }, { hi.x, lo.y, lo.z }, { lo.x, hi.y, lo.z }, { hi.x, hi.y, lo.z },
+        { lo.x, lo.y, hi.z }, { hi.x, lo.y, hi.z }, { lo.x, hi.y, hi.z }, { hi.x, hi.y, hi.z },
+    };
+    const XMVECTOR centre = XMVectorSet((lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f,
+                                        (lo.z + hi.z) * 0.5f, 0.0f);
+
+    // Soft (desaturated) colours, translucent. Front face = kept side (normal
+    // points there) = red; back face = removed side = blue.
+    const XMFLOAT4 softRed (0.86f, 0.42f, 0.40f, 0.20f);
+    const XMFLOAT4 softBlue(0.40f, 0.52f, 0.86f, 0.20f);
+
+    m_clipViz = scene.AddGroupNode("clip_planes", m_srcPrim);
+
+    for (int pi = 0; pi < (int)clipPlanes.size(); ++pi) {
+        const XMFLOAT4& pl = clipPlanes[pi];
+        XMVECTOR n = XMVectorSet(pl.x, pl.y, pl.z, 0.0f);
+        const float len = XMVectorGetX(XMVector3Length(n));
+        if (len < 1e-9f) continue;                 // degenerate normal — skip
+        n = XMVectorScale(n, 1.0f / len);          // unit normal
+        const float dUnit = pl.w / len;            // d for the unit-normal form
+
+        // Foot of the perpendicular from the bbox centre onto the plane.
+        const float sdist = XMVectorGetX(XMVector3Dot(n, centre)) + dUnit;
+        const XMVECTOR P = XMVectorSubtract(centre, XMVectorScale(n, sdist));
+
+        // In-plane orthonormal basis (u, v) chosen so that u x v = n. The pixel
+        // shader treats the +normal side as the front face (FrontCounterClockwise
+        // rasterizer), so the kept half-space shows the front (red) colour.
+        XMVECTOR ref = (std::fabs(XMVectorGetX(n)) < 0.9f) ? XMVectorSet(1, 0, 0, 0)
+                                                           : XMVectorSet(0, 1, 0, 0);
+        XMVECTOR u = XMVector3Normalize(XMVector3Cross(ref, n));
+        XMVECTOR v = XMVector3Cross(n, u);
+
+        // Extent of the bbox footprint in the (u, v) basis, around P.
+        float smin = 1e30f, smax = -1e30f, tmin = 1e30f, tmax = -1e30f;
+        for (const XMFLOAT3& c : corners) {
+            XMVECTOR w = XMVectorSubtract(XMLoadFloat3(&c), P);
+            const float s = XMVectorGetX(XMVector3Dot(w, u));
+            const float t = XMVectorGetX(XMVector3Dot(w, v));
+            smin = std::min(smin, s); smax = std::max(smax, s);
+            tmin = std::min(tmin, t); tmax = std::max(tmax, t);
+        }
+        // A small margin so the rectangle slightly overhangs the bounding box.
+        const float ms = 0.05f * (smax - smin), mt = 0.05f * (tmax - tmin);
+        smin -= ms; smax += ms; tmin -= mt; tmax += mt;
+
+        auto pt = [&](float s, float t) {
+            XMVECTOR q = XMVectorAdd(XMVectorAdd(P, XMVectorScale(u, s)), XMVectorScale(v, t));
+            XMFLOAT3 f; XMStoreFloat3(&f, q); return f;
+        };
+        const XMFLOAT3 q00 = pt(smin, tmin), q10 = pt(smax, tmin),
+                       q11 = pt(smax, tmax), q01 = pt(smin, tmax);
+        // Winding (q00,q10,q11)/(q00,q11,q01) gives a face normal of +n.
+        std::vector<XMFLOAT3> poses = { q00, q10, q11, q00, q11, q01 };
+        std::vector<XMFLOAT4> cols(6, softRed);
+
+        Primitive* rect = scene.AddColoredTriangles(poses, cols, "clip_" + std::to_string(pi),
+                                                    m_clipViz, /*ensureCCW*/ false);
+        if (!rect) continue;
+        rect->SetIlluminationCapability(false);   // flat, unlit soft colour
+        rect->SetUseVertexColor(false);
+        rect->SetColor(softRed);                  // front (kept) side
+        rect->SetTwoSided(true, softBlue);        // back (removed) side
+    }
+}
+
+void SemSession::DropClipPlaneViz(Scene& scene) {
+    if (Alive(scene, m_clipViz)) scene.RemoveNode(m_clipViz);
+    m_clipViz = nullptr;
+}
+
 void SemSession::DropSrcRev(Scene& scene) {
     if (Alive(scene, m_srcRevSurf)) scene.RemovePrimitive(m_srcRevSurf);
     m_srcRevSurf = nullptr;
@@ -474,7 +681,9 @@ bool SemSession::ApplyThermal(Scene& scene, bool silent) {
     // temperature in place AND rewrites the serialized mesh file (the pre-solve
     // <stem>_mesh[3d].csv3d had T = 0). Re-import it below so the displayed mesh
     // recolours by the solved field; the same field feeds the isotherm/isosurface.
-    int rc = (dim == 3) ? SafeSolveThermal3D() : SafeSolveThermal();
+    Timer t; t.Restart();
+    int rc = (dim == 3) ? SafeSolveThermal3D(maxInward) : SafeSolveThermal();
+    const double ms = t.GetMillisecondsElapsed();
     if (rc == -100) {
         Report(scene, silent, "Thermal solver crashed (access violation caught).");
         return false;
@@ -483,6 +692,7 @@ bool SemSession::ApplyThermal(Scene& scene, bool silent) {
                  { "", "No source loaded", "No mesh built", "No offsets",
                    "", "No boundary nodes", "Solve failed" }))
         return false;
+    m_thermalMs = ms;
     m_thermalSolved = true;
     ReloadMeshColored(scene);
     snprintf(status, sizeof(status), "Thermal solved.");
@@ -525,13 +735,16 @@ bool SemSession::ApplyIsoline(Scene& scene, bool silent) {
     return false;
 }
 
-Primitive* SemSession::ImportSource(Scene& scene, const std::string& path) {
+Primitive* SemSession::ImportSource(Scene& scene, const std::string& path,
+                                    const std::string& workDir) {
     if (path.empty()) return nullptr;
     Primitive* src = nullptr;
     try {
         src = scene.AddFromCSV3D(path, "", nullptr, nullptr, Colors::BLUE, Colors::RED, false);
         if (!src) { Report(scene, false, "Import failed: could not load CSV3D."); return nullptr; }
         src->semSourcePath = path;
+        // Session folder to serialize into; empty => Bind allocates a fresh one.
+        src->semWorkDir = workDir;
         scene.stagingEnabled = true;
         scene.SetStaged(src);
         Bind(scene, src);
@@ -612,6 +825,28 @@ bool SemSession::ImportMesh(Scene& scene, const std::string& path) {
     scene.UpdateLight();
     snprintf(status, sizeof(status), "Imported mesh: %s", BaseName(path).c_str());
     return true;
+}
+
+void SemSession::LoadSessionStages(Scene& scene) {
+    if (!HasSource() || m_workDir.empty()) return;
+
+    // Offsets: probe the first shell; ImportOffsets reloads the whole set.
+    const std::string offShell0 =
+        (fs::path(m_workDir) /
+         (Stem(m_srcPath) + (dim == 3 ? "_offset3d_0.csv3d" : "_offset_0.csv3d"))).string();
+    if (fs::exists(offShell0))
+        ImportOffsets(scene, m_workDir);
+
+    // Mesh: a single serialized file. ImportMesh (called after ImportOffsets)
+    // leaves subdivide+offsets+mesh clean and thermal stale/unsolved.
+    const std::string meshPath =
+        (fs::path(m_workDir) /
+         (Stem(m_srcPath) + (dim == 3 ? "_mesh3d.csv3d" : "_mesh.csv3d"))).string();
+    if (fs::exists(meshPath))
+        ImportMesh(scene, meshPath);
+
+    snprintf(status, sizeof(status), "Loaded session: %s",
+             BaseName(m_workDir).c_str());
 }
 
 void SemSession::RunFullPipeline(Scene& scene) {
@@ -741,7 +976,9 @@ void SemSession::RecomputeUpToAsync(Scene& scene, Stage to, bool silent) {
             param *= TetParamFactor();
         m_job.tetParam = param;
     }
+    m_job.tetMaxEdgeLen = (double)tetMaxEdgeLen;
     m_job.isoValue = isoValue;
+    m_job.maxInward = maxInward;
 
     // Deterministic output paths the SEM core writes during each compute call.
     m_job.expOffsets = OutPath("_offsets3d.csv3d");
@@ -752,6 +989,7 @@ void SemSession::RecomputeUpToAsync(Scene& scene, Stage to, bool silent) {
     m_job.meshPath.clear();
     m_job.isoPath.clear();
     m_job.error.clear();
+    m_job.offsetsMs = m_job.meshMs = m_job.thermalMs = -1.0;
     m_job.stageKind.store(runOff ? 0 : runMesh ? 1 : 2);
     m_job.progressStage.store(0);
     m_job.ok.store(false);
@@ -773,6 +1011,12 @@ void SemSession::PollAsync(Scene& scene) {
         Report(scene, false, m_job.error.empty() ? "3D pipeline failed." : m_job.error);
         return;
     }
+
+    // Record the measured durations of whichever stages this run computed; stages
+    // that did not run keep their previous time so the total accumulates.
+    if (m_job.offsetsMs >= 0.0) m_offsetsMs = m_job.offsetsMs;
+    if (m_job.meshMs    >= 0.0) m_meshMs    = m_job.meshMs;
+    if (m_job.thermalMs >= 0.0) m_thermalMs = m_job.thermalMs;
 
     // Offset shells.
     if (!m_job.offsetsPath.empty()) {
@@ -822,9 +1066,11 @@ void SemSession::PipelineWorkerBody() {
     if (m_job.runOffsets) {
         m_job.stageKind.store(0);
         m_job.progressStage.store(idx);
+        Timer t; t.Restart();
         int rc = (m_job.offsetMode == OFFSET_GAPS && !m_job.gaps.empty())
                ? SEM_ComputeOffsetsAt3D(m_job.gaps.data(), (int)m_job.gaps.size())
                : SEM_ComputeOffsets3D(m_job.firstGap, m_job.numOffsets, m_job.grading);
+        m_job.offsetsMs = t.GetMillisecondsElapsed();
         if (rc != 0) return Fail("SEM_ComputeOffsets3D failed (" + std::to_string(rc) + ")");
         m_job.offsetsPath = m_job.expOffsets;
         ++idx;
@@ -834,8 +1080,10 @@ void SemSession::PipelineWorkerBody() {
     if (m_job.runMesh) {
         m_job.stageKind.store(1);
         m_job.progressStage.store(idx);
-        SEM_MeshParams3D params3d{ m_job.tetMethod, m_job.tetParam };
+        SEM_MeshParams3D params3d{ m_job.tetMethod, m_job.tetParam, m_job.tetMaxEdgeLen };
+        Timer t; t.Restart();
         int rc = SafeBuildMesh3D(&params3d);
+        m_job.meshMs = t.GetMillisecondsElapsed();
         if (rc == -100) return Fail("TetGen DLL crashed (access violation caught). "
                                     "Try a larger volume or a looser quality bound.");
         if (rc != 0) return Fail("SEM_BuildMesh3D failed (" + std::to_string(rc) + ")");
@@ -847,7 +1095,9 @@ void SemSession::PipelineWorkerBody() {
     if (m_job.runThermal) {
         m_job.stageKind.store(2);
         m_job.progressStage.store(idx);
-        int rc = SafeSolveThermal3D();
+        Timer t; t.Restart();
+        int rc = SafeSolveThermal3D(m_job.maxInward);
+        m_job.thermalMs = t.GetMillisecondsElapsed();
         if (rc == -100) return Fail("Thermal solver crashed (access violation caught).");
         if (rc != 0) return Fail("SEM_SolveThermal3D failed (" + std::to_string(rc) + ")");
 
@@ -1066,6 +1316,7 @@ bool SemSession::ApplyOffsets(Scene& scene, bool silent) {
         DropOffsets(scene);
         CleanupOffsetFiles();
         int rc;
+        Timer t; t.Restart();
         if (offsetMode == OFFSET_GAPS) {
             if (gaps.empty()) { Report(scene, silent, "Add at least one gap."); return false; }
             std::vector<double> g(gaps.begin(), gaps.end());
@@ -1075,9 +1326,11 @@ bool SemSession::ApplyOffsets(Scene& scene, bool silent) {
             rc = (dim == 3) ? SEM_ComputeOffsets3D(firstGap, numOffsets, grading)
                             : SEM_ComputeOffsets(firstGap, numOffsets, grading);
         }
+        const double ms = t.GetMillisecondsElapsed();
         if (!CheckRc(scene, silent, dim == 3 ? "SEM_ComputeOffsets3D" : "SEM_ComputeOffsets", rc,
                      { "", "No source loaded", "Invalid parameters" }))
             return false;
+        m_offsetsMs = ms;
 
         return LoadOffsetShells(scene, silent);
     }
@@ -1094,8 +1347,10 @@ bool SemSession::ApplyMesh(Scene& scene, bool silent) {
             if (tetParamEdgeUnits && tetParam > 0.0f &&
                 (tetMethod == SEM_TET_MAX_VOL || tetMethod == SEM_TET_SIZING))
                 param *= TetParamFactor();
-            SEM_MeshParams3D params3d{ tetMethod, param };
+            SEM_MeshParams3D params3d{ tetMethod, param, (double)tetMaxEdgeLen };
+            Timer t; t.Restart();
             rc = SafeBuildMesh3D(&params3d);
+            const double ms = t.GetMillisecondsElapsed();
             if (rc == -100) {
                 Report(scene, silent, "TetGen DLL crashed (access violation caught). "
                                       "Try a larger volume or a looser quality bound.");
@@ -1105,13 +1360,16 @@ bool SemSession::ApplyMesh(Scene& scene, bool silent) {
                          { "", "No surface loaded", "Compute offsets first",
                            "", "Tetrahedralization failed", "Invalid method" }))
                 return false;
+            m_meshMs = ms;
         } else {
             double param = (double)meshParam;
             if (meshParamEdgeUnits && meshParam > 0.0f &&
                 (meshMethod == SEM_STEINER_MAX_AREA || meshMethod == SEM_STEINER_SIZING))
                 param *= MeshParamFactor();
             SEM_MeshParams params{ meshMethod, param, (double)steinerMargin };
+            Timer t; t.Restart();
             rc = SafeBuildMesh(&params);
+            const double ms = t.GetMillisecondsElapsed();
             if (rc == -100) {
                 Report(scene, silent, "Mesher DLL crashed (access violation caught). "
                                       "Try another Steiner method or a larger parameter.");
@@ -1121,6 +1379,7 @@ bool SemSession::ApplyMesh(Scene& scene, bool silent) {
                          { "", "No source loaded", "Compute offsets first",
                            "Not enough valid lines", "Triangulation failed", "Invalid method" }))
                 return false;
+            m_meshMs = ms;
         }
 
         std::string p = OutPath(dim == 3 ? "_mesh3d.csv3d" : "_mesh.csv3d");

@@ -52,14 +52,28 @@ public:
     int   tetMethod    = SEM_TET_MAX_VOL;
     float tetParam     = -1.0f;
     bool  tetParamEdgeUnits = false;
+    // Max tet edge length filter, in multiples of the source surface's mean edge
+    // length (see SEM_MeshParams3D::max_edge_len). <= 0 disables the filter.
+    float tetMaxEdgeLen = 0.0f;
 
     bool  thermalEnabled = true;
     float isoValue   = 0.5f;
+    // Max inward penetration (0..1) passed to SEM_SolveThermal3D.
+    float maxInward  = 1.0f;
 
     bool  subAuto     = false;
     bool  offAuto     = false;
     bool  meshAuto    = false;
     bool  thermalAuto = false;
+
+    // --- Clip planes (3D pipeline) ---------------------------------------
+    // User-defined clip half-spaces, edited from the SEM window and pushed to the
+    // SEM core via SEM_SetClipPlanes3D. Each plane is (xyz = normal, w = d) in
+    // nx*x + ny*y + nz*z + d >= 0; the normal points INTO the kept half-space.
+    // They are shown on the scene as soft translucent rectangles lying on each
+    // plane, sized to the source surface's bounding box: the kept side is soft
+    // red, the removed side soft blue.
+    std::vector<XMFLOAT4> clipPlanes;
 
     bool  revolutionMode = false;
     int   revSegments    = 48;
@@ -86,10 +100,27 @@ public:
     bool        ThermalSolved() const;
     bool        HasIsolinePath() const;
 
-    // Directory the SEM core serializes pipeline products into (system temp dir,
-    // set on Bind). Empty until a source is bound. Used to default the stage
-    // re-import dialogs to where those files actually live.
+    // Directory the SEM core serializes pipeline products into: the source's
+    // per-session folder (%TEMP%/sem/<stem>_<N>/), set on Bind. Empty until a
+    // source is bound.
     const std::string& WorkDir() const { return m_workDir; }
+
+    // --- Session folders -------------------------------------------------
+    // Pipeline products are grouped per source under %TEMP%/sem/. Each "session"
+    // is a folder <stem>_<N> (N = 1,2,3...) holding one pipeline state's csv3d
+    // files. Re-importing a source can either reload an existing session or start
+    // a new one. These helpers are static so the import UI can enumerate/allocate
+    // sessions before a source is bound.
+    static std::string SessionRoot();
+    // Existing session folders for the given source path, full paths, sorted by N.
+    static std::vector<std::string> ListSessions(const std::string& srcPath);
+    // Next free session folder path (<stem>_<maxN+1>); not created here (Bind does).
+    static std::string NewSessionDir(const std::string& srcPath);
+
+    // Restore the whole currently-bound session folder: reload any serialized
+    // offset shells and mesh found in m_workDir (delegates to ImportOffsets /
+    // ImportMesh). Absent stages are skipped; thermal is left unsolved.
+    void LoadSessionStages(Scene& scene);
 
     double MeshParamFactor() const;
     double TetParamFactor() const;
@@ -132,6 +163,28 @@ public:
     // Apply the 3D surface opacity to every currently-built 3D pipeline surface.
     void SetSurf3dAlpha(Scene& scene, float a);
 
+    // --- Clip planes -----------------------------------------------------
+    // Push the current clipPlanes to the SEM core (SEM_SetClipPlanes3D) and
+    // rebuild the on-scene rectangles. Clipping is applied during meshing, so
+    // this invalidates the mesh and everything downstream.
+    void SetClipPlanes3D(Scene& scene);
+    // Clear every clip plane in the core (SEM_ClearClipPlanes3D), drop the
+    // rectangles and invalidate the mesh.
+    void ClearClipPlanes3D(Scene& scene);
+    // Rebuild just the on-scene rectangles from clipPlanes (e.g. after editing a
+    // plane's parameters); no SEM core call, no mesh invalidation.
+    void RebuildClipPlaneViz(Scene& scene);
+
+    // --- Stage timing ----------------------------------------------------
+    // Wall-clock duration (ms) of the most recent compute of each stage, or < 0
+    // when the stage has not been computed this session. Total is the sum of the
+    // measured stages; it accumulates as the offsets, mesh and thermal stages are
+    // computed in turn. Shown in the SEM window beside each stage header.
+    double OffsetsTimeMs() const { return m_offsetsMs; }
+    double MeshTimeMs()    const { return m_meshMs; }
+    double ThermalTimeMs() const { return m_thermalMs; }
+    double TotalTimeMs()   const;
+
     void DropSrcRev(Scene& scene);
     void DropIsoRev(Scene& scene);
 
@@ -139,7 +192,10 @@ public:
     bool ApplyThermal(Scene& scene, bool silent);
     bool ApplyIsoline(Scene& scene, bool silent);
 
-    Primitive* ImportSource(Scene& scene, const std::string& path);
+    // Import a .csv3d as the staged pipeline source. workDir picks the session
+    // folder to serialize into; empty => Bind allocates a fresh <stem>_<N>.
+    Primitive* ImportSource(Scene& scene, const std::string& path,
+                            const std::string& workDir = std::string());
 
     // Reload previously serialized pipeline stages into the SEM cache instead of
     // recomputing them (SEM_LoadOffsets[3D] / SEM_LoadMesh[3D]). The staged source
@@ -198,8 +254,16 @@ private:
     Primitive*  m_isoline = nullptr;
     Primitive*  m_srcRevSurf = nullptr;
     Primitive*  m_isoRevSurf = nullptr;
+    SceneNode*  m_clipViz = nullptr;   // empty group holding the clip-plane rectangles
     bool        m_thermalSolved = false;
     Stats m_srcStats, m_offStats, m_meshStats;
+
+    // Stage compute durations in ms; < 0 means "not measured this session".
+    // Reset on Bind (new source); updated by the sync Apply* paths and copied
+    // from the worker by PollAsync. See OffsetsTimeMs/MeshTimeMs/ThermalTimeMs.
+    double m_offsetsMs = -1.0;
+    double m_meshMs    = -1.0;
+    double m_thermalMs = -1.0;
 
     // Per-stage staleness, indexed by Stage. A stage is dirty when its own
     // parameters changed since it was last applied, or when it has never been
@@ -233,7 +297,9 @@ private:
         std::vector<double> gaps;
         int                 tetMethod = SEM_TET_MAX_VOL;
         double              tetParam = -1.0;
+        double              tetMaxEdgeLen = 0.0;
         double              isoValue = 0.5;
+        float               maxInward = 1.0f;
 
         // Deterministic output paths the SEM core writes (computed at launch on
         // the main thread, where OutPath/m_srcPath are stable).
@@ -242,6 +308,11 @@ private:
         // Worker outputs (read by the main thread after join()). Set from the
         // exp* paths only once the corresponding stage has actually succeeded.
         std::string         offsetsPath, meshPath, isoPath, error;
+
+        // Measured compute durations (ms) of each heavy stage the worker ran;
+        // < 0 when the stage was not part of this run. Copied to the session by
+        // PollAsync after join().
+        double              offsetsMs = -1.0, meshMs = -1.0, thermalMs = -1.0;
 
         ~AsyncJob() { if (worker.joinable()) worker.join(); }
     };
@@ -277,6 +348,11 @@ private:
 
     void BuildSourceRevolution(Scene& scene);
     void BuildIsolineRevolution(Scene& scene);
+
+    // Build/drop the soft translucent rectangles visualizing clipPlanes over the
+    // source surface's bounding box (red = kept side, blue = removed side).
+    void BuildClipPlaneViz(Scene& scene);
+    void DropClipPlaneViz(Scene& scene);
 
     void DropOffsets(Scene& scene);
     void DropMesh(Scene& scene);

@@ -40,14 +40,72 @@ inline std::string BrowseCsv3dFile(const std::string& initialDir = {}) {
     return {};
 }
 
-// Folder the stage re-import dialogs (offsets/mesh) default to: the session's
-// SEM working dir if a source is bound, otherwise the system temp dir computed
-// dynamically so it resolves per-user.
-inline std::string StageImportDir(const SemSessionNS::SemSession& S) {
-    if (!S.WorkDir().empty()) return S.WorkDir();
-    std::error_code ec;
-    auto tmp = std::filesystem::temp_directory_path(ec);
-    return ec ? std::string() : tmp.string();
+// State for the "load existing session vs. new session" modal raised when the
+// user imports a source that already has serialized sessions under %TEMP%/sem/.
+struct ImportChoice {
+    bool                     open     = false;  // request popup open this frame
+    std::string              path;              // source .csv3d being imported
+    std::vector<std::string> sessions;          // existing session folders (full paths)
+    int                      sel      = 0;      // 0..n-1 = session, n = "[New session]"
+};
+inline ImportChoice& PendingImport() {
+    static ImportChoice ic;
+    return ic;
+}
+
+// Begin importing a source: if it already has sessions, defer to the choice
+// modal; otherwise import straight into a fresh session.
+inline void BeginSourceImport(Scene& scene, SemSessionNS::SemSession& S,
+                              const std::string& path) {
+    if (path.empty()) return;
+    auto sessions = SemSessionNS::SemSession::ListSessions(path);
+    if (sessions.empty()) { S.ImportSource(scene, path); return; }
+    ImportChoice& ic = PendingImport();
+    ic.path     = path;
+    ic.sessions = std::move(sessions);
+    ic.sel      = (int)ic.sessions.size();   // default to "[New session]"
+    ic.open     = true;
+}
+
+// Render the session-choice modal. Call once per frame from the SEM window.
+inline void DrawImportSessionModal(Scene& scene, SemSessionNS::SemSession& S) {
+    ImportChoice& ic = PendingImport();
+    if (ic.open) { ImGui::OpenPopup("Import session##sem"); ic.open = false; }
+    if (!ImGui::BeginPopupModal("Import session##sem", nullptr,
+                                ImGuiWindowFlags_AlwaysAutoResize))
+        return;
+
+    ImGui::TextWrapped("This source already has saved pipeline states.\n"
+                       "Load an existing session or start a new one:");
+    ImGui::Spacing();
+
+    auto base = [](const std::string& p) {
+        auto s = p.find_last_of("\\/");
+        return s != std::string::npos ? p.substr(s + 1) : p;
+    };
+    const int newIdx = (int)ic.sessions.size();
+    std::string preview = (ic.sel >= 0 && ic.sel < newIdx)
+                              ? base(ic.sessions[ic.sel]) : std::string("[New session]");
+    if (ImGui::BeginCombo("State", preview.c_str())) {
+        for (int i = 0; i < newIdx; ++i)
+            if (ImGui::Selectable(base(ic.sessions[i]).c_str(), ic.sel == i)) ic.sel = i;
+        if (ImGui::Selectable("[New session]", ic.sel == newIdx)) ic.sel = newIdx;
+        ImGui::EndCombo();
+    }
+
+    ImGui::Spacing();
+    if (ImGui::Button("Load", {120, 0})) {
+        if (ic.sel >= 0 && ic.sel < newIdx) {
+            S.ImportSource(scene, ic.path, ic.sessions[ic.sel]);
+            S.LoadSessionStages(scene);
+        } else {
+            S.ImportSource(scene, ic.path);  // fresh session
+        }
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", {120, 0})) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
 }
 
 inline const char* MeshParamLabel(int m) {
@@ -167,6 +225,49 @@ inline void DrawRevolutionSection(Scene& scene, SemSessionNS::SemSession& S) {
     ImGui::PopID();
 }
 
+// Clip-plane editor (3D pipeline only). Each plane is (normal xyz, d) in
+// nx*x+ny*y+nz*z+d >= 0; the normal points into the kept region. Editing a value
+// refreshes the on-scene rectangles live; "Apply clip planes" pushes them to the
+// mesher (SEM_SetClipPlanes3D) and invalidates the mesh.
+inline void DrawClipPlanesSection(Scene& scene, SemSessionNS::SemSession& S) {
+    ImGui::PushID("clip");
+    ImGui::Text("Clip planes");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Clear")) S.ClearClipPlanes3D(scene);
+    ImGui::SetItemTooltip("Half-space clips applied during 3D meshing. The normal points\n"
+                          "into the kept region (shown soft red); the removed side is soft blue.\n"
+                          "Edit a plane to preview it; press Apply to mesh with the clips.");
+
+    ImGui::Indent();
+    bool vizDirty = false;
+    int  removeIdx = -1;
+    for (int i = 0; i < (int)S.clipPlanes.size(); ++i) {
+        ImGui::PushID(i);
+        XMFLOAT4& pl = S.clipPlanes[i];
+        ImGui::SetNextItemWidth(160);
+        vizDirty |= ImGui::DragFloat3("n", &pl.x, 0.01f, -1.0e6f, 1.0e6f, "%.3f");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("X")) removeIdx = i;
+        ImGui::SetNextItemWidth(160);
+        vizDirty |= ImGui::DragFloat("d", &pl.w, 0.05f, -1.0e6f, 1.0e6f, "%.3f");
+        ImGui::PopID();
+    }
+    if (removeIdx >= 0) { S.clipPlanes.erase(S.clipPlanes.begin() + removeIdx); vizDirty = true; }
+
+    if (ImGui::Button("+ Add plane")) {
+        S.clipPlanes.push_back(XMFLOAT4(1.0f, 0.0f, 0.0f, 0.0f));
+        vizDirty = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Apply clip planes")) S.SetClipPlanes3D(scene);
+    ImGui::SetItemTooltip("Send the planes to the mesher (SEM_SetClipPlanes3D) and rebuild\n"
+                          "the mesh on the next Mesh/Thermal Apply.");
+
+    if (vizDirty) S.RebuildClipPlaneViz(scene);
+    ImGui::Unindent();
+    ImGui::PopID();
+}
+
 inline void Draw(Scene& scene, bool& blockMousePick) {
     using namespace SemSessionNS;
     SemSession& S = Session();
@@ -184,12 +285,11 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         if (S.SourcePrim()) ImGui::TextDisabled("Staged primitive is not a SEM contour.");
         else                ImGui::TextDisabled("No staged contour.");
         ImGui::Spacing();
-        if (ImGui::Button("Import CSV3D...", {200, 0})) {
-            std::string p = BrowseCsv3dFile();
-            if (!p.empty()) S.ImportSource(scene, p);
-        }
+        if (ImGui::Button("Import CSV3D...", {200, 0}))
+            BeginSourceImport(scene, S, BrowseCsv3dFile());
         ImGui::SetItemTooltip("Browse for a .csv3d contour, add it to the scene and stage it\n"
                               "as the source of the SEM pipeline.");
+        DrawImportSessionModal(scene, S);
         ImGui::Spacing();
         if (scene.stagingEnabled) {
             ImGui::TextWrapped("Double-click a CSV3D contour in the tree to stage it here.");
@@ -221,12 +321,12 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
     }
     ImGui::BeginDisabled(busy);
 
-    if (ImGui::Button("Import CSV3D...", {kItemW, 0})) {
-        std::string p = BrowseCsv3dFile();
-        if (!p.empty()) S.ImportSource(scene, p);
-    }
+    if (ImGui::Button("Import CSV3D...", {kItemW, 0}))
+        BeginSourceImport(scene, S, BrowseCsv3dFile());
     ImGui::SetItemTooltip("Browse for a .csv3d contour, add it to the scene and stage it\n"
-                          "as the source of the SEM pipeline (replaces the current source).");
+                          "as the source of the SEM pipeline (replaces the current source).\n"
+                          "If the source has saved sessions you can reload one instead.");
+    DrawImportSessionModal(scene, S);
     ImGui::Separator();
 
     const bool is3D = S.Dim() == 3;
@@ -248,6 +348,8 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
                               "isosurface). Back-face culling is set globally via the\n"
                               "NavCube no-cull toggle.");
         ImGui::Separator();
+        DrawClipPlanesSection(scene, S);
+        ImGui::Separator();
     }
 
     // The 3D pipeline stages have no auto-apply: their compute is heavy and runs
@@ -256,6 +358,14 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         if (is3D) return;
         ImGui::SameLine();
         ImGui::Checkbox("Auto-apply", autoFlag);
+    };
+
+    // Disabled "<n> ms" tag shown next to a stage header once it has been
+    // computed (ms < 0 => not yet measured, nothing drawn).
+    auto stageTime = [&](double ms) {
+        if (ms < 0.0) return;
+        ImGui::SameLine();
+        ImGui::TextDisabled("%.0f ms", ms);
     };
 
     {
@@ -289,17 +399,7 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         autoTag(&S.offAuto);
         ImGui::SameLine();
         if (ImGui::SmallButton("Reset##off")) S.ResetStage(scene, STAGE_OFFSETS);
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Import##off")) {
-            std::string f = BrowseCsv3dFile(StageImportDir(S));
-            if (!f.empty()) {
-                auto slash = f.find_last_of("\\/");
-                S.ImportOffsets(scene, slash != std::string::npos ? f.substr(0, slash) : std::string());
-            }
-        }
-        ImGui::SetItemTooltip("Reload previously serialized offset shells\n"
-                              "(<stem>_offset[3d]_<i>.csv3d) from a folder instead of\n"
-                              "recomputing them. Pick any shell file in that folder.");
+        stageTime(S.OffsetsTimeMs());
 
         ImGui::Indent();
         bool changed = false, released = false;
@@ -354,14 +454,7 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         autoTag(&S.meshAuto);
         ImGui::SameLine();
         if (ImGui::SmallButton("Reset##mesh")) S.ResetStage(scene, STAGE_MESH);
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Import##mesh")) {
-            std::string f = BrowseCsv3dFile(StageImportDir(S));
-            if (!f.empty()) S.ImportMesh(scene, f);
-        }
-        ImGui::SetItemTooltip("Reload a previously serialized band mesh\n"
-                              "(<stem>_mesh[3d].csv3d) instead of recomputing it.\n"
-                              "Solve the thermal field afterwards to extract an isotherm.");
+        stageTime(S.MeshTimeMs());
 
         ImGui::Indent();
         bool changed = false, released = false;
@@ -441,6 +534,18 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         }
         } // end 2D Steiner UI
 
+        // Max tet edge length filter (3D only), in multiples of the source
+        // surface's mean edge length. Sits just above Apply so the meshing
+        // parameters read top to bottom. <= 0 disables the filter.
+        if (is3D) {
+            ImGui::DragFloat("Max edge (x edge, 0=off)", &S.tetMaxEdgeLen, 0.05f, 0.0f, 100.0f, "%.3f");
+            released |= ImGui::IsItemDeactivatedAfterEdit();
+            ImGui::SetItemTooltip("After meshing, remove any tet with an edge longer than this,\n"
+                                  "measured in multiples of the source surface's mean edge length.\n"
+                                  "Vertices are kept. 0 or less disables the filter.");
+            if (S.tetMaxEdgeLen < 0.0f) S.tetMaxEdgeLen = 0.0f;
+        }
+
         if (changed || released) S.MarkStageDirty(STAGE_MESH);
         if (!is3D && S.meshAuto) { if (changed || released) S.RecomputeUpToAsync(scene, STAGE_MESH, true); }
         else if (ImGui::Button("Apply", {160, 0})) S.RecomputeUpToAsync(scene, STAGE_MESH, false);
@@ -455,8 +560,15 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         ImGui::Text("Thermal solve");
         ImGui::SameLine();
         if (ImGui::SmallButton("Reset##thermal")) S.ResetStage(scene, STAGE_THERMAL);
+        stageTime(S.ThermalTimeMs());
 
         ImGui::Indent();
+        // Max inward penetration knob fed to SEM_SolveThermal3D. Sits ABOVE the
+        // Apply button so the solve parameters read top to bottom.
+        ImGui::DragFloat("Max inward (0..1)", &S.maxInward, 0.005f, 0.0f, 1.0f, "%.3f");
+        if (S.maxInward < 0.0f) S.maxInward = 0.0f;
+        if (S.maxInward > 1.0f) S.maxInward = 1.0f;
+
         // Apply solves the steady-state field; it sits ABOVE the iso value so the
         // (expensive) solve and the (cheap) iso extraction read top to bottom.
         if (ImGui::Button("Apply", {160, 0})) S.RecomputeUpToAsync(scene, STAGE_THERMAL, false);
@@ -466,20 +578,23 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
             : "Solve steady-state heat conduction on the band mesh (source T=1,\n"
               "farthest offset T=0), then extract the isotherm.");
 
-        bool changed = ImGui::DragFloat(is3D ? "Isosurface value (0..1)" : "Isoline value (0..1)",
-                                        &S.isoValue, 0.005f, 0.0f, 1.0f, "%.3f");
+        ImGui::DragFloat(is3D ? "Isosurface value (0..1)" : "Isoline value (0..1)",
+                         &S.isoValue, 0.005f, 0.0f, 1.0f, "%.3f");
         ImGui::SetItemTooltip("Normalized temperature of the extracted %s. Changing it does NOT\n"
-                              "re-solve the thermal field — it just re-extracts the %s at the\n"
-                              "new temperature (applied automatically once a solve exists).",
+                              "re-solve the thermal field — press the button below to re-extract\n"
+                              "the %s at the new temperature.",
                               is3D ? "isosurface" : "isotherm",
                               is3D ? "isosurface" : "isotherm");
         if (S.isoValue < 0.0f) S.isoValue = 0.0f;
         if (S.isoValue > 1.0f) S.isoValue = 1.0f;
 
         // The iso value only selects a level set of the already-solved field, so
-        // editing it re-extracts the isotherm/isosurface in place (auto-apply by
-        // default) without touching the thermal solve.
-        if (changed && S.ThermalSolved()) S.ApplyIsoline(scene, true);
+        // applying it re-extracts the isotherm/isosurface in place without
+        // touching the thermal solve.
+        ImGui::BeginDisabled(!S.ThermalSolved());
+        if (ImGui::Button(is3D ? "Apply isosurface" : "Apply isoline", {160, 0}))
+            S.ApplyIsoline(scene, true);
+        ImGui::EndDisabled();
         ImGui::Unindent();
         ImGui::PopID();
     }
@@ -487,6 +602,9 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
     ImGui::EndDisabled();
 
     ImGui::Separator();
+    // Cumulative compute time across the offsets, mesh and thermal stages. Always
+    // shown; it grows as each stage is computed (0 ms until the first compute).
+    ImGui::TextDisabled("Total compute: %.0f ms", S.TotalTimeMs());
     ImGui::TextDisabled("%s", S.status);
 
     ImGui::PopItemWidth();

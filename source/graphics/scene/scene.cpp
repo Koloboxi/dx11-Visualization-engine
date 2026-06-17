@@ -723,6 +723,11 @@ Primitive* Scene::AddFromCSV3D(const std::string& path, const std::string& name,
 		surface->AddChild(lines);
 	}
 
+	// Light the new primitive(s) immediately so they don't flash up unlit (black
+	// with a harsh specular) before the next UpdateLight().
+	ApplyCurrentLighting(surface);
+	ApplyCurrentLighting(lines);
+
 	m_sortedDirty = true;
 	return p;
 }
@@ -746,6 +751,21 @@ Primitive* Scene::AddRevolutionSurface(const std::vector<XMFLOAT3>& profile, UIN
 	p->name = name;
 	this->primitives.push_back(p);
 	(parent ? parent : &root)->AddChild(p);
+	ApplyCurrentLighting(p);
+	m_sortedDirty = true;
+	return p;
+}
+
+Primitive* Scene::AddColoredTriangles(const std::vector<XMFLOAT3>& poses, const std::vector<XMFLOAT4>& cols,
+	const std::string& name, SceneNode* parent, bool ensureCCW)
+{
+	if (poses.empty() || poses.size() % 3 != 0) return nullptr;
+	Primitive* p = PrimitiveConstructor::ColoredTriangles(poses, cols, NextId(), ensureCCW);
+	if (!p) return nullptr;
+	p->name = name;
+	this->primitives.push_back(p);
+	(parent ? parent : &root)->AddChild(p);
+	ApplyCurrentLighting(p);
 	m_sortedDirty = true;
 	return p;
 }
@@ -837,13 +857,16 @@ void Scene::SetNodeVisibleCascade(SceneNode* n, bool show)
 	m_sortedDirty = true;
 }
 
+void Scene::ApplyCurrentLighting(Primitive* p)
+{
+	if (!p || !p->GetIlluminationCapability()) return;
+	p->SetLighting(this->ambient, this->intensity, this->shininess);
+	p->SetSmoothShading(this->smoothShade);
+}
+
 void Scene::UpdateLight()
 {
-	for (Primitive* p : this->primitives) {
-		if (!p->GetIlluminationCapability()) continue;
-		p->SetLighting(this->ambient, this->intensity, this->shininess);
-		p->SetSmoothShading(this->smoothShade);
-	}
+	for (Primitive* p : this->primitives) ApplyCurrentLighting(p);
 	this->orientationTransformer.UpdateLighting(this->ambient, this->intensity, this->shininess, this->smoothShade);
 	this->navGizmo.UpdateLighting(this->ambient, this->intensity, this->shininess, this->smoothShade);
 }

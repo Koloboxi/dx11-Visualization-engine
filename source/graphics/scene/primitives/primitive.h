@@ -32,6 +32,10 @@ public:
 	bool staging = false;
 
 	std::string semSourcePath;
+	// SEM pipeline "session" folder this source serializes into
+	// (%TEMP%/sem/<stem>_<N>/). Chosen at import; SemSession::Bind reads it and
+	// allocates a fresh one when empty. See SemSession.
+	std::string semWorkDir;
 
 	void SetColor(const XMFLOAT4& col);
 	void SetAlpha(const float a);
