@@ -46,15 +46,17 @@ Primitive* PrimitiveConstructor::Line(const std::vector<XMFLOAT3>& poses, const 
 	return line;
 }
 
-Primitive* PrimitiveConstructor::ColoredLine(const std::vector<XMFLOAT3>& poses, const std::vector<XMFLOAT4>& cols, bool asLineList, UINT id)
+Primitive* PrimitiveConstructor::ColoredLine(const std::vector<XMFLOAT3>& poses, const std::vector<XMFLOAT4>& cols, bool asLineList, UINT id, std::vector<UINT>* srcIndexOut)
 {
 	Primitive* line = new Primitive(device, deviceContext);
 
 	std::vector<Vertex> vertexData{};
 	vertexData.reserve(poses.size());
+	if (srcIndexOut) { srcIndexOut->clear(); srcIndexOut->reserve(poses.size()); }
 	for (size_t i = 0; i < poses.size(); ++i) {
 		XMFLOAT4 c = (i < cols.size()) ? cols[i] : XMFLOAT4(1, 1, 1, 1);
 		vertexData.push_back(Vertex(poses[i], c));
+		if (srcIndexOut) srcIndexOut->push_back((UINT)i);   // line vertices keep source order
 	}
 
 	line->SetVertexIndexBuffers(vertexData.data(), static_cast<UINT>(vertexData.size()), 0, 0, 1);
@@ -68,12 +70,13 @@ Primitive* PrimitiveConstructor::ColoredLine(const std::vector<XMFLOAT3>& poses,
 	return line;
 }
 
-Primitive* PrimitiveConstructor::ColoredTriangles(const std::vector<XMFLOAT3>& poses, const std::vector<XMFLOAT4>& cols, UINT id, bool ensureCCW)
+Primitive* PrimitiveConstructor::ColoredTriangles(const std::vector<XMFLOAT3>& poses, const std::vector<XMFLOAT4>& cols, UINT id, bool ensureCCW, std::vector<UINT>* srcIndexOut)
 {
 	Primitive* tri = new Primitive(device, deviceContext);
 
 	std::vector<Vertex> vertexData;
 	vertexData.reserve(poses.size());
+	if (srcIndexOut) { srcIndexOut->clear(); srcIndexOut->reserve(poses.size()); }
 
 	const size_t triCount = poses.size() / 3;
 
@@ -166,6 +169,7 @@ Primitive* PrimitiveConstructor::ColoredTriangles(const std::vector<XMFLOAT3>& p
 			Vertex v(poses[idx[k]], n);
 			v.color = (idx[k] < cols.size()) ? cols[idx[k]] : XMFLOAT4(1, 1, 1, 1);
 			vertexData.push_back(v);
+			if (srcIndexOut) srcIndexOut->push_back((UINT)idx[k]);   // GPU vertex -> source index
 		}
 	}
 

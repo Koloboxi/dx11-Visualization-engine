@@ -56,6 +56,26 @@ public:
 		return this->data;
 	}
 
+	// Overwrite the buffer contents in place without recreating it. The buffer is
+	// D3D11_USAGE_DYNAMIC, so this maps with WRITE_DISCARD and copies the new data;
+	// the CPU-side mirror is kept in sync. numVertices must match the size the
+	// buffer was initialized with. Used to re-skin a primitive (e.g. swap a
+	// per-vertex colour set) without rebuilding its geometry. Returns E_FAIL when
+	// the buffer is uninitialized or the count differs.
+	HRESULT Update(ID3D11DeviceContext* context, const T* src, UINT numVertices) {
+		if (this->buffer.Get() == nullptr || numVertices != this->bufferSize)
+			return E_FAIL;
+
+		D3D11_MAPPED_SUBRESOURCE mapped{};
+		HRESULT hr = context->Map(this->buffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+		if (FAILED(hr)) return hr;
+		memcpy(mapped.pData, src, sizeof(T) * numVertices);
+		context->Unmap(this->buffer.Get(), 0);
+
+		std::copy(src, src + numVertices, this->data.data());
+		return S_OK;
+	}
+
 	HRESULT Initialize(ID3D11Device* device, T* data, UINT& numVertices) {
 		if (this->buffer.Get() != nullptr)
 			this->buffer.Reset();

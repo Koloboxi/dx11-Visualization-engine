@@ -38,28 +38,49 @@ public:
     std::vector<float> gaps = { 25.0f, 25.0f, 25.0f };
     bool  offEnabled = true;
 
-    int   meshMethod    = SEM_STEINER_MAX_AREA;
+    // 2D mesh tuning — only the free grid CDT mesher remains (SEM_STEINER_GRID).
+    // meshParam is the interior Steiner-point spacing (<0 => source avg edge
+    // length); steinerMargin is the minimum spacing from offset lines as a
+    // multiple of meshParam. meshParamEdgeUnits expresses the spacing in
+    // multiples of the source contour's mean edge length instead of model units.
+    int   meshMethod    = SEM_STEINER_GRID;
     float meshParam     = -1.0f;
     float steinerMargin = 0.45f;
     bool  meshEnabled   = true;
     bool  meshParamEdgeUnits = false;
 
-    // 3D (surface) mesh tuning — TetGen, via SEM_BuildMesh3D. Parallel to the
-    // 2D meshMethod/meshParam pair: tetMethod picks the refinement strategy
-    // (SEM_TetMethod), tetParam is its primary knob (<0 => per-method auto).
-    // tetParamEdgeUnits expresses the volume/length knob in multiples of the
-    // source surface's mean edge length instead of model units.
-    int   tetMethod    = SEM_TET_MAX_VOL;
+    // 3D (surface) mesh tuning via SEM_BuildMesh3D. tetMethod picks the
+    // tetrahedralization variant (SEM_TetMethod): SEM_TET_BAND or
+    // SEM_TET_LAYERED. tetParam is its primary knob (<0 => per-method auto):
+    // BAND => Steiner grid cell size (a length); LAYERED => use_sdf flag (0/1).
+    // tetParamEdgeUnits expresses the BAND cell size in multiples of the source
+    // surface's mean edge length instead of model units (ignored for LAYERED).
+    int   tetMethod    = SEM_TET_BAND;
     float tetParam     = -1.0f;
     bool  tetParamEdgeUnits = false;
     // Max tet edge length filter, in multiples of the source surface's mean edge
     // length (see SEM_MeshParams3D::max_edge_len). <= 0 disables the filter.
     float tetMaxEdgeLen = 0.0f;
+    // SEM_TET_LAYERED + use_sdf=0 only: carving layer-span (SEM_MeshParams3D::
+    // layer_span). A tet is kept when the spread of its vertices' layer indices
+    // (max - min) is <= this. <= 0 => 1. Ignored by SEM_TET_BAND and by LAYERED
+    // with use_sdf=1.
+    int   tetLayerSpan = 1;
 
     bool  thermalEnabled = true;
     float isoValue   = 0.5f;
-    // Max inward penetration (0..1) passed to SEM_SolveThermal3D.
+    // Mesh colouring after a thermal solve. false = "T field" (blue..red gradient
+    // over the solved temperature); true = "BC" (only the Dirichlet boundary
+    // nodes are tinted blue for T=0 and red for T=1, every interior node light
+    // grey). Toggled live from the SEM window via SetBCView.
+    bool  bcView     = false;
+    // Max inward penetration (0..1) passed to SEM_SolveThermal3D. Only consulted
+    // when useSourceSdf is on.
     float maxInward  = 1.0f;
+    // SEM_SolveThermal3D use_source_sdf flag (0/1). 0 = keep every outermost-offset
+    // node as a T=0 BC by tag alone (maxInward ignored); 1 = evaluate the source
+    // signed distance on those nodes and drop self-intersecting ones via maxInward.
+    int   useSourceSdf = 0;
 
     bool  subAuto     = false;
     bool  offAuto     = false;
@@ -192,6 +213,11 @@ public:
     bool ApplyThermal(Scene& scene, bool silent);
     bool ApplyIsoline(Scene& scene, bool silent);
 
+    // Switch the solved mesh between the T-field gradient and the BC view (see
+    // bcView). Re-colours the existing mesh in place (no re-solve); a no-op when
+    // the value is unchanged or no solved mesh is present.
+    void SetBCView(Scene& scene, bool on);
+
     // Import a .csv3d as the staged pipeline source. workDir picks the session
     // folder to serialize into; empty => Bind allocates a fresh <stem>_<N>.
     Primitive* ImportSource(Scene& scene, const std::string& path,
@@ -295,11 +321,13 @@ private:
         double              firstGap = 1.0, grading = 1.2;
         int                 numOffsets = 8;
         std::vector<double> gaps;
-        int                 tetMethod = SEM_TET_MAX_VOL;
+        int                 tetMethod = SEM_TET_BAND;
         double              tetParam = -1.0;
         double              tetMaxEdgeLen = 0.0;
+        int                 tetLayerSpan = 1;
         double              isoValue = 0.5;
         float               maxInward = 1.0f;
+        int                 useSourceSdf = 0;
 
         // Deterministic output paths the SEM core writes (computed at launch on
         // the main thread, where OutPath/m_srcPath are stable).

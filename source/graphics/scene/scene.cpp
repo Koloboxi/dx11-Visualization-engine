@@ -630,7 +630,7 @@ void Scene::AddFromCSVMesh(const std::string& path, const XMFLOAT4& lineCol, con
 }
 
 Primitive* Scene::AddFromCSV3D(const std::string& path, const std::string& name, SceneNode* parent, const XMFLOAT4* overrideColor,
-	const XMFLOAT4& gradLow, const XMFLOAT4& gradHigh, bool ensureCCW)
+	const XMFLOAT4& gradLow, const XMFLOAT4& gradHigh, bool ensureCCW, bool bcView, bool registerColorSets)
 {
 	CSV3DLoader::CSV3DData data;
 	if (!CSV3DLoader::Load(path, data)) {
@@ -649,24 +649,64 @@ Primitive* Scene::AddFromCSV3D(const std::string& path, const std::string& name,
 	const auto& N = data.nodes;
 	const size_t numNodes = N.size();
 
-	auto nodeColor = [&](unsigned i) -> XMFLOAT4 {
+	// Two per-node colour schemes over the temperature field:
+	//   "T field" — the gradLow..gradHigh gradient over T;
+	//   "BC"      — only Dirichlet nodes tinted (T==0 -> gradLow, T==1 -> gradHigh),
+	//               every interior node light grey.
+	// nodeColor() picks the one selected by bcView for the initial buffer; when
+	// registerColorSets is set both are also stored on the primitive (in GPU
+	// vertex order) so the caller can switch between them without a rebuild.
+	const XMFLOAT4 bcInterior(0.80f, 0.80f, 0.80f, 0.0f);
+	const float bcEps = 1e-4f;
+	auto fieldColor = [&](unsigned i) -> XMFLOAT4 {
 		return overrideColor ? *overrideColor : Colors::Lerp(gradLow, gradHigh, N[i].T);
+	};
+	auto bcColor = [&](unsigned i) -> XMFLOAT4 {
+		if (overrideColor) return *overrideColor;
+		const float T = N[i].T;
+		if (T <= bcEps)        return gradLow;    // T=0 Dirichlet BC
+		if (T >= 1.0f - bcEps) return gradHigh;   // T=1 Dirichlet BC
+		return bcInterior;                        // interior node
+	};
+	auto nodeColor = [&](unsigned i) -> XMFLOAT4 { return bcView ? bcColor(i) : fieldColor(i); };
+
+	// Build both colour sets (GPU vertex order) from the GPU->source-vertex map
+	// the constructor produced and the source-vertex->node-id map we recorded,
+	// then register them and activate the one matching bcView.
+	auto registerSets = [&](Primitive* prim, const std::vector<UINT>& gpuToSrc,
+	                        const std::vector<unsigned>& srcNode) {
+		if (!prim || gpuToSrc.empty()) return;
+		std::vector<XMFLOAT4> field(gpuToSrc.size()), bc(gpuToSrc.size());
+		for (size_t g = 0; g < gpuToSrc.size(); ++g) {
+			const unsigned node = srcNode[gpuToSrc[g]];
+			field[g] = fieldColor(node);
+			bc[g]    = bcColor(node);
+		}
+		prim->AddColorSet("tfield", field);
+		prim->AddColorSet("bc", bc);
+		prim->ActivateColorSet(bcView ? "bc" : "tfield");
 	};
 
 	Primitive* surface = nullptr;
+	std::vector<UINT>     triGpuToSrc;   // filled by the constructor when registering
+	std::vector<unsigned> triNode;       // source vertex -> node id
 	if (!data.triangles.empty()) {
 		std::vector<XMFLOAT3> tposes;
 		std::vector<XMFLOAT4> tcols;
 		tposes.reserve(data.triangles.size() * 3);
 		tcols.reserve(data.triangles.size() * 3);
+		if (registerColorSets) triNode.reserve(data.triangles.size() * 3);
+		auto emit = [&](unsigned node) {
+			tposes.push_back(N[node].pos); tcols.push_back(nodeColor(node));
+			if (registerColorSets) triNode.push_back(node);
+		};
 		for (const auto& t : data.triangles) {
 			if (t.x >= numNodes || t.y >= numNodes || t.z >= numNodes) continue;
-			tposes.push_back(N[t.x].pos); tcols.push_back(nodeColor(t.x));
-			tposes.push_back(N[t.y].pos); tcols.push_back(nodeColor(t.y));
-			tposes.push_back(N[t.z].pos); tcols.push_back(nodeColor(t.z));
+			emit(t.x); emit(t.y); emit(t.z);
 		}
 		if (!tposes.empty())
-			surface = PrimitiveConstructor::ColoredTriangles(tposes, tcols, NextId(), ensureCCW);
+			surface = PrimitiveConstructor::ColoredTriangles(tposes, tcols, NextId(), ensureCCW,
+				registerColorSets ? &triGpuToSrc : nullptr);
 	}
 
 	std::set<std::pair<unsigned, unsigned>> edges;
@@ -692,18 +732,21 @@ Primitive* Scene::AddFromCSV3D(const std::string& path, const std::string& name,
 	}
 
 	Primitive* lines = nullptr;
+	std::vector<UINT>     lineGpuToSrc;
+	std::vector<unsigned> lineNode;      // source vertex -> node id
 	if (!edges.empty()) {
 		std::vector<XMFLOAT3> poses;
 		std::vector<XMFLOAT4> cols;
 		poses.reserve(edges.size() * 2);
 		cols.reserve(edges.size() * 2);
-		for (const auto& e : edges) {
-			poses.push_back(N[e.first].pos);
-			cols.push_back(nodeColor(e.first));
-			poses.push_back(N[e.second].pos);
-			cols.push_back(nodeColor(e.second));
-		}
-		lines = PrimitiveConstructor::ColoredLine(poses, cols, /*asLineList*/ true, NextId());
+		if (registerColorSets) lineNode.reserve(edges.size() * 2);
+		auto emit = [&](unsigned node) {
+			poses.push_back(N[node].pos); cols.push_back(nodeColor(node));
+			if (registerColorSets) lineNode.push_back(node);
+		};
+		for (const auto& e : edges) { emit(e.first); emit(e.second); }
+		lines = PrimitiveConstructor::ColoredLine(poses, cols, /*asLineList*/ true, NextId(),
+			registerColorSets ? &lineGpuToSrc : nullptr);
 	}
 
 	if (!surface && !lines) {
@@ -721,6 +764,13 @@ Primitive* Scene::AddFromCSV3D(const std::string& path, const std::string& name,
 		lines->name = primName + " (edges)";
 		this->primitives.push_back(lines);
 		surface->AddChild(lines);
+	}
+
+	// Store both colour sets on whichever primitives were built, so the caller can
+	// flip between "T field" and "BC" cheaply later (see Primitive::ActivateColorSet).
+	if (registerColorSets) {
+		registerSets(surface, triGpuToSrc, triNode);
+		registerSets(lines,  lineGpuToSrc, lineNode);
 	}
 
 	// Light the new primitive(s) immediately so they don't flash up unlit (black

@@ -108,48 +108,27 @@ inline void DrawImportSessionModal(Scene& scene, SemSessionNS::SemSession& S) {
     ImGui::EndPopup();
 }
 
-inline const char* MeshParamLabel(int m) {
-    switch (m) {
-        case SEM_STEINER_GRID:       return "Grid spacing";
-        case SEM_STEINER_NONE:       return "(no parameter)";
-        case SEM_STEINER_MIN_ANGLE:  return "Min angle (deg)";
-        case SEM_STEINER_MAX_AREA:   return "Max triangle area";
-        case SEM_STEINER_CONFORMING: return "Min angle (deg, 0=off)";
-        case SEM_STEINER_SIZING:     return "Max edge length";
-        default:                     return "Parameter";
-    }
+inline const char* MeshParamLabel(int /*m*/) {
+    return "Grid spacing";
 }
 
-inline const char* MeshParamHelp(int m) {
-    switch (m) {
-        case SEM_STEINER_GRID:       return "Regular grid of interior points + CDT. Negative => avg edge length.";
-        case SEM_STEINER_NONE:       return "Constrained Delaunay, no interior points. Parameter ignored.";
-        case SEM_STEINER_MIN_ANGLE:  return "Triangle -q: Ruppert refinement. Typical 20..33 deg. Negative => default.";
-        case SEM_STEINER_MAX_AREA:   return "Triangle -a: bounded triangle area. Negative => default.";
-        case SEM_STEINER_CONFORMING: return "Triangle -D: conforming Delaunay. 0 => conforming only.";
-        case SEM_STEINER_SIZING:     return "Triangle -u: bounded longest edge. Negative => default.";
-        default:                     return "";
-    }
+inline const char* MeshParamHelp(int /*m*/) {
+    return "Regular grid of interior Steiner points + constrained Delaunay.\n"
+           "Negative => source average edge length.";
 }
 
 inline const char* TetParamLabel(int m) {
-    switch (m) {
-        case SEM_TET_QUALITY: return "Radius-edge (-q)";
-        case SEM_TET_NONE:    return "(no parameter)";
-        case SEM_TET_MAX_VOL: return "Max tet volume";
-        case SEM_TET_SIZING:  return "Max edge length";
-        default:              return "Parameter";
-    }
+    return (m == SEM_TET_BAND) ? "Steiner grid cell" : "Use source SDF";
 }
 
 inline const char* TetParamHelp(int m) {
     switch (m) {
-        case SEM_TET_QUALITY: return "TetGen -q: radius-edge quality bound. Lower => better-shaped\n"
-                                     "tetrahedra but more of them. Typical 1.4..2.0. Negative => default (~2.0).";
-        case SEM_TET_NONE:    return "-p only: conforming Delaunay, no size/quality refinement. Parameter ignored.";
-        case SEM_TET_MAX_VOL: return "TetGen -a: bounded tetrahedron volume, in model units^3.\n"
-                                     "Negative => automatic (~avg_edge^3/6).";
-        case SEM_TET_SIZING:  return "TetGen -a derived from a target edge length. Negative => default.";
+        case SEM_TET_BAND:    return "Delaunay of source + outermost-offset + an interior Steiner\n"
+                                     "grid, carved to the band by the source signed distance.\n"
+                                     "Parameter = Steiner grid cell size. Negative => avg edge length.";
+        case SEM_TET_LAYERED: return "Delaunay of a layered point cloud across all offset shells,\n"
+                                     "carved by layer adjacency. Off keeps the build fully SDF-free;\n"
+                                     "on carves and colours by the source signed distance instead.";
         default:              return "";
     }
 }
@@ -459,80 +438,83 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         ImGui::Indent();
         bool changed = false, released = false;
         if (is3D) {
-            const char* tetItems =
-                "Quality (-q)\0" "None (-p)\0" "Max volume (-a)\0" "Sizing (edge len)\0";
-            if (ImGui::Combo("TetGen method", &S.tetMethod, tetItems)) {
+            const char* tetItems = "Band\0" "Layered\0";
+            if (ImGui::Combo("Tet method", &S.tetMethod, tetItems)) {
                 S.tetParam = -1.0f;
                 changed = true;
             }
-            if (S.tetMethod != SEM_TET_NONE) {
+            if (S.tetMethod == SEM_TET_BAND) {
                 ImGui::DragFloat(TetParamLabel(S.tetMethod), &S.tetParam, 0.5f, -1.0f, 1e7f, "%.3f");
                 released |= ImGui::IsItemDeactivatedAfterEdit();
                 ImGui::SetItemTooltip("%s", TetParamHelp(S.tetMethod));
                 ImGui::SameLine();
                 if (ImGui::SmallButton("auto")) { S.tetParam = -1.0f; changed = true; }
 
-                bool lenVol = (S.tetMethod == SEM_TET_MAX_VOL ||
-                               S.tetMethod == SEM_TET_SIZING);
-                if (lenVol) {
-                    ImGui::SameLine();
-                    const char* ulabel = !S.tetParamEdgeUnits ? "units: model"
-                        : (S.tetMethod == SEM_TET_MAX_VOL ? "units: x edge^3"
-                                                          : "units: x edge");
-                    if (ImGui::SmallButton(ulabel)) {
-                        double f = S.TetParamFactor();
-                        if (S.tetParam > 0.0f && f > 0.0) {
-                            if (!S.tetParamEdgeUnits) S.tetParam = (float)(S.tetParam / f);
-                            else                      S.tetParam = (float)(S.tetParam * f);
-                        }
-                        S.tetParamEdgeUnits = !S.tetParamEdgeUnits;
+                // BAND's knob is the Steiner grid cell size (a length), so it can
+                // be expressed in multiples of the source surface's mean edge length.
+                ImGui::SameLine();
+                const char* ulabel = !S.tetParamEdgeUnits ? "units: model" : "units: x edge";
+                if (ImGui::SmallButton(ulabel)) {
+                    double f = S.TetParamFactor();
+                    if (S.tetParam > 0.0f && f > 0.0) {
+                        if (!S.tetParamEdgeUnits) S.tetParam = (float)(S.tetParam / f);
+                        else                      S.tetParam = (float)(S.tetParam * f);
                     }
-                    ImGui::SetItemTooltip("Toggle the parameter's units between model units and\n"
-                                          "multiples of the source surface's mean edge length\n"
-                                          "(cubed for volume). The value is converted so meshing\n"
-                                          "is unaffected.");
+                    S.tetParamEdgeUnits = !S.tetParamEdgeUnits;
+                }
+                ImGui::SetItemTooltip("Toggle the cell size between model units and multiples of\n"
+                                      "the source surface's mean edge length. The value is\n"
+                                      "converted so meshing is unaffected.");
+            } else { // SEM_TET_LAYERED: the knob is a use_sdf flag (0/1).
+                bool useSdf = (S.tetParam > 0.5f);
+                if (ImGui::Checkbox(TetParamLabel(S.tetMethod), &useSdf)) {
+                    S.tetParam = useSdf ? 1.0f : 0.0f;
+                    changed = true;
+                }
+                ImGui::SetItemTooltip("%s", TetParamHelp(S.tetMethod));
+
+                // layer_span carves the layered build by layer adjacency. The DLL
+                // consults it ONLY in the SDF-free LAYERED path (ignored by BAND
+                // and by LAYERED with use_sdf=1), so expose it only there.
+                if (!useSdf) {
+                    ImGui::DragInt("Layer span", &S.tetLayerSpan, 0.1f, 1, 16);
+                    released |= ImGui::IsItemDeactivatedAfterEdit();
+                    ImGui::SetItemTooltip("Keep a tet when the spread of its vertices' layer indices\n"
+                                          "(max - min) is <= this. 1 keeps only strictly adjacent\n"
+                                          "layers; larger values bridge layer gaps to close holes at\n"
+                                          "the cost of admitting some longer bridging tets.");
+                    if (S.tetLayerSpan < 1) S.tetLayerSpan = 1;
                 }
             }
         } else {
-        const char* methodItems =
-            "Grid\0" "None (CDT)\0" "Min angle (-q)\0" "Max area (-a)\0"
-            "Conforming (-D)\0" "Sizing (-u)\0";
-        if (ImGui::Combo("Steiner method", &S.meshMethod, methodItems)) {
-            S.meshParam = -1.0f;
-            changed = true;
-        }
-        if (S.meshMethod != SEM_STEINER_NONE) {
-            ImGui::DragFloat(MeshParamLabel(S.meshMethod), &S.meshParam, 0.5f, -1.0f, 5000.0f, "%.3f");
-            released |= ImGui::IsItemDeactivatedAfterEdit();
-            ImGui::SetItemTooltip("%s", MeshParamHelp(S.meshMethod));
-            ImGui::SameLine();
-            if (ImGui::SmallButton("auto")) { S.meshParam = -1.0f; changed = true; }
+        // Only the free grid CDT mesher remains (SEM_STEINER_GRID).
+        ImGui::DragFloat(MeshParamLabel(S.meshMethod), &S.meshParam, 0.5f, -1.0f, 5000.0f, "%.3f");
+        released |= ImGui::IsItemDeactivatedAfterEdit();
+        ImGui::SetItemTooltip("%s", MeshParamHelp(S.meshMethod));
+        ImGui::SameLine();
+        if (ImGui::SmallButton("auto")) { S.meshParam = -1.0f; changed = true; }
 
-            bool lenArea = (S.meshMethod == SEM_STEINER_MAX_AREA ||
-                            S.meshMethod == SEM_STEINER_SIZING);
-            if (lenArea) {
-                ImGui::SameLine();
-                const char* ulabel = !S.meshParamEdgeUnits ? "units: model"
-                    : (S.meshMethod == SEM_STEINER_MAX_AREA ? "units: x edge^2"
-                                                            : "units: x edge");
-                if (ImGui::SmallButton(ulabel)) {
-                    double f = S.MeshParamFactor();
-                    if (S.meshParam > 0.0f && f > 0.0) {
-                        if (!S.meshParamEdgeUnits) S.meshParam = (float)(S.meshParam / f);
-                        else                       S.meshParam = (float)(S.meshParam * f);
-                    }
-                    S.meshParamEdgeUnits = !S.meshParamEdgeUnits;
-                }
-                ImGui::SetItemTooltip("Toggle the parameter's units between model units and\n"
-                                      "multiples of the source contour's mean edge length.\n"
-                                      "The value is converted so meshing is unaffected.");
+        // The grid spacing is a length, so it can be expressed in multiples of
+        // the source contour's mean edge length.
+        ImGui::SameLine();
+        const char* ulabel = !S.meshParamEdgeUnits ? "units: model" : "units: x edge";
+        if (ImGui::SmallButton(ulabel)) {
+            double f = S.MeshParamFactor();
+            if (S.meshParam > 0.0f && f > 0.0) {
+                if (!S.meshParamEdgeUnits) S.meshParam = (float)(S.meshParam / f);
+                else                       S.meshParam = (float)(S.meshParam * f);
             }
+            S.meshParamEdgeUnits = !S.meshParamEdgeUnits;
         }
-        if (S.meshMethod == SEM_STEINER_GRID) {
-            ImGui::DragFloat("Steiner margin", &S.steinerMargin, 0.005f, 0.0f, 1.0f, "%.3f");
-            released |= ImGui::IsItemDeactivatedAfterEdit();
-        }
-        } // end 2D Steiner UI
+        ImGui::SetItemTooltip("Toggle the spacing between model units and multiples of the\n"
+                              "source contour's mean edge length. The value is converted so\n"
+                              "meshing is unaffected.");
+
+        ImGui::DragFloat("Steiner margin", &S.steinerMargin, 0.005f, 0.0f, 1.0f, "%.3f");
+        released |= ImGui::IsItemDeactivatedAfterEdit();
+        ImGui::SetItemTooltip("Minimum spacing from offset lines, in multiples of the grid\n"
+                              "spacing. 0 or less => automatic (0.45).");
+        } // end 2D grid mesh UI
 
         // Max tet edge length filter (3D only), in multiples of the source
         // surface's mean edge length. Sits just above Apply so the meshing
@@ -563,11 +545,29 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         stageTime(S.ThermalTimeMs());
 
         ImGui::Indent();
-        // Max inward penetration knob fed to SEM_SolveThermal3D. Sits ABOVE the
-        // Apply button so the solve parameters read top to bottom.
-        ImGui::DragFloat("Max inward (0..1)", &S.maxInward, 0.005f, 0.0f, 1.0f, "%.3f");
-        if (S.maxInward < 0.0f) S.maxInward = 0.0f;
-        if (S.maxInward > 1.0f) S.maxInward = 1.0f;
+        // SEM_SolveThermal3D knobs (3D only — the 2D SEM_SolveThermal takes no
+        // parameters). use_source_sdf selects how the outermost T=0 nodes are
+        // filtered; max_inward only has an effect when use_source_sdf is on, so it
+        // is hidden otherwise. Both sit ABOVE Apply so the solve params read top
+        // to bottom.
+        if (is3D) {
+            bool useSdf = (S.useSourceSdf != 0);
+            if (ImGui::Checkbox("Use source SDF", &useSdf))
+                S.useSourceSdf = useSdf ? 1 : 0;
+            ImGui::SetItemTooltip("Off: keep every outermost-offset node as a T=0 boundary by tag\n"
+                                  "alone (Max inward ignored; robust where the signed distance\n"
+                                  "misbehaves).\n"
+                                  "On: evaluate the source signed distance on those nodes and drop\n"
+                                  "self-intersecting ones using Max inward.");
+            if (useSdf) {
+                ImGui::DragFloat("Max inward (0..1)", &S.maxInward, 0.005f, 0.0f, 1.0f, "%.3f");
+                ImGui::SetItemTooltip("Maximum relative depth (fraction of the outer extent) an\n"
+                                      "outermost node may sit inward of the true outer extent and\n"
+                                      "still be kept as a T=0 node. Deeper nodes are dropped.");
+                if (S.maxInward < 0.0f) S.maxInward = 0.0f;
+                if (S.maxInward > 1.0f) S.maxInward = 1.0f;
+            }
+        }
 
         // Apply solves the steady-state field; it sits ABOVE the iso value so the
         // (expensive) solve and the (cheap) iso extraction read top to bottom.
@@ -594,6 +594,16 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         ImGui::BeginDisabled(!S.ThermalSolved());
         if (ImGui::Button(is3D ? "Apply isosurface" : "Apply isoline", {160, 0}))
             S.ApplyIsoline(scene, true);
+
+        // Mesh colouring toggle (only meaningful once the field is solved):
+        // unchecked = T-field gradient (blue..red), checked = BC view (blue T=0,
+        // red T=1, light grey everywhere else).
+        bool bc = S.bcView;
+        if (ImGui::Checkbox("BC / T field", &bc)) S.SetBCView(scene, bc);
+        ImGui::SetItemTooltip("Mesh colouring after the solve.\n"
+                              "Off: temperature field as a blue (T=0) to red (T=1) gradient.\n"
+                              "On: only the boundary-condition nodes are tinted — blue for\n"
+                              "T=0, red for T=1 — and every interior node is light grey.");
         ImGui::EndDisabled();
         ImGui::Unindent();
         ImGui::PopID();

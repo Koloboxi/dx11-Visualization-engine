@@ -195,8 +195,8 @@ int SafeSolveThermal() {
     __try { return SEM_SolveThermal(); }
     __except (EXCEPTION_EXECUTE_HANDLER) { return -100; }
 }
-int SafeSolveThermal3D(float max_inward) {
-    __try { return SEM_SolveThermal3D(max_inward); }
+int SafeSolveThermal3D(int use_source_sdf, float max_inward) {
+    __try { return SEM_SolveThermal3D(use_source_sdf, max_inward); }
     __except (EXCEPTION_EXECUTE_HANDLER) { return -100; }
 }
 int SafeExtractIsoline(double value) {
@@ -242,17 +242,20 @@ double SemSession::TotalTimeMs() const {
 }
 
 double SemSession::MeshParamFactor() const {
+    // The grid mesher's knob is a spacing (a length), so the factor is just the
+    // mean source edge length.
     double avg = SEM_GetAvgEdgeLen();
     if (avg <= 0.0) avg = 1.0;
-    return (meshMethod == SEM_STEINER_MAX_AREA) ? avg * avg : avg;
+    return avg;
 }
 
-// Edge-length multiplier for the 3D tet knob: cube of the mean surface edge
-// length for the volume method, the length itself for sizing.
+// Edge-length multiplier for the 3D tet knob. The BAND method's knob is a
+// Steiner grid cell size (a length), so the factor is the mean surface edge
+// length. (LAYERED's knob is a flag and never uses this conversion.)
 double SemSession::TetParamFactor() const {
     double avg = SEM_GetSurfaceAvgEdgeLen3D();
     if (avg <= 0.0) avg = 1.0;
-    return (tetMethod == SEM_TET_MAX_VOL) ? avg * avg * avg : avg;
+    return avg;
 }
 
 const Stats& SemSession::SrcStats()  const { return m_srcStats; }
@@ -682,7 +685,7 @@ bool SemSession::ApplyThermal(Scene& scene, bool silent) {
     // <stem>_mesh[3d].csv3d had T = 0). Re-import it below so the displayed mesh
     // recolours by the solved field; the same field feeds the isotherm/isosurface.
     Timer t; t.Restart();
-    int rc = (dim == 3) ? SafeSolveThermal3D(maxInward) : SafeSolveThermal();
+    int rc = (dim == 3) ? SafeSolveThermal3D(useSourceSdf, maxInward) : SafeSolveThermal();
     const double ms = t.GetMillisecondsElapsed();
     if (rc == -100) {
         Report(scene, silent, "Thermal solver crashed (access violation caught).");
@@ -733,6 +736,18 @@ bool SemSession::ApplyIsoline(Scene& scene, bool silent) {
     catch (const std::exception& e) { Report(scene, silent, std::string("Isoline exception: ") + e.what()); }
     catch (...)                     { Report(scene, silent, "Isoline: unknown exception."); }
     return false;
+}
+
+void SemSession::SetBCView(Scene& scene, bool on) {
+    if (bcView == on) return;
+    bcView = on;
+    // Only a solved mesh carries a meaningful T field. Switch the pre-built colour
+    // set in place (fast, no file reload / geometry rebuild); fall back to a full
+    // recolour reload if the sets are not present for some reason.
+    if (m_thermalSolved && Alive(scene, m_mesh)) {
+        if (!m_mesh->ActivateColorSet(on ? "bc" : "tfield"))
+            ReloadMeshColored(scene);
+    }
 }
 
 Primitive* SemSession::ImportSource(Scene& scene, const std::string& path,
@@ -859,10 +874,10 @@ void SemSession::RunFullPipeline(Scene& scene) {
     thermalEnabled = true;
     isoValue   = 0.5f;
     if (dim == 3) {
-        tetMethod = SEM_TET_MAX_VOL;
+        tetMethod = SEM_TET_BAND;
         tetParam  = -1.0f; tetParamEdgeUnits = false;
     } else {
-        meshMethod = SEM_STEINER_MAX_AREA;
+        meshMethod = SEM_STEINER_GRID;
         meshParam  = -1.0f; meshParamEdgeUnits = false;
     }
 
@@ -971,14 +986,15 @@ void SemSession::RecomputeUpToAsync(Scene& scene, Stage to, bool silent) {
     m_job.tetMethod   = tetMethod;
     {
         double param = (double)tetParam;
-        if (tetParamEdgeUnits && tetParam > 0.0f &&
-            (tetMethod == SEM_TET_MAX_VOL || tetMethod == SEM_TET_SIZING))
+        if (tetParamEdgeUnits && tetParam > 0.0f && tetMethod == SEM_TET_BAND)
             param *= TetParamFactor();
         m_job.tetParam = param;
     }
     m_job.tetMaxEdgeLen = (double)tetMaxEdgeLen;
+    m_job.tetLayerSpan = tetLayerSpan;
     m_job.isoValue = isoValue;
     m_job.maxInward = maxInward;
+    m_job.useSourceSdf = useSourceSdf;
 
     // Deterministic output paths the SEM core writes during each compute call.
     m_job.expOffsets = OutPath("_offsets3d.csv3d");
@@ -1028,8 +1044,15 @@ void SemSession::PollAsync(Scene& scene) {
     // Tetrahedral mesh.
     if (!m_job.meshPath.empty()) {
         DropMesh(scene);
+        // When this run also solved the thermal field the mesh file already holds
+        // the solved T, so colour it like the sync solve (blue..red, honouring the
+        // BC view). An unsolved mesh keeps the neutral cyan..yellow gradient.
+        const bool solved = m_job.runThermal;
         m_mesh = scene.AddFromCSV3D(m_job.meshPath, "mesh_" + Stem(m_srcPath),
-                                    AttachParent(), nullptr, Colors::CYAN, Colors::YELLOW);
+                                    AttachParent(), nullptr,
+                                    solved ? Colors::BLUE : Colors::CYAN,
+                                    solved ? Colors::RED  : Colors::YELLOW,
+                                    true, solved && bcView, /*registerColorSets*/ solved);
         m_meshPath = m_job.meshPath;
         ConfigureSurface3D(m_mesh);
         m_meshStats = ComputeStats(m_meshPath);
@@ -1080,7 +1103,7 @@ void SemSession::PipelineWorkerBody() {
     if (m_job.runMesh) {
         m_job.stageKind.store(1);
         m_job.progressStage.store(idx);
-        SEM_MeshParams3D params3d{ m_job.tetMethod, m_job.tetParam, m_job.tetMaxEdgeLen };
+        SEM_MeshParams3D params3d{ m_job.tetMethod, m_job.tetParam, m_job.tetMaxEdgeLen, m_job.tetLayerSpan };
         Timer t; t.Restart();
         int rc = SafeBuildMesh3D(&params3d);
         m_job.meshMs = t.GetMillisecondsElapsed();
@@ -1096,7 +1119,7 @@ void SemSession::PipelineWorkerBody() {
         m_job.stageKind.store(2);
         m_job.progressStage.store(idx);
         Timer t; t.Restart();
-        int rc = SafeSolveThermal3D(m_job.maxInward);
+        int rc = SafeSolveThermal3D(m_job.useSourceSdf, m_job.maxInward);
         m_job.thermalMs = t.GetMillisecondsElapsed();
         if (rc == -100) return Fail("Thermal solver crashed (access violation caught).");
         if (rc != 0) return Fail("SEM_SolveThermal3D failed (" + std::to_string(rc) + ")");
@@ -1275,8 +1298,10 @@ void SemSession::ReloadMeshColored(Scene& scene) {
     const Stats keepStats = m_meshStats;
 
     scene.RemovePrimitive(m_mesh);
+    // Register both colour sets ("tfield"/"bc") so the BC/T toggle can switch the
+    // mesh in place afterwards without reloading the file (see SetBCView).
     m_mesh = scene.AddFromCSV3D(path, "mesh_" + Stem(m_srcPath), AttachParent(),
-                                nullptr, Colors::BLUE, Colors::RED);
+                                nullptr, Colors::BLUE, Colors::RED, true, bcView, true);
     if (!m_mesh) { Report(scene, true, "Recolour mesh: reload failed."); return; }
     m_meshPath  = path;
     m_meshStats = keepStats;
@@ -1344,10 +1369,9 @@ bool SemSession::ApplyMesh(Scene& scene, bool silent) {
         int rc;
         if (dim == 3) {
             double param = (double)tetParam;
-            if (tetParamEdgeUnits && tetParam > 0.0f &&
-                (tetMethod == SEM_TET_MAX_VOL || tetMethod == SEM_TET_SIZING))
+            if (tetParamEdgeUnits && tetParam > 0.0f && tetMethod == SEM_TET_BAND)
                 param *= TetParamFactor();
-            SEM_MeshParams3D params3d{ tetMethod, param, (double)tetMaxEdgeLen };
+            SEM_MeshParams3D params3d{ tetMethod, param, (double)tetMaxEdgeLen, tetLayerSpan };
             Timer t; t.Restart();
             rc = SafeBuildMesh3D(&params3d);
             const double ms = t.GetMillisecondsElapsed();
@@ -1363,8 +1387,7 @@ bool SemSession::ApplyMesh(Scene& scene, bool silent) {
             m_meshMs = ms;
         } else {
             double param = (double)meshParam;
-            if (meshParamEdgeUnits && meshParam > 0.0f &&
-                (meshMethod == SEM_STEINER_MAX_AREA || meshMethod == SEM_STEINER_SIZING))
+            if (meshParamEdgeUnits && meshParam > 0.0f && meshMethod == SEM_STEINER_GRID)
                 param *= MeshParamFactor();
             SEM_MeshParams params{ meshMethod, param, (double)steinerMargin };
             Timer t; t.Restart();

@@ -6,6 +6,9 @@
 #include "..\..\math.h"
 #include "..\scene_node.h"
 #include <functional>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 using namespace DirectX;
 
@@ -44,6 +47,18 @@ public:
 	void SetTwoSided(bool enable, const XMFLOAT4& backColor = XMFLOAT4(1, 0, 0, 1));
 	void SetLighting(const float ambient, const float intensity, const float shininess);
 	void SetSmoothShading(const bool sh);
+
+	// --- Named per-vertex colour sets ------------------------------------
+	// A primitive built once can hold several alternative per-vertex colourings
+	// and switch between them cheaply (no geometry rebuild). Each set stores one
+	// colour per vertex in the vertex buffer's own order; activating a set maps
+	// the dynamic vertex buffer(s) and overwrites only the colour field. Used by
+	// the SEM mesh to flip between the "T field" gradient and the "BC" view.
+	void AddColorSet(const std::string& name, const std::vector<XMFLOAT4>& gpuOrderColors);
+	bool ActivateColorSet(const std::string& name);
+	bool HasColorSet(const std::string& name) const;
+	const std::string& GetActiveColorSet() const { return activeColorSet; }
+	UINT GetVertexCount() const { return vertexBuffer.GetBufferSize(); }
 
 	void SetScale(const float s);
 
@@ -123,6 +138,10 @@ private:
 	bool     velTracked = false;
 
 	Updater updater;
+
+	// Alternative per-vertex colourings (GPU vertex order) and the active one.
+	std::unordered_map<std::string, std::vector<XMFLOAT4>> colorSets;
+	std::string activeColorSet;
 };
 
 namespace PrimitiveConstructor {
@@ -131,8 +150,12 @@ namespace PrimitiveConstructor {
 
 	Primitive* Point(const XMFLOAT3& pos, const XMFLOAT4& col, UINT id);
 	Primitive* Line(const std::vector<XMFLOAT3>& poses, const XMFLOAT4& col, UINT id);
-	Primitive* ColoredLine(const std::vector<XMFLOAT3>& poses, const std::vector<XMFLOAT4>& cols, bool asLineList, UINT id);
-	Primitive* ColoredTriangles(const std::vector<XMFLOAT3>& poses, const std::vector<XMFLOAT4>& cols, UINT id, bool ensureCCW = true);
+	// srcIndexOut (optional): receives, for each emitted GPU vertex, the index of
+	// the source poses/cols entry it came from. ColoredTriangles can reorder a
+	// triangle's corners (winding flip), so this mapping is the only reliable way
+	// to build an alternative per-vertex colour set in GPU order afterwards.
+	Primitive* ColoredLine(const std::vector<XMFLOAT3>& poses, const std::vector<XMFLOAT4>& cols, bool asLineList, UINT id, std::vector<UINT>* srcIndexOut = nullptr);
+	Primitive* ColoredTriangles(const std::vector<XMFLOAT3>& poses, const std::vector<XMFLOAT4>& cols, UINT id, bool ensureCCW = true, std::vector<UINT>* srcIndexOut = nullptr);
 	Primitive* Polygon(const std::vector<XMFLOAT3>& poses, const XMFLOAT4& col, UINT id);
 
 	Primitive* Sphere(float radius, const XMFLOAT3& pos, const UINT numSubdivides, const XMFLOAT4& col, UINT id);

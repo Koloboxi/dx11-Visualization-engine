@@ -22,19 +22,19 @@ SEM_API int SEM_ComputeOffsets(double first_gap, int num_offsets, double grading
 
 SEM_API int SEM_ComputeOffsetsAt(const double* gaps, int count);
 
+// 2D meshing variant. Only the free constrained-Delaunay grid mesher remains
+// (the Triangle-backed quality variants were removed with their non-free
+// dependency). The enum is kept as the variant selector for future methods.
 enum SEM_SteinerMethod {
-    SEM_STEINER_GRID = 0,
-    SEM_STEINER_NONE = 1,
-    SEM_STEINER_MIN_ANGLE = 2,
-    SEM_STEINER_MAX_AREA = 3,
-    SEM_STEINER_CONFORMING = 4,
-    SEM_STEINER_SIZING = 5
+    SEM_STEINER_GRID = 0
 };
 
 struct SEM_MeshParams {
     int    method;
+    // GridCDT: interior Steiner-point spacing. < 0 = auto (source avg edge length).
     double param;
-
+    // GridCDT: minimum spacing from offset lines, in multiples of `param`.
+    // <= 0 = auto (0.45).
     double margin;
 };
 
@@ -62,21 +62,41 @@ SEM_API int SEM_ComputeOffsets3D(double first_gap, int num_offsets, double gradi
 
 SEM_API int SEM_ComputeOffsetsAt3D(const double* gaps, int count);
 
+// 3D tetrahedralization variant.
+//   SEM_TET_BAND    - Delaunay of (source verts + outermost-offset verts + an
+//                     interior Steiner grid), carved to the band by the source
+//                     signed distance. `param` is the Steiner grid cell size.
+//   SEM_TET_LAYERED - Delaunay of a layered point cloud built across ALL offset
+//                     shells: even shells (0 = source) contribute their vertices,
+//                     odd shells their triangle centroids. `param` is the boolean
+//                     use_sdf (treated as 0/1). use_sdf=0 keeps the build fully
+//                     SDF-free: each node's distance is the offset value of its
+//                     layer, and tets are carved by layer span (kept when the
+//                     spread of their vertices' layer indices is <= layer_span;
+//                     see below). use_sdf=1 carves and colours by the source
+//                     signed distance instead, and layer_span is ignored.
 enum SEM_TetMethod {
-    SEM_TET_QUALITY = 0,
-    SEM_TET_NONE = 1,
-    SEM_TET_MAX_VOL = 2,
-    SEM_TET_SIZING = 3
+    SEM_TET_BAND = 0,
+    SEM_TET_LAYERED = 1
 };
 
 struct SEM_MeshParams3D {
     int    method;
+    // SEM_TET_BAND:    Steiner grid cell size. < 0 = auto (source avg edge length).
+    // SEM_TET_LAYERED: use_sdf flag (0/1). < 0 = auto (0 = SDF-free).
     double param;
 
     // Maximum tet edge length, in multiples of the source surface's average edge
     // length (SEM_GetSurfaceAvgEdgeLen3D). After meshing, any tet with an edge
     // longer than this is removed; its vertices remain. <= 0 disables the filter.
     double max_edge_len;
+
+    // SEM_TET_LAYERED + use_sdf=0 only: carving layer-span. A tet is kept when the
+    // spread of its vertices' layer indices (max - min) is <= layer_span. 1 keeps
+    // only strictly adjacent layers; larger values keep vertex-centroid-vertex
+    // tets that bridge two layer gaps, closing holes at the cost of admitting some
+    // longer bridging tets. <= 0 = 1. Ignored by SEM_TET_BAND and use_sdf=1.
+    int    layer_span;
 };
 
 // Set clip half-spaces applied to the 3D pipeline. `planes` is `count` planes of
@@ -103,11 +123,19 @@ SEM_API int SEM_LoadMesh3D(const char* path);
 
 // Solve the steady-state thermal field on the tet band. Dirichlet BCs are set by
 // shell membership: source-shell nodes -> T=1, outermost-offset nodes -> T=0.
-// max_inward filters self-intersecting offsets: when >= 0 it is the maximum
-// relative depth [0,1] (fraction of band thickness) an outer-boundary node may
-// sit inward of the true outer extent and still be kept as a T=0 BC; nodes that
-// penetrate deeper are dropped. Pass -1 to disable the filter (keep all).
-SEM_API int SEM_SolveThermal3D(float max_inward);
+//
+// use_source_sdf selects how the outermost-offset (T=0) nodes are filtered:
+//   0 - every outermost-offset node is kept as a T=0 BC by tag alone; max_inward
+//       is ignored (the SDF-free path, robust on surfaces where the signed
+//       distance misbehaves).
+//   1 - the source signed distance is evaluated ONLY on the outermost-offset
+//       nodes (not the whole mesh) and used to drop self-intersecting ones:
+//       max_inward in [0,1] is the maximum relative depth (fraction of the outer
+//       extent) an outermost node may sit inward of the true outer extent and
+//       still be kept; nodes that penetrate deeper are dropped. max_inward < 0
+//       disables the filter (keep all). This is independent of the meshing
+//       use_sdf flag.
+SEM_API int SEM_SolveThermal3D(int use_source_sdf, float max_inward);
 
 SEM_API int SEM_ExtractIsosurface3D(double value);
 

@@ -61,6 +61,44 @@ void Primitive::Draw(const XMMATRIX& viewMatrix, const XMMATRIX& projectionMatri
 	}
 }
 
+void Primitive::AddColorSet(const std::string& name, const std::vector<XMFLOAT4>& gpuOrderColors)
+{
+	this->colorSets[name] = gpuOrderColors;
+}
+
+bool Primitive::HasColorSet(const std::string& name) const
+{
+	return this->colorSets.find(name) != this->colorSets.end();
+}
+
+bool Primitive::ActivateColorSet(const std::string& name)
+{
+	auto it = this->colorSets.find(name);
+	if (it == this->colorSets.end()) return false;
+
+	const std::vector<XMFLOAT4>& cols = it->second;
+	std::vector<Vertex> verts = this->vertexBuffer.GetData();
+	if (cols.size() != verts.size() || verts.empty()) return false;
+
+	// Re-skin the smooth (indexed/non-indexed) buffer in place.
+	for (size_t i = 0; i < verts.size(); ++i) verts[i].color = cols[i];
+	this->vertexBuffer.Update(this->deviceContext, verts.data(), (UINT)verts.size());
+
+	// Keep the flat-shading buffer consistent if it has been built: it expands
+	// the vertex buffer through the index buffer, so each face vertex i takes the
+	// colour of source vertex indices[i]. Positions/normals are left untouched.
+	if (this->vertexBufferFaces.GetBufferSize() > 0 && this->indexBuffer.GetBufferSize() > 0) {
+		std::vector<Vertex> faceVerts = this->vertexBufferFaces.GetData();
+		std::vector<DWORD>  indices   = this->indexBuffer.GetData();
+		for (size_t i = 0; i < indices.size() && i < faceVerts.size(); ++i)
+			if (indices[i] < cols.size()) faceVerts[i].color = cols[indices[i]];
+		this->vertexBufferFaces.Update(this->deviceContext, faceVerts.data(), (UINT)faceVerts.size());
+	}
+
+	this->activeColorSet = name;
+	return true;
+}
+
 void Primitive::SetColor(const XMFLOAT4& col)
 {
 	this->cb_ps_pixelshader.data.color[0] = col.x;

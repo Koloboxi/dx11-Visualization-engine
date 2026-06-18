@@ -117,8 +117,16 @@ public:
 	// gradLow/gradHigh: gradient endpoints for the T-value colouring.
 	// ensureCCW: consistent winding for the triangle surface (disabled for the
 	// untouched SEM source surface).
+	// bcView: when true the per-node colour is not the gradLow..gradHigh gradient
+	// over T. Instead only boundary-condition nodes are tinted (T==0 -> gradLow,
+	// T==1 -> gradHigh) and every interior node is drawn light grey. Used to show
+	// the thermal Dirichlet BCs after a solve.
+	// registerColorSets: when true the primitive also stores both colourings as
+	// named per-vertex colour sets ("tfield" and "bc"), so the caller can later
+	// switch between them via Primitive::ActivateColorSet without rebuilding the
+	// geometry. bcView only selects which of the two is active on creation.
 	Primitive* AddFromCSV3D(const std::string& path, const std::string& name = "", SceneNode* parent = nullptr, const XMFLOAT4* overrideColor = nullptr,
-		const XMFLOAT4& gradLow = Colors::BLUE, const XMFLOAT4& gradHigh = Colors::RED, bool ensureCCW = true);
+		const XMFLOAT4& gradLow = Colors::BLUE, const XMFLOAT4& gradHigh = Colors::RED, bool ensureCCW = true, bool bcView = false, bool registerColorSets = false);
 	void AddCubeWireframe(float halfSize, const XMFLOAT3& center, const XMFLOAT4& col);
 	void AddCubeSolid(float halfSize, const XMFLOAT3& center, const XMFLOAT4& col);
 	Primitive* AddRevolutionSurface(const std::vector<XMFLOAT3>& profile, UINT segments, const XMFLOAT4& col, const std::string& name, SceneNode* parent = nullptr);
