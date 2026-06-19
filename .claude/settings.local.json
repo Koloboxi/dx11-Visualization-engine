@@ -67,7 +67,8 @@
       "Bash(dumpbin //exports surface_extender_mesher.dll)",
       "PowerShell($vs = & \"${env:ProgramFiles\\(x86\\)}\\\\Microsoft Visual Studio\\\\Installer\\\\vswhere.exe\" -latest -property installationPath 2>$null; if \\(-not $vs\\) { $vs = & \"${env:ProgramFiles}\\\\Microsoft Visual Studio\\\\Installer\\\\vswhere.exe\" -latest -property installationPath 2>$null }; Write-Output \"VS: $vs\"; $db = Get-ChildItem -Path $vs -Recurse -Filter dumpbin.exe -ErrorAction SilentlyContinue | Select-Object -First 1; Write-Output \"dumpbin: $\\($db.FullName\\)\")",
       "Bash('/c/Program Files \\(x86\\)/Windows Kits/10/bin/10.0.26100.0/x64/fxc.exe' /T ps_5_0 /E PS_MAIN 'C:/Users/kolobox/source/repos/DirectX/Visualization engine dx11/source/graphics/shaders/pixelshader.hlsl' /Fo 'C:/Users/kolobox/source/repos/DirectX/Visualization engine dx11/pixelshader.cso')",
-      "PowerShell($msbuild = \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\2022\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\amd64\\\\MSBuild.exe\"; & $msbuild \"dx11-Visualization-engine.sln\" /p:Configuration=Debug /p:Platform=x64 /t:Build /v:minimal /m 2>&1 | Select-Object -Last 40)"
+      "PowerShell($msbuild = \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\2022\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\amd64\\\\MSBuild.exe\"; & $msbuild \"dx11-Visualization-engine.sln\" /p:Configuration=Debug /p:Platform=x64 /t:Build /v:minimal /m 2>&1 | Select-Object -Last 40)",
+      "Bash(\"/c/Program Files/Microsoft Visual Studio/2022/Community/MSBuild/Current/Bin/MSBuild.exe\" \"dx11-Visualization-engine.sln\" -nologo -m -p:Configuration=Debug -p:Platform=x64 -t:Build -clp:ErrorsOnly)"
     ]
   }
 }

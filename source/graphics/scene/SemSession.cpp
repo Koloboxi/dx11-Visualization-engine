@@ -366,6 +366,7 @@ void SemSession::Bind(Scene& scene, Primitive* prim) {
     // measured stage times.
     DropClipMirrors(scene);
     DropClipPlaneNodes(scene);
+    m_appliedClipPlanes.clear();
     m_offsetsMs = m_meshMs = m_thermalMs = -1.0;
     // A fresh source clears the SEM core cache (SEM_LoadCSV3D below), so every
     // stage must be recomputed before it can be shown.
@@ -385,7 +386,7 @@ void SemSession::Bind(Scene& scene, Primitive* prim) {
         fs::create_directories(m_workDir, ec);
         SEM_SetWorkingDir(m_workDir.c_str());
         dim = DetectSemDim(m_srcPath);
-        int rc = (dim == 3) ? SEM_LoadSurface3D(m_srcPath.c_str())
+        int rc = (dim == 3) ? SEM_LoadSurface3D(m_srcPath.c_str(), srcClosed3D ? 1 : 0)
                             : SEM_LoadCSV3D(m_srcPath.c_str());
         if (rc != 0)
             Report(scene, false, (dim == 3 ? "SEM_LoadSurface3D failed ("
@@ -603,7 +604,32 @@ void SemSession::SetClipPlanes3D(Scene& scene) {
     m_dirty[STAGE_MESH] = m_dirty[STAGE_THERMAL] = true;
     if (AnyClipMirror()) RebuildClipMirrors(scene);
     scene.UpdateLight();
+
+    m_appliedClipPlanes.clear();
+    m_appliedClipPlanes.reserve(count);
+    for (int i = 0; i < count; ++i)
+        m_appliedClipPlanes.push_back(XMFLOAT4((float)flat[i * 4 + 0], (float)flat[i * 4 + 1],
+                                               (float)flat[i * 4 + 2], (float)flat[i * 4 + 3]));
     snprintf(status, sizeof(status), "Clip planes: %d set.", count);
+}
+
+bool SemSession::ClipPlanesChanged() const {
+    size_t count = 0;
+    for (ClipPlaneNode* node : clipPlaneNodes) if (node) ++count;
+    if (count != m_appliedClipPlanes.size()) return true;
+    size_t k = 0;
+    for (ClipPlaneNode* node : clipPlaneNodes) {
+        if (!node) continue;
+        XMFLOAT4 p = node->GetPlane();
+        const XMFLOAT4& q = m_appliedClipPlanes[k++];
+        if (p.x != q.x || p.y != q.y || p.z != q.z || p.w != q.w) return true;
+    }
+    return false;
+}
+
+void SemSession::AutoApplyClipPlanes(Scene& scene) {
+    if (dim != 3 || AsyncRunning()) return;
+    if (ClipPlanesChanged()) SetClipPlanes3D(scene);
 }
 
 void SemSession::ClearClipPlanes3D(Scene& scene) {
@@ -615,6 +641,7 @@ void SemSession::ClearClipPlanes3D(Scene& scene) {
     DropMesh(scene);
     m_dirty[STAGE_MESH] = m_dirty[STAGE_THERMAL] = true;
     scene.UpdateLight();
+    m_appliedClipPlanes.clear();
     snprintf(status, sizeof(status), "Clip planes cleared.");
 }
 
@@ -969,6 +996,23 @@ void SemSession::LoadSessionStages(Scene& scene) {
     if (fs::exists(meshPath))
         ImportMesh(scene, meshPath);
 
+    // Cache-state sidecar (3D only): the exact signed offset distances, clip
+    // planes, subdivision level and thermal-BC origin tags that the per-stage
+    // geometry files cannot carry. Restore it LAST — after the offsets and mesh
+    // are loaded — so the tags/distances line up with the loaded shells/mesh
+    // (SEM_INTEGRATION.md §4a). Best-effort: a mismatch is reported but does not
+    // abort the reload (the stages still loaded from their geometry files).
+    if (dim == 3 && fs::exists(offShell0)) {
+        const std::string statePath =
+            (fs::path(m_workDir) / (Stem(m_srcPath) + "_state3d.txt")).string();
+        if (fs::exists(statePath)) {
+            int rc = SEM_LoadState3D(m_workDir.c_str());
+            CheckRc(scene, false, "SEM_LoadState3D", rc,
+                    { "", "No source loaded", "State file missing or unparseable",
+                      "State does not match the loaded stages" });
+        }
+    }
+
     // Thermal: detected by two conditions — the mesh nodes carry a non-zero T field
     // (the solver rewrites the file in place) AND the isotherm/isosurface file exists.
     const std::string isoPath =
@@ -1138,6 +1182,8 @@ void SemSession::RecomputeUpToAsync(Scene& scene, Stage to, bool silent) {
     m_job.progressStage.store(0);
     m_job.ok.store(false);
     m_job.done.store(false);
+    m_job.cancel.store(false);
+    m_job.cancelled.store(false);
     m_progressShown.store(0.0f);
     m_job.running.store(true);
 
@@ -1151,7 +1197,10 @@ void SemSession::PollAsync(Scene& scene) {
     m_job.running.store(false);
     m_job.done.store(false);
 
-    if (!m_job.ok.load()) {
+    const bool cancelled = m_job.cancelled.load();
+    // A genuine failure aborts; a cancellation still applies whatever stages
+    // finished before the stop (their paths are set, the skipped ones are empty).
+    if (!m_job.ok.load() && !cancelled) {
         Report(scene, false, m_job.error.empty() ? "3D pipeline failed." : m_job.error);
         return;
     }
@@ -1206,16 +1255,46 @@ void SemSession::PollAsync(Scene& scene) {
         if (m_isoline && Alive(scene, m_isoline)) scene.SetNodeVisibleCascade(m_isoline, m_job.isoVisible);
     }
 
+    // A planned stage's dirty flag was cleared up-front by RecomputeUpToAsync;
+    // when cancellation skipped it (no output produced) restore that flag so the
+    // next Apply recomputes it instead of trusting a stage that never ran.
+    if (cancelled) {
+        if (m_job.runOffsets && m_job.offsetsPath.empty()) m_dirty[STAGE_OFFSETS] = true;
+        if (m_job.runMesh    && m_job.meshPath.empty())    m_dirty[STAGE_MESH]    = true;
+        if (m_job.runThermal && m_job.isoPath.empty())     m_dirty[STAGE_THERMAL] = true;
+    }
+
     if (AnyClipMirror()) RebuildClipMirrors(scene);
     scene.UpdateLight();
-    snprintf(status, sizeof(status), "Done.");
+    snprintf(status, sizeof(status), cancelled ? "Cancelled." : "Done.");
+}
+
+void SemSession::CancelAsync() {
+    if (m_job.running.load()) m_job.cancel.store(true);
+}
+
+bool SemSession::AsyncCancelRequested() const {
+    return m_job.running.load() && m_job.cancel.load();
 }
 
 void SemSession::PipelineWorkerBody() {
     int idx = 0;   // index of the current stage among the planned ones
 
+    // Stop here if cancellation was requested before this stage starts. The SEM
+    // call already in flight cannot be interrupted, so we can only break between
+    // stages: every stage still queued is skipped, finished ones keep their
+    // results (their paths are already set). Returns true when it stopped.
+    auto stopIfCancelled = [&]() -> bool {
+        if (!m_job.cancel.load()) return false;
+        m_job.cancelled.store(true);
+        m_job.ok.store(false);
+        m_job.done.store(true);
+        return true;
+    };
+
     // Offset shells — SEM_ComputeOffsets3D / SEM_ComputeOffsetsAt3D.
     if (m_job.runOffsets) {
+        if (stopIfCancelled()) return;
         m_job.stageKind.store(0);
         m_job.progressStage.store(idx);
         Timer t; t.Restart();
@@ -1230,6 +1309,7 @@ void SemSession::PipelineWorkerBody() {
 
     // Tetrahedral band mesh — SEM_BuildMesh3D.
     if (m_job.runMesh) {
+        if (stopIfCancelled()) return;
         m_job.stageKind.store(1);
         m_job.progressStage.store(idx);
         SEM_MeshParams3D params3d{ m_job.tetMethod, m_job.tetParam, m_job.tetMaxEdgeLen, m_job.tetLayerSpan };
@@ -1245,6 +1325,7 @@ void SemSession::PipelineWorkerBody() {
 
     // Steady-state thermal solve + isosurface extraction.
     if (m_job.runThermal) {
+        if (stopIfCancelled()) return;
         m_job.stageKind.store(2);
         m_job.progressStage.store(idx);
         Timer t; t.Restart();

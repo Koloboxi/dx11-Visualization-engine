@@ -130,6 +130,20 @@ SEM_API int SEM_LoadOffsets3D(const char* dir);
 
 SEM_API int SEM_LoadMesh3D(const char* path);
 
+// Reload the cache-state sidecar (<stem>_state3d.txt) that the build stages
+// write alongside the geometry: the exact signed offset distances, the clip
+// planes, the subdivision level, and the thermal-BC origin tags (src/far node
+// ids). These either cannot be recovered from the stage files at all
+// (clip planes, subdivision, BC tags) or only via a lossy recompute
+// (SEM_LoadOffsets3D re-derives unsigned, averaged offset distances).
+//
+// Call it LAST in the reload sequence — after SEM_LoadOffsets3D and
+// SEM_LoadMesh3D — so the restored offset distances and BC tags line up with the
+// already-loaded shells and mesh (and are not clobbered by their loaders).
+// `dir` null/empty = current working dir. Returns 0 on success; negative if the
+// file is missing/unparseable or its contents don't match the loaded stages.
+SEM_API int SEM_LoadState3D(const char* dir);
+
 // Solve the steady-state thermal field on the tet band. Dirichlet BCs are set by
 // shell membership: source-shell nodes -> T=1, outermost-offset nodes -> T=0.
 //

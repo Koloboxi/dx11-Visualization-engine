@@ -206,9 +206,11 @@ inline void DrawRevolutionSection(Scene& scene, SemSessionNS::SemSession& S) {
 
 // Clip-plane editor (3D pipeline only). Each plane is a draggable rectangle in
 // the scene: select it and move/rotate it with the orientation transformer (its
-// normal + d show in the transform window). "Apply clip planes" reads the planes
-// off the rectangles and pushes them to the mesher (SEM_SetClipPlanes3D).
+// normal + d show in the transform window). The planes are read off the
+// rectangles and pushed to the mesher automatically whenever they change
+// (SemSession::AutoApplyClipPlanes -> SEM_SetClipPlanes3D).
 inline void DrawClipPlanesSection(Scene& scene, SemSessionNS::SemSession& S) {
+    S.AutoApplyClipPlanes(scene);
     ImGui::PushID("clip");
     ImGui::Text("Clip planes");
     ImGui::SameLine();
@@ -216,7 +218,8 @@ inline void DrawClipPlanesSection(Scene& scene, SemSessionNS::SemSession& S) {
     ImGui::SetItemTooltip("Half-space clips applied during 3D meshing. The normal points\n"
                           "into the kept region (shown soft red); the removed side is soft blue.\n"
                           "Select a plane rectangle in the scene and move/rotate it with the\n"
-                          "gizmo (or edit normal/d in the transform window), then press Apply.");
+                          "gizmo (or edit normal/d in the transform window); changes are\n"
+                          "pushed to the mesher automatically.");
 
     ImGui::Indent();
     int removeIdx = -1;
@@ -240,10 +243,6 @@ inline void DrawClipPlanesSection(Scene& scene, SemSessionNS::SemSession& S) {
 
     if (ImGui::Button("+ Add plane")) S.AddClipPlane(scene);
     ImGui::SetItemTooltip("Create a draggable clip-plane rectangle in the scene.");
-    ImGui::SameLine();
-    if (ImGui::Button("Apply clip planes")) S.SetClipPlanes3D(scene);
-    ImGui::SetItemTooltip("Read the planes off the rectangles and send them to the mesher\n"
-                          "(SEM_SetClipPlanes3D); rebuilds the mesh on the next Mesh/Thermal Apply.");
 
     ImGui::Unindent();
     ImGui::PopID();
@@ -298,6 +297,14 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         snprintf(overlay, sizeof(overlay), "%.0f%%", S.AsyncProgress() * 100.0f);
         ImGui::Text("%s...", S.AsyncStageName());
         ImGui::ProgressBar(S.AsyncProgress(), ImVec2(kItemW, 0.0f), overlay);
+        if (S.AsyncCancelRequested()) {
+            ImGui::TextDisabled("Cancelling after current stage...");
+        } else if (ImGui::Button("Cancel", {kItemW, 0})) {
+            S.CancelAsync();
+        }
+        ImGui::SetItemTooltip("Stop the 3D pipeline: the stage running now finishes (SEM\n"
+                              "calls can't be interrupted), then every queued stage after\n"
+                              "it is skipped. Stages that already completed are kept.");
         ImGui::Separator();
     }
     ImGui::BeginDisabled(busy);

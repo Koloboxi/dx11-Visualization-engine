@@ -106,6 +106,10 @@ public:
 
     float surf3dAlpha    = 1.f;
 
+    // Whether a 3D source surface is a closed manifold enclosing a volume; passed
+    // to SEM_LoadSurface3D on Bind (and used for SEM_GetSourceVolume3D).
+    bool  srcClosed3D    = true;
+
     char  status[256] = "Ready";
 
     // SEM_SetRevolution axis selector: 1 = X, 2 = Y, 3 = Z. Profiles revolve
@@ -192,6 +196,9 @@ public:
     // (SEM_SetClipPlanes3D). Clipping is applied during meshing, so this
     // invalidates the mesh and everything downstream; mirror copies are refreshed.
     void SetClipPlanes3D(Scene& scene);
+    // Re-push the planes to the core whenever the rectangles change (called every
+    // frame from the SEM window); no-op while the last-applied set is unchanged.
+    void AutoApplyClipPlanes(Scene& scene);
     // Clear every clip plane in the core (SEM_ClearClipPlanes3D), remove every
     // plane node + mirror and invalidate the mesh.
     void ClearClipPlanes3D(Scene& scene);
@@ -288,6 +295,15 @@ public:
     // the per-stage visibility snapshot. No-op while the worker runs or is idle.
     void PollAsync(Scene& scene);
 
+    // Request cancellation of the running job. SEM library calls cannot be
+    // interrupted mid-call, so the stage executing right now runs to completion;
+    // every stage still queued after it is skipped and the worker stops at the
+    // next stage boundary. Stages that already finished keep their results.
+    void CancelAsync();
+    // True once CancelAsync was requested for the still-running job (the window
+    // shows "cancelling" and hides the Cancel button).
+    bool AsyncCancelRequested() const;
+
 private:
     std::string m_srcPath;
     std::string m_meshPath;      // last serialized mesh file (for regeneration)
@@ -325,6 +341,8 @@ private:
         std::atomic<bool>  running{ false };       // worker thread alive
         std::atomic<bool>  done{ false };          // worker finished; results pending apply
         std::atomic<bool>  ok{ false };            // worker succeeded
+        std::atomic<bool>  cancel{ false };        // UI requested stop; skip queued stages
+        std::atomic<bool>  cancelled{ false };     // worker stopped early on that request
         std::atomic<int>   stageKind{ 0 };         // label: 0 offsets,1 mesh,2 thermal,3 isosurface
         std::atomic<int>   progressStage{ 0 };     // index of current stage among the planned ones
         std::atomic<int>   totalStages{ 1 };       // number of progress-weighted stages planned
@@ -400,6 +418,10 @@ private:
     // the node and positioned on the given plane. Remove every plane node + rect.
     void BuildClipPlaneRect(Scene& scene, ClipPlaneNode* node, const XMFLOAT4& plane);
     void DropClipPlaneNodes(Scene& scene);
+    // Last (normal, d) set pushed to the core, so AutoApplyClipPlanes only
+    // re-pushes when a rectangle actually moved.
+    std::vector<XMFLOAT4> m_appliedClipPlanes;
+    bool ClipPlanesChanged() const;
 
     void DropOffsets(Scene& scene);
     void DropMesh(Scene& scene);
