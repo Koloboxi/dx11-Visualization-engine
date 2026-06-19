@@ -52,11 +52,20 @@ SEM_API int SEM_SolveThermal(void);
 
 SEM_API int SEM_ExtractIsoline(double value);
 
-SEM_API int SEM_LoadSurface3D(const char* path);
+// Import a 3D source surface. `closed` declares whether the surface is a closed
+// manifold enclosing a volume (non-zero = closed); it is stored in the 3D cache.
+// When closed, the enclosed volume is computed on import (divergence theorem)
+// and cached for SEM_GetSourceVolume3D.
+SEM_API int SEM_LoadSurface3D(const char* path, int closed);
 
 SEM_API int SEM_SubdivideSurface3D(int n);
 
 SEM_API double SEM_GetSurfaceAvgEdgeLen3D();
+
+// Getter for the cached source-surface enclosed volume, computed on import when
+// the surface was loaded as closed. Returns the volume (>= 0) in that case, or
+// -1.0 (with SEM_GetLastError set) if the source was not imported as closed.
+SEM_API double SEM_GetSourceVolume3D();
 
 SEM_API int SEM_ComputeOffsets3D(double first_gap, int num_offsets, double grading);
 

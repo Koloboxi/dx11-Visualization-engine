@@ -4,6 +4,7 @@
 #include "TimeControlWindow.h"
 #include "PrimitivesWindow.h"
 #include "SEMWindow.h"
+#include "TransformWindow.h"
 #include "LuaGlobalsWindow.h"
 #include "SceneAreaWindow.h"
 #include "ConsoleWindow.h"
@@ -39,6 +40,7 @@ void Graphics::Gui()
     TimeControlWindow::Draw(scene, blockMousePick);
     PrimitivesWindow::Draw(scene, luaEditor, blockMousePick, blockMouseWheel);
     SEMWindow::Draw(scene, blockMousePick);
+    TransformWindow::Draw(scene, blockMousePick);
     LuaGlobalsWindow::Draw(scene, luaEditor, blockMousePick, blockMouseWheel);
     SceneAreaWindow::Draw(scene, luaEditor, blockMousePick);
     ConsoleWindow::Draw(scene, luaEditor, blockMousePick, blockMouseWheel);

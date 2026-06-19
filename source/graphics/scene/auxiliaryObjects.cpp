@@ -1,5 +1,51 @@
 #include "auxiliaryObjects.h"
 #include "../misc/Colors.h"
+#include <Windows.h>
+#include <cmath>
+
+namespace {
+	bool AltHeld()   { return (GetAsyncKeyState(VK_MENU)    & 0x8000) != 0; }
+	bool ShiftHeld() { return (GetAsyncKeyState(VK_SHIFT)   & 0x8000) != 0; }
+
+	// Snap a raw cumulative rotation angle (radians) per the held modifiers:
+	//   alt   -> free (no snap);
+	//   shift -> hard snap to the nearest multiple of 90 deg;
+	//   else  -> "magnetise": when the angle is within a small neighbourhood of a
+	//            multiple of 30 or 45 deg, snap exactly to it, otherwise free.
+	float SnapRotation(float raw) {
+		if (AltHeld()) return raw;
+		const float deg = XM_PI / 180.0f;
+		if (ShiftHeld()) {
+			const float step = 90.0f * deg;
+			return std::round(raw / step) * step;
+		}
+		const float tol = 4.0f * deg;
+		float best = raw, bestErr = tol;
+		for (float baseDeg : { 30.0f, 45.0f }) {
+			const float step = baseDeg * deg;
+			const float cand = std::round(raw / step) * step;
+			const float err = std::fabs(raw - cand);
+			if (err < bestErr) { bestErr = err; best = cand; }
+		}
+		return best;
+	}
+
+	// If v is (nearly) parallel to a world axis, return its index (0=X,1=Y,2=Z);
+	// otherwise -1.
+	int WorldAxisIndex(const XMFLOAT3& v) {
+		if (std::fabs(v.x) > 0.999f && std::fabs(v.y) < 0.02f && std::fabs(v.z) < 0.02f) return 0;
+		if (std::fabs(v.y) > 0.999f && std::fabs(v.x) < 0.02f && std::fabs(v.z) < 0.02f) return 1;
+		if (std::fabs(v.z) > 0.999f && std::fabs(v.x) < 0.02f && std::fabs(v.y) < 0.02f) return 2;
+		return -1;
+	}
+
+	// Translation snap grid: a power of ten that grows as the camera zooms out
+	// (larger camera scale -> coarser grid), so n in 10^n falls as the scale falls.
+	float GridStep(float cameraScale) {
+		float s = cameraScale > 1e-6f ? cameraScale : 1e-6f;
+		return std::pow(10.0f, std::floor(std::log10(s)));
+	}
+}
 
 const float axisLength = 100.f;
 const float axisRadius = 3.f;
@@ -125,6 +171,21 @@ void OrientationTransformer::HandleObjPress(UINT id)
 		} else {
 			this->activeObjectActionAxis = activeObjectDir;
 		}
+
+		// Rotation arcs (ids 4..6): snapshot the start orientation/position of
+		// every target so the snapped angle can be applied absolutely from here.
+		const bool isRotGizmo = (id == auxObjectsIDs[4] || id == auxObjectsIDs[5] || id == auxObjectsIDs[6]);
+		if (isRotGizmo) {
+			this->m_rotating = true;
+			this->m_rotAccum = 0.0f;
+			this->m_rotCenter = this->centroid;
+			this->m_startPos.clear();
+			this->m_startRot.clear();
+			for (Primitive* t : targetObjects) {
+				this->m_startPos.push_back(t->GetPosition());
+				this->m_startRot.push_back(t->GetRotation());
+			}
+		}
 		return;
 	}
 }
@@ -151,6 +212,28 @@ void OrientationTransformer::HandleObjMove(XMFLOAT2& actionAxisScreen, XMFLOAT2&
 
 		for (Primitive* target : targetObjects)
 			target->AdjustPosition(offset);
+
+		// Shift + drag along a world-parallel axis: magnetise the moved world
+		// coordinate to the nearest multiple of the zoom-dependent grid step when
+		// it lands within a neighbourhood of one. A non-world-parallel axis (e.g. a
+		// rotated single target's local axis) is left free.
+		const int axisIdx = WorldAxisIndex(this->activeObjectActionAxis);
+		if (ShiftHeld() && axisIdx >= 0 && !targetObjects.empty()) {
+			float sum = 0.0f;
+			for (Primitive* t : targetObjects) {
+				const XMFLOAT3& p = t->GetPosition();
+				sum += (axisIdx == 0 ? p.x : axisIdx == 1 ? p.y : p.z);
+			}
+			const float c = sum / (float)targetObjects.size();
+			const float step = GridStep(cameraScale);
+			const float nearest = std::round(c / step) * step;
+			if (std::fabs(c - nearest) < 0.25f * step) {
+				const float corr = nearest - c;
+				XMFLOAT3 d{};
+				(axisIdx == 0 ? d.x : axisIdx == 1 ? d.y : d.z) = corr;
+				for (Primitive* t : targetObjects) t->AdjustPosition(d);
+			}
+		}
 	}
 	else if (this->activeObject->id == auxObjectsIDs[3]) {
 		XMFLOAT3 actionAxisScreen3 = XMFLOAT3(actionAxisScreen.x, actionAxisScreen.y, 0.0f);
@@ -204,16 +287,26 @@ void OrientationTransformer::HandleObjMove(XMFLOAT2& actionAxisScreen, XMFLOAT2&
 		XMVECTOR axis3d = XMLoadFloat3(&this->activeObjectActionAxis);
 		if (XMVectorGetX(XMVector3Dot(axis3d, camForward)) > 0.0f) angle = -angle;
 
-		XMVECTOR center = XMLoadFloat3(&centroid);
-		XMVECTOR rotQuat = XMQuaternionRotationAxis(axis3d, angle);
+		// Accumulate the raw turn since the press, then apply the snapped angle
+		// absolutely from the per-target snapshots (so magnetising never drifts).
+		this->m_rotAccum += angle;
+		const float applied = SnapRotation(this->m_rotAccum);
 
-		for (Primitive* target : targetObjects) {
-			XMVECTOR pos = XMLoadFloat3(&target->GetPosition());
-			XMVECTOR rel = pos - center;
-			XMFLOAT3 newPos;
-			XMStoreFloat3(&newPos, center + XMVector3Rotate(rel, rotQuat));
-			target->SetPosition(newPos);
-			target->RotateAroundAxis(axis3d, angle);
+		XMVECTOR center = XMLoadFloat3(&this->m_rotCenter);
+		XMVECTOR rotQuat = XMQuaternionRotationAxis(axis3d, applied);
+
+		if (this->m_rotating && this->m_startPos.size() == targetObjects.size()) {
+			for (size_t i = 0; i < targetObjects.size(); ++i) {
+				XMVECTOR rel = XMLoadFloat3(&this->m_startPos[i]) - center;
+				XMFLOAT3 newPos;
+				XMStoreFloat3(&newPos, center + XMVector3Rotate(rel, rotQuat));
+				targetObjects[i]->SetPosition(newPos);
+
+				XMVECTOR startQ = XMLoadFloat4(&this->m_startRot[i]);
+				XMFLOAT4 q;
+				XMStoreFloat4(&q, XMQuaternionMultiply(startQ, rotQuat));
+				targetObjects[i]->SetRotation(q);
+			}
 		}
 
 		prevActionPointNdc = actionPointNdc;
@@ -230,6 +323,10 @@ void OrientationTransformer::HandleObjRelease()
 	}
 	this->activeObjectActionAxis = XMFLOAT3{};
 	prevActionPointNdc = XMFLOAT2{};
+	this->m_rotating = false;
+	this->m_rotAccum = 0.0f;
+	this->m_startPos.clear();
+	this->m_startRot.clear();
 }
 
 void OrientationTransformer::Update()

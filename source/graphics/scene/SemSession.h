@@ -1,5 +1,6 @@
 #pragma once
 #include "scene.h"
+#include "scene_service.h"
 #include "../../external/sem_exports.h"
 #include <string>
 #include <vector>
@@ -27,7 +28,7 @@ public:
     //   3 = triangle-surface pipeline (SEM_LoadSurface3D, SEM_*3D).
     int   dim        = 2;
 
-    int   subMode    = 1;
+    int   subMode    = 0;
     int   subN       = 2;
     bool  subEnabled = true;
 
@@ -55,12 +56,12 @@ public:
     // BAND => Steiner grid cell size (a length); LAYERED => use_sdf flag (0/1).
     // tetParamEdgeUnits expresses the BAND cell size in multiples of the source
     // surface's mean edge length instead of model units (ignored for LAYERED).
-    int   tetMethod    = SEM_TET_BAND;
-    float tetParam     = -1.0f;
+    int   tetMethod    = SEM_TET_LAYERED;
+    float tetParam     = 0.0f;
     bool  tetParamEdgeUnits = false;
     // Max tet edge length filter, in multiples of the source surface's mean edge
     // length (see SEM_MeshParams3D::max_edge_len). <= 0 disables the filter.
-    float tetMaxEdgeLen = 0.0f;
+    float tetMaxEdgeLen = 10.0f;
     // SEM_TET_LAYERED + use_sdf=0 only: carving layer-span (SEM_MeshParams3D::
     // layer_span). A tet is kept when the spread of its vertices' layer indices
     // (max - min) is <= this. <= 0 => 1. Ignored by SEM_TET_BAND and by LAYERED
@@ -68,7 +69,7 @@ public:
     int   tetLayerSpan = 1;
 
     bool  thermalEnabled = true;
-    float isoValue   = 0.5f;
+    float isoValue   = 0.8f;
     // Mesh colouring after a thermal solve. false = "T field" (blue..red gradient
     // over the solved temperature); true = "BC" (only the Dirichlet boundary
     // nodes are tinted blue for T=0 and red for T=1, every interior node light
@@ -76,11 +77,11 @@ public:
     bool  bcView     = false;
     // Max inward penetration (0..1) passed to SEM_SolveThermal3D. Only consulted
     // when useSourceSdf is on.
-    float maxInward  = 1.0f;
+    float maxInward  = 0.04f;
     // SEM_SolveThermal3D use_source_sdf flag (0/1). 0 = keep every outermost-offset
     // node as a T=0 BC by tag alone (maxInward ignored); 1 = evaluate the source
     // signed distance on those nodes and drop self-intersecting ones via maxInward.
-    int   useSourceSdf = 0;
+    int   useSourceSdf = 1;
 
     bool  subAuto     = false;
     bool  offAuto     = false;
@@ -93,8 +94,10 @@ public:
     // nx*x + ny*y + nz*z + d >= 0; the normal points INTO the kept half-space.
     // They are shown on the scene as soft translucent rectangles lying on each
     // plane, sized to the source surface's bounding box: the kept side is soft
-    // red, the removed side soft blue.
-    std::vector<XMFLOAT4> clipPlanes;
+    // red, the removed side soft blue. Each plane is a ClipPlaneNode service
+    // object whose rectangle is moved/rotated with the orientation transformer;
+    // the (normal, d) is read back from that rectangle's transform on Apply.
+    std::vector<ClipPlaneNode*> clipPlaneNodes;
 
     bool  revolutionMode = false;
     int   revSegments    = 48;
@@ -185,16 +188,32 @@ public:
     void SetSurf3dAlpha(Scene& scene, float a);
 
     // --- Clip planes -----------------------------------------------------
-    // Push the current clipPlanes to the SEM core (SEM_SetClipPlanes3D) and
-    // rebuild the on-scene rectangles. Clipping is applied during meshing, so
-    // this invalidates the mesh and everything downstream.
+    // Read the (normal, d) of every ClipPlaneNode and push them to the SEM core
+    // (SEM_SetClipPlanes3D). Clipping is applied during meshing, so this
+    // invalidates the mesh and everything downstream; mirror copies are refreshed.
     void SetClipPlanes3D(Scene& scene);
-    // Clear every clip plane in the core (SEM_ClearClipPlanes3D), drop the
-    // rectangles and invalidate the mesh.
+    // Clear every clip plane in the core (SEM_ClearClipPlanes3D), remove every
+    // plane node + mirror and invalidate the mesh.
     void ClearClipPlanes3D(Scene& scene);
-    // Rebuild just the on-scene rectangles from clipPlanes (e.g. after editing a
-    // plane's parameters); no SEM core call, no mesh invalidation.
-    void RebuildClipPlaneViz(Scene& scene);
+
+    // Create a new clip-plane node (default normal +X through the source bbox
+    // centre) and its movable rectangle, parented to the source. Remove one by
+    // index (drops the node, its rectangle and any mirrors that referenced it).
+    ClipPlaneNode* AddClipPlane(Scene& scene);
+    void RemoveClipPlane(Scene& scene, int idx);
+    // True when prim is the rectangle of one of our clip-plane nodes; returns it.
+    ClipPlaneNode* FindClipPlaneByRect(Primitive* prim) const;
+
+    // --- Clip-plane mirror copies ----------------------------------------
+    // Toggle the mirror copies for a single clip plane and rebuild. Drop and
+    // rebuild every mirror copy from the current plane nodes and the live
+    // source/isotherm. With several enabled planes the reflections compose: a
+    // later plane also mirrors the copies an earlier plane produced (the
+    // reflection orbit), so two planes give the 3 images A, B and B∘A.
+    void ShowClipMirror(Scene& scene, int planeIdx, bool show);
+    void RebuildClipMirrors(Scene& scene);
+    void DropClipMirrors(Scene& scene);
+    bool AnyClipMirror() const;
 
     // --- Stage timing ----------------------------------------------------
     // Wall-clock duration (ms) of the most recent compute of each stage, or < 0
@@ -280,7 +299,6 @@ private:
     Primitive*  m_isoline = nullptr;
     Primitive*  m_srcRevSurf = nullptr;
     Primitive*  m_isoRevSurf = nullptr;
-    SceneNode*  m_clipViz = nullptr;   // empty group holding the clip-plane rectangles
     bool        m_thermalSolved = false;
     Stats m_srcStats, m_offStats, m_meshStats;
 
@@ -377,10 +395,11 @@ private:
     void BuildSourceRevolution(Scene& scene);
     void BuildIsolineRevolution(Scene& scene);
 
-    // Build/drop the soft translucent rectangles visualizing clipPlanes over the
-    // source surface's bounding box (red = kept side, blue = removed side).
-    void BuildClipPlaneViz(Scene& scene);
-    void DropClipPlaneViz(Scene& scene);
+    // Build the movable rectangle (soft red kept side, soft blue removed side) for
+    // a clip-plane node, sized to the source surface's bounding box, parented to
+    // the node and positioned on the given plane. Remove every plane node + rect.
+    void BuildClipPlaneRect(Scene& scene, ClipPlaneNode* node, const XMFLOAT4& plane);
+    void DropClipPlaneNodes(Scene& scene);
 
     void DropOffsets(Scene& scene);
     void DropMesh(Scene& scene);

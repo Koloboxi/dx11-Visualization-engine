@@ -138,6 +138,15 @@ public:
 	Primitive* AddColoredTriangles(const std::vector<XMFLOAT3>& poses, const std::vector<XMFLOAT4>& cols,
 		const std::string& name, SceneNode* parent = nullptr, bool ensureCCW = true);
 
+	// Add a mirror copy of `src` reflected across `plane` (xyz = normal, w = d).
+	// The new primitive is parented under `parent` (or root) and registered like
+	// any other. When mirrorEdgeChildren is set, any direct primitive child of
+	// `src` whose name marks it as a wireframe ("(edges)") is also mirrored and
+	// parented under the clone, so a surface + its edges mirror together. Returns
+	// the cloned primitive (null on a degenerate plane or null src).
+	Primitive* AddMirroredCopy(Primitive* src, const XMFLOAT4& plane, const std::string& name,
+		SceneNode* parent = nullptr, bool mirrorEdgeChildren = true);
+
 	void RemovePrimitive(Primitive* p);
 	void RemoveNode(SceneNode* n);
 	void RemovePrimitivesByPrefix(const std::string& prefix);

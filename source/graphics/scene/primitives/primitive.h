@@ -57,6 +57,15 @@ public:
 	void AddColorSet(const std::string& name, const std::vector<XMFLOAT4>& gpuOrderColors);
 	bool ActivateColorSet(const std::string& name);
 	bool HasColorSet(const std::string& name) const;
+
+	// Build a brand-new primitive that is this one reflected across the plane
+	// (plane.xyz = normal, plane.w = d; the mirror plane is nx*x+ny*y+nz*z+d=0).
+	// Vertex positions and normals are reflected and, for a triangle list, the
+	// winding is reversed so the reflected surface keeps a coherent facing under
+	// the project's rasterizer. Render state (colour, two-sided, lighting,
+	// per-vertex colours, transform) is copied. Returns null for a degenerate
+	// plane normal. The caller owns the result (Scene::AddMirroredCopy wraps it).
+	Primitive* CloneMirrored(const XMFLOAT4& plane) const;
 	const std::string& GetActiveColorSet() const { return activeColorSet; }
 	UINT GetVertexCount() const { return vertexBuffer.GetBufferSize(); }
 

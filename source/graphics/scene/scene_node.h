@@ -10,6 +10,7 @@ public:
     virtual ~SceneNode() = default;
     virtual bool IsPrimitive()  const { return false; }
     virtual bool IsController() const { return false; }
+    virtual bool IsService()    const { return false; }
 
     std::string name;
     SceneNode*  parent = nullptr;

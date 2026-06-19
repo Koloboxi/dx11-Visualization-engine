@@ -1,4 +1,6 @@
 #include "primitive.h"
+#include <algorithm>
+#include <utility>
 
 Primitive::Primitive(ID3D11Device* device, ID3D11DeviceContext* deviceContext)
 {
@@ -97,6 +99,83 @@ bool Primitive::ActivateColorSet(const std::string& name)
 
 	this->activeColorSet = name;
 	return true;
+}
+
+Primitive* Primitive::CloneMirrored(const XMFLOAT4& plane) const
+{
+	XMVECTOR N = XMVectorSet(plane.x, plane.y, plane.z, 0.0f);
+	const float len = XMVectorGetX(XMVector3Length(N));
+	if (len < 1e-9f) return nullptr;
+	N = XMVectorScale(N, 1.0f / len);
+	const float dUnit = plane.w / len;
+
+	auto reflectPos = [&](const XMFLOAT3& p) {
+		XMVECTOR v = XMLoadFloat3(&p);
+		const float s = XMVectorGetX(XMVector3Dot(N, v)) + dUnit;
+		XMFLOAT3 o; XMStoreFloat3(&o, XMVectorSubtract(v, XMVectorScale(N, 2.0f * s)));
+		return o;
+	};
+	auto reflectDir = [&](const XMFLOAT3& d) {
+		XMVECTOR v = XMLoadFloat3(&d);
+		const float s = XMVectorGetX(XMVector3Dot(N, v));
+		XMFLOAT3 o; XMStoreFloat3(&o, XMVectorSubtract(v, XMVectorScale(N, 2.0f * s)));
+		return o;
+	};
+
+	const bool triList = (this->primitiveTopology == D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+	auto reflectVerts = [&](std::vector<Vertex> verts, bool swapWinding) {
+		for (Vertex& v : verts) { v.pos = reflectPos(v.pos); v.normal = reflectDir(v.normal); }
+		if (swapWinding)
+			for (size_t i = 0; i + 2 < verts.size(); i += 3) std::swap(verts[i + 1], verts[i + 2]);
+		return verts;
+	};
+
+	Primitive* clone = new Primitive(this->device, this->deviceContext);
+
+	std::vector<Vertex> ib_verts = this->vertexBuffer.GetData();
+	std::vector<DWORD>  indices  = this->indexBuffer.GetData();
+	const bool indexed = !indices.empty();
+
+	// The winding lives in the vertex order for a non-indexed triangle list, and
+	// in the index buffer for an indexed one — reverse it in whichever holds it.
+	std::vector<Vertex> vbm = reflectVerts(std::move(ib_verts), triList && !indexed);
+	if (triList && indexed)
+		for (size_t i = 0; i + 2 < indices.size(); i += 3) std::swap(indices[i + 1], indices[i + 2]);
+
+	clone->SetVertexIndexBuffers(vbm.data(), (UINT)vbm.size(),
+	                             indices.empty() ? nullptr : indices.data(), (UINT)indices.size(),
+	                             this->dimension);
+	clone->SetPrimitiveTopology(this->primitiveTopology);
+
+	// The flat-shading buffer, when built, is always an expanded triangle list.
+	if (this->vertexBufferFaces.GetBufferSize() > 0) {
+		std::vector<Vertex> fb = reflectVerts(this->vertexBufferFaces.GetData(), triList);
+		UINT size = fb.size();
+		clone->vertexBufferFaces.Initialize(this->device, fb.data(), size);
+	}
+
+	clone->cb_ps_pixelshader.data   = this->cb_ps_pixelshader.data;
+	clone->psCBDirty                = true;
+	clone->illuminationCapability   = this->illuminationCapability;
+	clone->smoothShade              = this->smoothShade;
+	clone->transparent              = this->transparent;
+
+	// Per-vertex colour sets are stored in GPU vertex order; keep them aligned
+	// with the (possibly winding-swapped) vertex buffer.
+	for (const auto& kv : this->colorSets) {
+		std::vector<XMFLOAT4> cols = kv.second;
+		if (triList && !indexed)
+			for (size_t i = 0; i + 2 < cols.size(); i += 3) std::swap(cols[i + 1], cols[i + 2]);
+		clone->colorSets[kv.first] = std::move(cols);
+	}
+	clone->activeColorSet = this->activeColorSet;
+
+	clone->SetScale(this->scale);
+	clone->SetRotationZero(this->rotZero);
+	clone->SetRotation(this->rotQuat);
+	clone->SetPosition(this->pos);
+	return clone;
 }
 
 void Primitive::SetColor(const XMFLOAT4& col)

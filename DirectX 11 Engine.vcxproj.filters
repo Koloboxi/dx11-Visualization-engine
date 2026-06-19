@@ -80,6 +80,7 @@
     <ClInclude Include="source\external\sem_exports.h" />
     <ClInclude Include="source\loaders\Grid2DLoader.h" />
     <ClInclude Include="source\graphics\scene\SemSession.h" />
+    <ClInclude Include="source\graphics\scene\scene_service.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="source\graphics\imgui\imgui.cpp" />

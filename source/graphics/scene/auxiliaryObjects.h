@@ -40,4 +40,14 @@ private:
 
 	Primitive* activeObject = nullptr;
 	XMFLOAT3 activeObjectActionAxis{};
+
+	// Rotation snapping state, captured at HandleObjPress on a rotation arc and
+	// used to apply the snapped orientation absolutely from the gesture's start.
+	// m_rotAccum is the raw (unsnapped) cumulative angle since the press; the
+	// applied angle is m_rotAccum magnetised/snapped per the held modifier keys.
+	bool                  m_rotating = false;
+	float                 m_rotAccum = 0.0f;
+	XMFLOAT3              m_rotCenter{};
+	std::vector<XMFLOAT3> m_startPos;
+	std::vector<XMFLOAT4> m_startRot;
 };

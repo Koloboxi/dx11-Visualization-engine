@@ -820,6 +820,30 @@ Primitive* Scene::AddColoredTriangles(const std::vector<XMFLOAT3>& poses, const 
 	return p;
 }
 
+Primitive* Scene::AddMirroredCopy(Primitive* src, const XMFLOAT4& plane, const std::string& name,
+	SceneNode* parent, bool mirrorEdgeChildren)
+{
+	if (!src) return nullptr;
+	Primitive* clone = src->CloneMirrored(plane);
+	if (!clone) return nullptr;
+	clone->id = NextId();
+	clone->name = name;
+	this->primitives.push_back(clone);
+	(parent ? parent : &root)->AddChild(clone);
+	ApplyCurrentLighting(clone);
+
+	if (mirrorEdgeChildren) {
+		for (SceneNode* ch : src->children) {
+			if (!ch->IsPrimitive()) continue;
+			Primitive* cp = static_cast<Primitive*>(ch);
+			if (cp->name.find("(edges)") == std::string::npos) continue;
+			AddMirroredCopy(cp, plane, name + " (edges)", clone, false);
+		}
+	}
+	m_sortedDirty = true;
+	return clone;
+}
+
 void Scene::RemovePrimitivesByPrefix(const std::string& prefix)
 {
 	if (orientationTransformer.HasActiveObject()) orientationTransformer.HandleObjRelease();

@@ -204,10 +204,10 @@ inline void DrawRevolutionSection(Scene& scene, SemSessionNS::SemSession& S) {
     ImGui::PopID();
 }
 
-// Clip-plane editor (3D pipeline only). Each plane is (normal xyz, d) in
-// nx*x+ny*y+nz*z+d >= 0; the normal points into the kept region. Editing a value
-// refreshes the on-scene rectangles live; "Apply clip planes" pushes them to the
-// mesher (SEM_SetClipPlanes3D) and invalidates the mesh.
+// Clip-plane editor (3D pipeline only). Each plane is a draggable rectangle in
+// the scene: select it and move/rotate it with the orientation transformer (its
+// normal + d show in the transform window). "Apply clip planes" reads the planes
+// off the rectangles and pushes them to the mesher (SEM_SetClipPlanes3D).
 inline void DrawClipPlanesSection(Scene& scene, SemSessionNS::SemSession& S) {
     ImGui::PushID("clip");
     ImGui::Text("Clip planes");
@@ -215,34 +215,36 @@ inline void DrawClipPlanesSection(Scene& scene, SemSessionNS::SemSession& S) {
     if (ImGui::SmallButton("Clear")) S.ClearClipPlanes3D(scene);
     ImGui::SetItemTooltip("Half-space clips applied during 3D meshing. The normal points\n"
                           "into the kept region (shown soft red); the removed side is soft blue.\n"
-                          "Edit a plane to preview it; press Apply to mesh with the clips.");
+                          "Select a plane rectangle in the scene and move/rotate it with the\n"
+                          "gizmo (or edit normal/d in the transform window), then press Apply.");
 
     ImGui::Indent();
-    bool vizDirty = false;
-    int  removeIdx = -1;
-    for (int i = 0; i < (int)S.clipPlanes.size(); ++i) {
+    int removeIdx = -1;
+    for (int i = 0; i < (int)S.clipPlaneNodes.size(); ++i) {
+        ClipPlaneNode* node = S.clipPlaneNodes[i];
+        if (!node) continue;
         ImGui::PushID(i);
-        XMFLOAT4& pl = S.clipPlanes[i];
-        ImGui::SetNextItemWidth(160);
-        vizDirty |= ImGui::DragFloat3("n", &pl.x, 0.01f, -1.0e6f, 1.0e6f, "%.3f");
+        XMFLOAT4 pl = node->GetPlane();
+        ImGui::Text("Plane %d: n(%.2f, %.2f, %.2f) d %.2f", i, pl.x, pl.y, pl.z, pl.w);
         ImGui::SameLine();
         if (ImGui::SmallButton("X")) removeIdx = i;
-        ImGui::SetNextItemWidth(160);
-        vizDirty |= ImGui::DragFloat("d", &pl.w, 0.05f, -1.0e6f, 1.0e6f, "%.3f");
+        bool mirror = node->showMirror;
+        if (ImGui::Checkbox("Show mirror primitives", &mirror))
+            S.ShowClipMirror(scene, i, mirror);
+        ImGui::SetItemTooltip("Mirror the source surface and the solution isotherm across\n"
+                              "this plane; the copies are children of the mirrored primitive.\n"
+                              "With several planes enabled the reflections compose.");
         ImGui::PopID();
     }
-    if (removeIdx >= 0) { S.clipPlanes.erase(S.clipPlanes.begin() + removeIdx); vizDirty = true; }
+    if (removeIdx >= 0) S.RemoveClipPlane(scene, removeIdx);
 
-    if (ImGui::Button("+ Add plane")) {
-        S.clipPlanes.push_back(XMFLOAT4(1.0f, 0.0f, 0.0f, 0.0f));
-        vizDirty = true;
-    }
+    if (ImGui::Button("+ Add plane")) S.AddClipPlane(scene);
+    ImGui::SetItemTooltip("Create a draggable clip-plane rectangle in the scene.");
     ImGui::SameLine();
     if (ImGui::Button("Apply clip planes")) S.SetClipPlanes3D(scene);
-    ImGui::SetItemTooltip("Send the planes to the mesher (SEM_SetClipPlanes3D) and rebuild\n"
-                          "the mesh on the next Mesh/Thermal Apply.");
+    ImGui::SetItemTooltip("Read the planes off the rectangles and send them to the mesher\n"
+                          "(SEM_SetClipPlanes3D); rebuilds the mesh on the next Mesh/Thermal Apply.");
 
-    if (vizDirty) S.RebuildClipPlaneViz(scene);
     ImGui::Unindent();
     ImGui::PopID();
 }
