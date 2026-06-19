@@ -481,19 +481,6 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
                     changed = true;
                 }
                 ImGui::SetItemTooltip("%s", TetParamHelp(S.tetMethod));
-
-                // layer_span carves the layered build by layer adjacency. The DLL
-                // consults it ONLY in the SDF-free LAYERED path (ignored by BAND
-                // and by LAYERED with use_sdf=1), so expose it only there.
-                if (!useSdf) {
-                    ImGui::DragInt("Layer span", &S.tetLayerSpan, 0.1f, 1, 16);
-                    released |= ImGui::IsItemDeactivatedAfterEdit();
-                    ImGui::SetItemTooltip("Keep a tet when the spread of its vertices' layer indices\n"
-                                          "(max - min) is <= this. 1 keeps only strictly adjacent\n"
-                                          "layers; larger values bridge layer gaps to close holes at\n"
-                                          "the cost of admitting some longer bridging tets.");
-                    if (S.tetLayerSpan < 1) S.tetLayerSpan = 1;
-                }
             }
         } else {
         // Only the free grid CDT mesher remains (SEM_STEINER_GRID).
@@ -554,28 +541,17 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         stageTime(S.ThermalTimeMs());
 
         ImGui::Indent();
-        // SEM_SolveThermal3D knobs (3D only — the 2D SEM_SolveThermal takes no
-        // parameters). use_source_sdf selects how the outermost T=0 nodes are
-        // filtered; max_inward only has an effect when use_source_sdf is on, so it
-        // is hidden otherwise. Both sit ABOVE Apply so the solve params read top
-        // to bottom.
+        // SEM_SolveThermal3D knob (3D only — the 2D SEM_SolveThermal takes no
+        // parameters). max_inward filters the outermost T=0 nodes by the source
+        // signed distance. It sits ABOVE Apply so the solve params read top to
+        // bottom.
         if (is3D) {
-            bool useSdf = (S.useSourceSdf != 0);
-            if (ImGui::Checkbox("Use source SDF", &useSdf))
-                S.useSourceSdf = useSdf ? 1 : 0;
-            ImGui::SetItemTooltip("Off: keep every outermost-offset node as a T=0 boundary by tag\n"
-                                  "alone (Max inward ignored; robust where the signed distance\n"
-                                  "misbehaves).\n"
-                                  "On: evaluate the source signed distance on those nodes and drop\n"
-                                  "self-intersecting ones using Max inward.");
-            if (useSdf) {
-                ImGui::DragFloat("Max inward (0..1)", &S.maxInward, 0.005f, 0.0f, 1.0f, "%.3f");
-                ImGui::SetItemTooltip("Maximum relative depth (fraction of the outer extent) an\n"
-                                      "outermost node may sit inward of the true outer extent and\n"
-                                      "still be kept as a T=0 node. Deeper nodes are dropped.");
-                if (S.maxInward < 0.0f) S.maxInward = 0.0f;
-                if (S.maxInward > 1.0f) S.maxInward = 1.0f;
-            }
+            ImGui::DragFloat("Max inward (0..1)", &S.maxInward, 0.005f, 0.0f, 1.0f, "%.3f");
+            ImGui::SetItemTooltip("Maximum relative depth (fraction of the outer extent) an\n"
+                                  "outermost node may sit inward of the true outer extent and\n"
+                                  "still be kept as a T=0 node. Deeper nodes are dropped.");
+            if (S.maxInward < 0.0f) S.maxInward = 0.0f;
+            if (S.maxInward > 1.0f) S.maxInward = 1.0f;
         }
 
         // Apply solves the steady-state field; it sits ABOVE the iso value so the

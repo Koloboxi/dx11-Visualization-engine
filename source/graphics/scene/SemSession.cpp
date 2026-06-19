@@ -222,8 +222,8 @@ int SafeSolveThermal() {
     __try { return SEM_SolveThermal(); }
     __except (EXCEPTION_EXECUTE_HANDLER) { return -100; }
 }
-int SafeSolveThermal3D(int use_source_sdf, float max_inward) {
-    __try { return SEM_SolveThermal3D(use_source_sdf, max_inward); }
+int SafeSolveThermal3D(float max_inward) {
+    __try { return SEM_SolveThermal3D(max_inward); }
     __except (EXCEPTION_EXECUTE_HANDLER) { return -100; }
 }
 int SafeExtractIsoline(double value) {
@@ -820,7 +820,7 @@ bool SemSession::ApplyThermal(Scene& scene, bool silent) {
     // <stem>_mesh[3d].csv3d had T = 0). Re-import it below so the displayed mesh
     // recolours by the solved field; the same field feeds the isotherm/isosurface.
     Timer t; t.Restart();
-    int rc = (dim == 3) ? SafeSolveThermal3D(useSourceSdf, maxInward) : SafeSolveThermal();
+    int rc = (dim == 3) ? SafeSolveThermal3D(maxInward) : SafeSolveThermal();
     const double ms = t.GetMillisecondsElapsed();
     if (rc == -100) {
         Report(scene, silent, "Thermal solver crashed (access violation caught).");
@@ -1047,7 +1047,7 @@ void SemSession::RunFullPipeline(Scene& scene) {
         tetMethod    = SEM_TET_LAYERED;
         tetParam     = 0.0f; tetParamEdgeUnits = false;
         tetMaxEdgeLen = 10.0f;
-        useSourceSdf  = 1; maxInward = 0.04f;
+        maxInward = 0.04f;
     } else {
         meshMethod = SEM_STEINER_GRID;
         meshParam  = -1.0f; meshParamEdgeUnits = false;
@@ -1163,10 +1163,8 @@ void SemSession::RecomputeUpToAsync(Scene& scene, Stage to, bool silent) {
         m_job.tetParam = param;
     }
     m_job.tetMaxEdgeLen = (double)tetMaxEdgeLen;
-    m_job.tetLayerSpan = tetLayerSpan;
     m_job.isoValue = isoValue;
     m_job.maxInward = maxInward;
-    m_job.useSourceSdf = useSourceSdf;
 
     // Deterministic output paths the SEM core writes during each compute call.
     m_job.expOffsets = OutPath("_offsets3d.csv3d");
@@ -1312,7 +1310,7 @@ void SemSession::PipelineWorkerBody() {
         if (stopIfCancelled()) return;
         m_job.stageKind.store(1);
         m_job.progressStage.store(idx);
-        SEM_MeshParams3D params3d{ m_job.tetMethod, m_job.tetParam, m_job.tetMaxEdgeLen, m_job.tetLayerSpan };
+        SEM_MeshParams3D params3d{ m_job.tetMethod, m_job.tetParam, m_job.tetMaxEdgeLen };
         Timer t; t.Restart();
         int rc = SafeBuildMesh3D(&params3d);
         m_job.meshMs = t.GetMillisecondsElapsed();
@@ -1329,7 +1327,7 @@ void SemSession::PipelineWorkerBody() {
         m_job.stageKind.store(2);
         m_job.progressStage.store(idx);
         Timer t; t.Restart();
-        int rc = SafeSolveThermal3D(m_job.useSourceSdf, m_job.maxInward);
+        int rc = SafeSolveThermal3D(m_job.maxInward);
         m_job.thermalMs = t.GetMillisecondsElapsed();
         if (rc == -100) return Fail("Thermal solver crashed (access violation caught).");
         if (rc != 0) return Fail("SEM_SolveThermal3D failed (" + std::to_string(rc) + ")");
@@ -1581,7 +1579,7 @@ bool SemSession::ApplyMesh(Scene& scene, bool silent) {
             double param = (double)tetParam;
             if (tetParamEdgeUnits && tetParam > 0.0f && tetMethod == SEM_TET_BAND)
                 param *= TetParamFactor();
-            SEM_MeshParams3D params3d{ tetMethod, param, (double)tetMaxEdgeLen, tetLayerSpan };
+            SEM_MeshParams3D params3d{ tetMethod, param, (double)tetMaxEdgeLen };
             Timer t; t.Restart();
             rc = SafeBuildMesh3D(&params3d);
             const double ms = t.GetMillisecondsElapsed();

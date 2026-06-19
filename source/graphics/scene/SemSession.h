@@ -62,11 +62,6 @@ public:
     // Max tet edge length filter, in multiples of the source surface's mean edge
     // length (see SEM_MeshParams3D::max_edge_len). <= 0 disables the filter.
     float tetMaxEdgeLen = 10.0f;
-    // SEM_TET_LAYERED + use_sdf=0 only: carving layer-span (SEM_MeshParams3D::
-    // layer_span). A tet is kept when the spread of its vertices' layer indices
-    // (max - min) is <= this. <= 0 => 1. Ignored by SEM_TET_BAND and by LAYERED
-    // with use_sdf=1.
-    int   tetLayerSpan = 1;
 
     bool  thermalEnabled = true;
     float isoValue   = 0.8f;
@@ -75,13 +70,11 @@ public:
     // nodes are tinted blue for T=0 and red for T=1, every interior node light
     // grey). Toggled live from the SEM window via SetBCView.
     bool  bcView     = false;
-    // Max inward penetration (0..1) passed to SEM_SolveThermal3D. Only consulted
-    // when useSourceSdf is on.
+    // Max inward penetration (0..1) passed to SEM_SolveThermal3D. The source
+    // signed distance is evaluated on the outermost-offset nodes to drop
+    // self-intersecting ones; nodes deeper than this relative depth are not kept
+    // as T=0 BCs. < 0 disables the filter (keep every outermost node).
     float maxInward  = 0.04f;
-    // SEM_SolveThermal3D use_source_sdf flag (0/1). 0 = keep every outermost-offset
-    // node as a T=0 BC by tag alone (maxInward ignored); 1 = evaluate the source
-    // signed distance on those nodes and drop self-intersecting ones via maxInward.
-    int   useSourceSdf = 1;
 
     bool  subAuto     = false;
     bool  offAuto     = false;
@@ -360,10 +353,8 @@ private:
         int                 tetMethod = SEM_TET_BAND;
         double              tetParam = -1.0;
         double              tetMaxEdgeLen = 0.0;
-        int                 tetLayerSpan = 1;
         double              isoValue = 0.5;
         float               maxInward = 1.0f;
-        int                 useSourceSdf = 0;
 
         // Deterministic output paths the SEM core writes (computed at launch on
         // the main thread, where OutPath/m_srcPath are stable).
