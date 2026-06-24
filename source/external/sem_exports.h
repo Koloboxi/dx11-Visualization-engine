@@ -32,6 +32,33 @@ SEM_API const char* SEM_GetLastError(void);
 // Progress of the current long-running call, in [0,1].
 SEM_API float SEM_GetProgress(void);
 
+// Read-only view into the cache-owned buffers of a result (mesh / iso). Filled
+// by the SEM_Get* accessors below. Every pointer points straight into the
+// process-global cache and is valid ONLY until the next SEM_* call that mutates
+// that pipeline (load / subdivide / offsets / mesh / solve / extract / clear).
+// Copy out immediately if you need to keep the data. A pointer is null (and its
+// count 0) when the corresponding array is absent: `T` before a thermal solve,
+// `tets` for any 2D result, `edges` for a triangle/tet mesh, etc.
+//
+// Layout is flat for portable marshalling (P/Invoke, ctypes):
+//   coords : 3 * num_nodes doubles, x,y,z interleaved
+//   T      : num_nodes doubles (per-node field), or null
+//   edges  : 2 * num_edges ints (node indices)
+//   tris   : 3 * num_tris  ints
+//   tets   : 4 * num_tets  ints
+// All indices are 0-based into the node array.
+struct SEM_MeshView {
+    const double* coords;
+    const double* T;
+    const int* edges;
+    const int* tris;
+    const int* tets;
+    int num_nodes;
+    int num_edges;
+    int num_tris;
+    int num_tets;
+};
+
 // ===========================================================================
 //  2D pipeline
 // ===========================================================================
@@ -92,15 +119,23 @@ SEM_API int SEM_SolveThermal(void);
 // (value in [0,1]). Writes <stem>_isoline.csv3d.
 SEM_API int SEM_ExtractIsoline(double value);
 
+// Read-only access to the cached 2D results (see SEM_MeshView for the lifetime
+// and layout contract). SEM_GetMesh fills the band triangle mesh (coords/tris,
+// plus T after a solve); SEM_GetIsoline fills the extracted iso line
+// (coords/edges). Negative if the result has not been computed/loaded yet.
+SEM_API int SEM_GetMesh(SEM_MeshView* out);
+SEM_API int SEM_GetIsoline(SEM_MeshView* out);
+
 // ===========================================================================
 //  3D pipeline
 // ===========================================================================
 
 // Load a 3D source surface from a .csv3d file (validated triangle manifold).
-// `closed` (non-zero) declares it a closed manifold enclosing a volume; when
-// closed, the enclosed volume is computed on import (divergence theorem) and
-// cached for SEM_GetSourceVolume3D. Clears the 3D cache.
-SEM_API int SEM_LoadSurface3D(const char* path, int closed);
+// Closedness is detected from the topology (a watertight manifold with no
+// boundary edges encloses a volume); for a closed surface the enclosed volume
+// is computed on import (divergence theorem) and cached for
+// SEM_GetSourceVolume3D. Clears the 3D cache.
+SEM_API int SEM_LoadSurface3D(const char* path);
 
 // Subdivide the source surface. Same n semantics as SEM_SubdivideContour.
 SEM_API int SEM_SubdivideSurface3D(int n);
@@ -108,8 +143,8 @@ SEM_API int SEM_SubdivideSurface3D(int n);
 // Average edge length of the loaded source surface (the unit for first_gap).
 SEM_API double SEM_GetSurfaceAvgEdgeLen3D();
 
-// Cached enclosed volume of the source surface. Returns the volume (>= 0) if it
-// was loaded as closed, else -1.0 (with SEM_GetLastError set).
+// Cached enclosed volume of the source surface. Returns the volume (>= 0) if the
+// loaded surface is closed (watertight), else -1.0 (with SEM_GetLastError set).
 SEM_API double SEM_GetSourceVolume3D();
 
 // Compute graded offset shells. Same semantics as the 2D SEM_ComputeOffsets[At]
@@ -181,4 +216,30 @@ SEM_API int SEM_SolveThermal3D(float max_inward);
 
 // Extract the iso surface at the given level set of the normalized field
 // (value in [0,1]). Writes <stem>_isosurface3d.csv3d.
-SEM_API int SEM_ExtractIsosurface3D(double value);
+//
+// axis = 0: plain extraction (clip planes applied), nothing else.
+// axis = 1/2/3 (X/Y/Z): offset-and-remesh mode for an OPEN iso sheet. The sheet
+//   is shifted along its pseudonormals by offset_value * avg_edge_len, where
+//   avg_edge_len is the source's average edge length and offset_value is a signed
+//   multiple of it (no range limit): positive shifts inward (against the outward
+//   normals, toward the source), negative outward. Vertices that end up closer to
+//   the iso than the shift are dropped (concave folds clean up); the result is
+//   then projected onto the base plane perpendicular to `axis` (that coordinate is
+//   preserved), constrained-CDT re-triangulated with the iso's boundary loops as
+//   constraints, and lifted back. Requires an open isosurface; a closed iso fails.
+//   offset_value is ignored when axis = 0.
+SEM_API int SEM_ExtractIsosurface3D(double value, int axis, double offset_value);
+
+// Reverse the winding of every triangle of the extracted iso surface (turn it
+// inside-out) and rewrite <stem>_isosurface3d.csv3d. The extraction already makes
+// the surface consistently oriented, but its global outward direction is
+// arbitrary; use this to flip it to the desired side. Requires an extracted iso
+// surface (SEM_ExtractIsosurface3D first).
+SEM_API int SEM_FlipIsosurface3D(void);
+
+// Read-only access to the cached 3D results (see SEM_MeshView for the lifetime
+// and layout contract). SEM_GetMesh3D fills the band tet mesh (coords/tets,
+// plus T after a solve); SEM_GetIsosurface3D fills the extracted iso surface
+// (coords/tris). Negative if the result has not been computed/loaded yet.
+SEM_API int SEM_GetMesh3D(SEM_MeshView* out);
+SEM_API int SEM_GetIsosurface3D(SEM_MeshView* out);

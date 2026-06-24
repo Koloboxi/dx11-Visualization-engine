@@ -646,6 +646,16 @@ Primitive* Scene::AddFromCSV3D(const std::string& path, const std::string& name,
 		primName = (dot != std::string::npos) ? file.substr(0, dot) : file;
 	}
 
+	Primitive* p = AddFromCSV3DData(data, primName, parent, overrideColor, gradLow, gradHigh, ensureCCW, bcView, registerColorSets);
+	if (!p) ErrorLogger::Log("CSV3D file contains no drawable geometry: " + path);
+	return p;
+}
+
+Primitive* Scene::AddFromCSV3DData(const CSV3DLoader::CSV3DData& data, const std::string& name, SceneNode* parent, const XMFLOAT4* overrideColor,
+	const XMFLOAT4& gradLow, const XMFLOAT4& gradHigh, bool ensureCCW, bool bcView, bool registerColorSets)
+{
+	std::string primName = name.empty() ? std::string("csv3d") : name;
+
 	const auto& N = data.nodes;
 	const size_t numNodes = N.size();
 
@@ -750,7 +760,6 @@ Primitive* Scene::AddFromCSV3D(const std::string& path, const std::string& name,
 	}
 
 	if (!surface && !lines) {
-		ErrorLogger::Log("CSV3D file contains no drawable geometry: " + path);
 		m_sortedDirty = true;
 		return nullptr;
 	}

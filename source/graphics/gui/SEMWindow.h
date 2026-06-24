@@ -1,7 +1,7 @@
 #pragma once
 #include "../imgui/imgui.h"
 #include "../scene/scene.h"
-#include "../scene/SemSession.h"
+#include "../../SEM/SemSession.h"
 #include <cstdio>
 #include <string>
 #include <filesystem>
@@ -573,12 +573,50 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         if (S.isoValue < 0.0f) S.isoValue = 0.0f;
         if (S.isoValue > 1.0f) S.isoValue = 1.0f;
 
+        // Offset-and-remesh mode (3D only). "None" extracts the open/closed iso
+        // sheet as-is; picking an axis shifts an open sheet back toward the source
+        // and re-triangulates it in the plane perpendicular to that axis.
+        if (is3D) {
+            const char* axisItems[] = { "None (plain)", "X", "Y", "Z" };
+            ImGui::Combo("Iso offset axis", &S.isoAxis, axisItems, IM_ARRAYSIZE(axisItems));
+            ImGui::SetItemTooltip("None: extract the isosurface as-is (clip planes only).\n"
+                                  "X/Y/Z: shift an OPEN iso sheet back toward the source and\n"
+                                  "re-triangulate it in the plane perpendicular to the chosen axis.\n"
+                                  "Requires offsets and an open isosurface.");
+            if (S.isoAxis < 0) S.isoAxis = 0;
+            if (S.isoAxis > 3) S.isoAxis = 3;
+
+            ImGui::BeginDisabled(S.isoAxis == 0);
+            // v_min == v_max => ImGui applies no clamp: the shift is a signed
+            // multiple of the source's mean edge length, with no range limit.
+            ImGui::DragFloat("Iso offset (x edge)", &S.isoOffsetValue, 0.05f, 0.0f, 0.0f, "%.3f");
+            ImGui::SetItemTooltip("Shift of the iso sheet along its pseudonormals before\n"
+                                  "re-triangulation, in multiples of the source surface's mean\n"
+                                  "edge length. Positive shifts inward (toward the source),\n"
+                                  "negative outward. Ignored when the axis is None.");
+            ImGui::EndDisabled();
+        }
+
         // The iso value only selects a level set of the already-solved field, so
         // applying it re-extracts the isotherm/isosurface in place without
         // touching the thermal solve.
         ImGui::BeginDisabled(!S.ThermalSolved());
         if (ImGui::Button(is3D ? "Apply isosurface" : "Apply isoline", {160, 0}))
             S.ApplyIsoline(scene, true);
+
+        // Flip the isosurface inside-out (reverse triangle winding). The extraction
+        // orients the surface consistently but its global outward side is arbitrary;
+        // use this when it faces the wrong way. 3D only, needs an extracted surface.
+        if (is3D) {
+            ImGui::SameLine();
+            ImGui::BeginDisabled(!S.HasIsolinePath());
+            if (ImGui::Button("Flip isosurface", {160, 0}))
+                S.FlipIsosurface3D(scene, true);
+            ImGui::SetItemTooltip("Reverse the winding of every triangle of the extracted\n"
+                                  "isosurface, turning it inside-out. Use it when the surface's\n"
+                                  "outward side faces the wrong way.");
+            ImGui::EndDisabled();
+        }
 
         // Mesh colouring toggle (only meaningful once the field is solved):
         // unchecked = T-field gradient (blue..red), checked = BC view (blue T=0,

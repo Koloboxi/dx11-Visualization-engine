@@ -1,0 +1,181 @@
+#include "SemSessionDetail.h"
+#include "../utils/errorLogger.h"
+#include <functional>
+
+namespace SemSessionNS {
+
+using namespace detail;
+
+const std::string& SemSession::SourcePath() const { return m_srcPath; }
+Primitive*  SemSession::SourcePrim()  const { return m_srcPrim; }
+SceneNode*  SemSession::OffsetsNode() const { return m_offsets; }
+Primitive*  SemSession::MeshPrim()    const { return m_mesh; }
+Primitive*  SemSession::IsolinePrim() const { return m_isoline; }
+Primitive*  SemSession::SrcRevSurf()  const { return m_srcRevSurf; }
+Primitive*  SemSession::IsoRevSurf()  const { return m_isoRevSurf; }
+bool        SemSession::HasSource()   const { return m_srcPrim != nullptr && !m_srcPath.empty(); }
+int         SemSession::Dim()         const { return dim; }
+bool        SemSession::ThermalSolved() const { return m_thermalSolved; }
+bool        SemSession::HasIsolinePath() const { return !m_isolinePath.empty(); }
+
+double SemSession::TotalTimeMs() const {
+    double t = 0.0;
+    if (m_offsetsMs >= 0.0) t += m_offsetsMs;
+    if (m_meshMs    >= 0.0) t += m_meshMs;
+    if (m_thermalMs >= 0.0) t += m_thermalMs;
+    return t;
+}
+
+double SemSession::MeshParamFactor() const {
+    double avg = SEM_GetAvgEdgeLen();
+    if (avg <= 0.0) avg = 1.0;
+    return avg;
+}
+
+double SemSession::TetParamFactor() const {
+    double avg = SEM_GetSurfaceAvgEdgeLen3D();
+    if (avg <= 0.0) avg = 1.0;
+    return avg;
+}
+
+const Stats& SemSession::SrcStats()  const { return m_srcStats; }
+const Stats& SemSession::OffStats()  const { return m_offStats; }
+const Stats& SemSession::MeshStats() const { return m_meshStats; }
+
+void SemSession::Bind(Scene& scene, Primitive* prim) {
+    if (prim == m_srcPrim) return;
+    m_srcPrim   = prim;
+    m_srcPath   = prim ? prim->semSourcePath : std::string();
+    m_offsets   = nullptr;
+    m_mesh      = nullptr;
+    m_isoline   = nullptr;
+    m_srcRevSurf = nullptr;
+    m_isoRevSurf = nullptr;
+    m_meshPath.clear();
+    m_isolinePath.clear();
+    m_thermalSolved = false;
+    m_offStats  = Stats();
+    m_meshStats = Stats();
+    // A fresh source resets the SEM core (SEM_LoadSurface3D/SEM_LoadCSV3D below),
+    // which also clears its clip planes; drop ours, their mirror copies and the
+    // measured stage times.
+    DropClipMirrors(scene);
+    DropClipPlaneNodes(scene);
+    m_appliedClipPlanes.clear();
+    m_offsetsMs = m_meshMs = m_thermalMs = -1.0;
+    // A fresh source clears the SEM core cache, so every stage must be recomputed.
+    m_dirty[0] = m_dirty[1] = m_dirty[2] = m_dirty[3] = true;
+    if (!m_srcPath.empty()) {
+        // Point the SEM core at this source's session folder so OutPath can
+        // reconstruct the deterministic paths it writes. The folder is chosen at
+        // import (prim->semWorkDir); allocate a fresh session when none was set.
+        m_workDir = prim ? prim->semWorkDir : std::string();
+        if (m_workDir.empty()) {
+            m_workDir = NewSessionDir(m_srcPath);
+            if (prim) prim->semWorkDir = m_workDir;
+        }
+        std::error_code ec;
+        std::filesystem::create_directories(m_workDir, ec);
+        SEM_SetWorkingDir(m_workDir.c_str());
+        dim = DetectSemDim(m_srcPath);
+        int rc = (dim == 3) ? SEM_LoadSurface3D(m_srcPath.c_str())
+                            : SEM_LoadCSV3D(m_srcPath.c_str());
+        if (rc != 0)
+            Report(scene, false, (dim == 3 ? "SEM_LoadSurface3D failed ("
+                                           : "SEM_LoadCSV3D failed (")
+                                + std::to_string(rc) + ")" + SemDetail());
+    }
+    m_srcStats = ComputeStats(m_srcPath);
+    if (HasSource()) snprintf(status, sizeof(status), "Staged: %s", BaseName(m_srcPath).c_str());
+    else             snprintf(status, sizeof(status), "Ready");
+}
+
+void SemSession::Unbind() {
+    m_srcPrim = nullptr; m_srcPath.clear();
+    m_offsets = nullptr; m_mesh = nullptr; m_isoline = nullptr;
+    m_srcRevSurf = nullptr; m_isoRevSurf = nullptr;
+    m_meshPath.clear(); m_isolinePath.clear();
+    m_thermalSolved = false;
+    // The plane nodes were children of the (now-gone) source subtree; just drop
+    // our dangling references — the scene already destroyed the nodes.
+    clipPlaneNodes.clear();
+    m_srcStats = m_offStats = m_meshStats = Stats();
+    snprintf(status, sizeof(status), "Ready");
+}
+
+void SemSession::Validate(Scene& scene) {
+    if (m_srcPrim && !Alive(scene, m_srcPrim)) { Unbind(); return; }
+    if (m_offsets && !Alive(scene, m_offsets)) { m_offsets = nullptr; m_offStats = Stats(); }
+    if (m_mesh    && !Alive(scene, m_mesh))    { m_mesh    = nullptr; m_meshStats = Stats(); m_thermalSolved = false; }
+    if (m_isoline && !Alive(scene, m_isoline)) { m_isoline = nullptr; }
+    if (m_srcRevSurf && !Alive(scene, m_srcRevSurf)) m_srcRevSurf = nullptr;
+    if (m_isoRevSurf && !Alive(scene, m_isoRevSurf)) m_isoRevSurf = nullptr;
+    // Drop plane nodes whose subtree was removed externally (e.g. tree delete).
+    for (auto it = clipPlaneNodes.begin(); it != clipPlaneNodes.end(); ) {
+        if (*it && !Alive(scene, *it)) it = clipPlaneNodes.erase(it);
+        else ++it;
+    }
+}
+
+void SemSession::MarkStageDirty(Stage st) {
+    if (st >= STAGE_SUBDIVIDE && st <= STAGE_THERMAL) m_dirty[st] = true;
+}
+
+void SemSession::SetSurf3dAlpha(Scene& scene, float a) {
+    surf3dAlpha = a;
+    for (Primitive* p : { m_srcPrim, m_mesh, m_isoline })
+        if (Alive(scene, p)) p->SetAlpha(a);
+    // The offsets are a group of shell primitives; apply alpha to each.
+    if (Alive(scene, m_offsets)) {
+        std::function<void(SceneNode*)> rec = [&](SceneNode* n) {
+            for (SceneNode* ch : n->children) {
+                if (ch->IsPrimitive()) static_cast<Primitive*>(ch)->SetAlpha(a);
+                rec(ch);
+            }
+        };
+        rec(m_offsets);
+    }
+}
+
+bool SemSession::Alive(Scene& scene, Primitive* q) const {
+    if (!q) return false;
+    for (Primitive* p : scene.primitives) if (p == q) return true;
+    return false;
+}
+
+// A non-primitive grouping node (e.g. the offsets group) is not in
+// scene.primitives, so locate it by walking the scene tree from the root.
+bool SemSession::Alive(Scene& scene, SceneNode* q) const {
+    if (!q) return false;
+    std::function<bool(SceneNode*)> rec = [&](SceneNode* n) -> bool {
+        if (n == q) return true;
+        for (SceneNode* ch : n->children) if (rec(ch)) return true;
+        return false;
+    };
+    return rec(&scene.root);
+}
+
+void SemSession::Report(Scene& scene, bool silent, const std::string& msg) {
+    (void)scene;
+    snprintf(status, sizeof(status), "%s", msg.c_str());
+    if (!silent) ErrorLogger::Log(msg);
+}
+
+bool SemSession::CheckRc(Scene& scene, bool silent, const char* call, int rc,
+                         std::initializer_list<const char*> errs) {
+    if (rc == 0) return true;
+    const char* msg = "";
+    int idx = -rc, i = 0;
+    for (const char* e : errs) { if (i == idx) { msg = e; break; } ++i; }
+    Report(scene, silent, std::string(call) + " failed (" + std::to_string(rc) + "): " + msg + SemDetail());
+    return false;
+}
+
+SceneNode* SemSession::AttachParent() { return m_srcPrim ? static_cast<SceneNode*>(m_srcPrim) : nullptr; }
+
+void SemSession::ConfigureSurface3D(Primitive* p) {
+    if (!p) return;
+    p->SetAlpha(surf3dAlpha);
+}
+
+}

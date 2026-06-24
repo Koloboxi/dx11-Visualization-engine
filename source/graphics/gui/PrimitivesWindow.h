@@ -129,7 +129,11 @@ inline void Draw(Scene& scene, LuaUpdaterEditor& lua,
         s_renameNode = nullptr;
     };
 
-    ImGui::Begin("Primitives");
+    // Scene-management controls (save/clear, demo & saved scene pickers, add/
+    // delete) live in the "Scene" window; the "Primitives" window below begins
+    // straight with the tree. ImGui appends to "Scene" — SceneAreaWindow opens
+    // it again afterwards to draw the controller windows underneath.
+    ImGui::Begin("Scene");
 
     if (ImGui::Button("Save"))
         scene.SaveScene(scene.sceneName.empty() ? "scene.json" : scene.sceneName + ".json");
@@ -240,7 +244,11 @@ inline void Draw(Scene& scene, LuaUpdaterEditor& lua,
         ImGui::EndPopup();
     }
 
-    ImGui::Separator();
+    if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem | ImGuiHoveredFlags_ChildWindows))
+        blockMousePick = true;
+    ImGui::End();
+
+    ImGui::Begin("Primitives");
 
     if (ImGui::BeginChild("##primlist", {0,0}, false)) {
         if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem))

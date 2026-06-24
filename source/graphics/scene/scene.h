@@ -22,6 +22,8 @@
 
 class Scene;
 
+namespace CSV3DLoader { struct CSV3DData; }
+
 struct GlobalSlider {
     std::string label;
     std::string luaGlobalName;
@@ -126,6 +128,13 @@ public:
 	// switch between them via Primitive::ActivateColorSet without rebuilding the
 	// geometry. bcView only selects which of the two is active on creation.
 	Primitive* AddFromCSV3D(const std::string& path, const std::string& name = "", SceneNode* parent = nullptr, const XMFLOAT4* overrideColor = nullptr,
+		const XMFLOAT4& gradLow = Colors::BLUE, const XMFLOAT4& gradHigh = Colors::RED, bool ensureCCW = true, bool bcView = false, bool registerColorSets = false);
+
+	// Build a primitive from already-loaded CSV3D mesh data (the SEM_MeshView the
+	// SEM core exposes in-memory after a compute, marshalled into a CSV3DData),
+	// bypassing the disk round-trip. Same colour/edge/colour-set semantics as
+	// AddFromCSV3D; AddFromCSV3D itself loads the file and delegates here.
+	Primitive* AddFromCSV3DData(const CSV3DLoader::CSV3DData& data, const std::string& name = "", SceneNode* parent = nullptr, const XMFLOAT4* overrideColor = nullptr,
 		const XMFLOAT4& gradLow = Colors::BLUE, const XMFLOAT4& gradHigh = Colors::RED, bool ensureCCW = true, bool bcView = false, bool registerColorSets = false);
 	void AddCubeWireframe(float halfSize, const XMFLOAT3& center, const XMFLOAT4& col);
 	void AddCubeSolid(float halfSize, const XMFLOAT3& center, const XMFLOAT4& col);
