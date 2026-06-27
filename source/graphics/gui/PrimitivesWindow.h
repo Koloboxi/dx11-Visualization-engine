@@ -265,12 +265,17 @@ inline void Draw(Scene& scene, LuaUpdaterEditor& lua,
 
         // Auto-expand any node the first time it is seen with children, so a
         // freshly created primitive shows its children expanded by default.
-        // Once a node is known, the user's manual collapse/expand sticks.
+        // Pure grouping nodes (the SEM "offsets" group) are left collapsed so a
+        // freshly created offsets shell set does not flood the tree with rows —
+        // the user can expand it manually. Once a node is known, the user's
+        // manual collapse/expand sticks.
         static std::unordered_set<const SceneNode*> s_known;
         std::function<void(SceneNode*)> seedExpand = [&](SceneNode* n) {
             if (!s_known.count(n)) {
                 s_known.insert(n);
-                if (!n->children.empty())
+                bool isGroup = n != &scene.root && !n->IsPrimitive() &&
+                               !n->IsController() && !n->IsService();
+                if (!n->children.empty() && !isGroup)
                     s_expanded.insert(n);
             }
             for (SceneNode* ch : n->children) seedExpand(ch);

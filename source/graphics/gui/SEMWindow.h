@@ -547,6 +547,7 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         // bottom.
         if (is3D) {
             ImGui::DragFloat("Max inward (0..1)", &S.maxInward, 0.005f, 0.0f, 1.0f, "%.3f");
+            if (ImGui::IsItemDeactivatedAfterEdit()) S.MarkStageDirty(STAGE_THERMAL);
             ImGui::SetItemTooltip("Maximum relative depth (fraction of the outer extent) an\n"
                                   "outermost node may sit inward of the true outer extent and\n"
                                   "still be kept as a T=0 node. Deeper nodes are dropped.");
@@ -554,20 +555,47 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
             if (S.maxInward > 1.0f) S.maxInward = 1.0f;
         }
 
-        // Apply solves the steady-state field; it sits ABOVE the iso value so the
-        // (expensive) solve and the (cheap) iso extraction read top to bottom.
+        // Apply solves the steady-state field only; the isosurface is extracted by
+        // the separate stage below.
         if (ImGui::Button("Apply", {160, 0})) S.RecomputeUpToAsync(scene, STAGE_THERMAL, false);
         ImGui::SetItemTooltip(is3D
             ? "Solve steady-state heat conduction on the tetrahedral band mesh\n"
-              "(source surface T=1, farthest shell T=0), then extract the isosurface."
+              "(source surface T=1, farthest shell T=0) and recolour the mesh by the\n"
+              "solved field. Does not extract the isosurface."
             : "Solve steady-state heat conduction on the band mesh (source T=1,\n"
-              "farthest offset T=0), then extract the isotherm.");
+              "farthest offset T=0) and recolour the mesh by the solved field.");
 
+        // Mesh colouring toggle (only meaningful once the field is solved):
+        // unchecked = T-field gradient (blue..red), checked = BC view (blue T=0,
+        // red T=1, light grey everywhere else).
+        ImGui::BeginDisabled(!S.ThermalSolved());
+        bool bc = S.bcView;
+        if (ImGui::Checkbox("BC / T field", &bc)) S.SetBCView(scene, bc);
+        ImGui::SetItemTooltip("Mesh colouring after the solve.\n"
+                              "Off: temperature field as a blue (T=0) to red (T=1) gradient.\n"
+                              "On: only the boundary-condition nodes are tinted — blue for\n"
+                              "T=0, red for T=1 — and every interior node is light grey.");
+        ImGui::EndDisabled();
+        ImGui::Unindent();
+        ImGui::PopID();
+    }
+
+    ImGui::Separator();
+
+    {
+        ImGui::PushID("iso");
+        ImGui::Text(is3D ? "Isosurface" : "Isoline");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##iso")) S.ResetStage(scene, STAGE_ISOSURFACE);
+        stageTime(S.IsoTimeMs());
+
+        ImGui::Indent();
         ImGui::DragFloat(is3D ? "Isosurface value (0..1)" : "Isoline value (0..1)",
                          &S.isoValue, 0.005f, 0.0f, 1.0f, "%.3f");
+        if (ImGui::IsItemDeactivatedAfterEdit()) S.MarkStageDirty(STAGE_ISOSURFACE);
         ImGui::SetItemTooltip("Normalized temperature of the extracted %s. Changing it does NOT\n"
-                              "re-solve the thermal field — press the button below to re-extract\n"
-                              "the %s at the new temperature.",
+                              "re-solve the thermal field — press Apply to re-extract the %s at\n"
+                              "the new temperature.",
                               is3D ? "isosurface" : "isotherm",
                               is3D ? "isosurface" : "isotherm");
         if (S.isoValue < 0.0f) S.isoValue = 0.0f;
@@ -578,7 +606,8 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         // and re-triangulates it in the plane perpendicular to that axis.
         if (is3D) {
             const char* axisItems[] = { "None (plain)", "X", "Y", "Z" };
-            ImGui::Combo("Iso offset axis", &S.isoAxis, axisItems, IM_ARRAYSIZE(axisItems));
+            if (ImGui::Combo("Iso offset axis", &S.isoAxis, axisItems, IM_ARRAYSIZE(axisItems)))
+                S.MarkStageDirty(STAGE_ISOSURFACE);
             ImGui::SetItemTooltip("None: extract the isosurface as-is (clip planes only).\n"
                                   "X/Y/Z: shift an OPEN iso sheet back toward the source and\n"
                                   "re-triangulate it in the plane perpendicular to the chosen axis.\n"
@@ -590,6 +619,7 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
             // v_min == v_max => ImGui applies no clamp: the shift is a signed
             // multiple of the source's mean edge length, with no range limit.
             ImGui::DragFloat("Iso offset (x edge)", &S.isoOffsetValue, 0.05f, 0.0f, 0.0f, "%.3f");
+            if (ImGui::IsItemDeactivatedAfterEdit()) S.MarkStageDirty(STAGE_ISOSURFACE);
             ImGui::SetItemTooltip("Shift of the iso sheet along its pseudonormals before\n"
                                   "re-triangulation, in multiples of the source surface's mean\n"
                                   "edge length. Positive shifts inward (toward the source),\n"
@@ -597,12 +627,17 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
             ImGui::EndDisabled();
         }
 
-        // The iso value only selects a level set of the already-solved field, so
-        // applying it re-extracts the isotherm/isosurface in place without
-        // touching the thermal solve.
-        ImGui::BeginDisabled(!S.ThermalSolved());
+        // Apply extracts the iso sheet from the solved field. It runs on the worker
+        // (it is now a long-running, progress-reporting SEM call) and solves the
+        // thermal field first if it is still stale.
         if (ImGui::Button(is3D ? "Apply isosurface" : "Apply isoline", {160, 0}))
-            S.ApplyIsoline(scene, true);
+            S.RecomputeUpToAsync(scene, STAGE_ISOSURFACE, false);
+        ImGui::SetItemTooltip(is3D
+            ? "Extract the isosurface at the chosen value from the solved field\n"
+              "(applying the offset/remesh axis and shift). Solves the thermal\n"
+              "field first if it is not yet solved."
+            : "Extract the isotherm at the chosen value from the solved field.\n"
+              "Solves the thermal field first if it is not yet solved.");
 
         // Flip the isosurface inside-out (reverse triangle winding). The extraction
         // orients the surface consistently but its global outward side is arbitrary;
@@ -616,18 +651,23 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
                                   "isosurface, turning it inside-out. Use it when the surface's\n"
                                   "outward side faces the wrong way.");
             ImGui::EndDisabled();
-        }
 
-        // Mesh colouring toggle (only meaningful once the field is solved):
-        // unchecked = T-field gradient (blue..red), checked = BC view (blue T=0,
-        // red T=1, light grey everywhere else).
-        bool bc = S.bcView;
-        if (ImGui::Checkbox("BC / T field", &bc)) S.SetBCView(scene, bc);
-        ImGui::SetItemTooltip("Mesh colouring after the solve.\n"
-                              "Off: temperature field as a blue (T=0) to red (T=1) gradient.\n"
-                              "On: only the boundary-condition nodes are tinted — blue for\n"
-                              "T=0, red for T=1 — and every interior node is light grey.");
-        ImGui::EndDisabled();
+            // Intermediate stages of an offset-and-remesh extraction. Available
+            // only after extracting with an offset axis; fetched from the cache
+            // on demand (not serialized), so they go stale on the next extraction.
+            ImGui::BeginDisabled(!S.HasIsoProjection());
+            bool srcShown = S.IsoSourcePrim() != nullptr;
+            if (ImGui::Checkbox("Show source isosurface", &srcShown))
+                S.ShowSourceIsosurface3D(scene, srcShown, false);
+            ImGui::SetItemTooltip("Show the original extracted iso sheet, before the offset/remesh\n"
+                                  "stage (oriented outward). Requires an offset-axis extraction.");
+            bool projShown = S.IsoProjectionPrim() != nullptr;
+            if (ImGui::Checkbox("Show iso projection", &projShown))
+                S.ShowIsosurfaceProjection3D(scene, projShown, false);
+            ImGui::SetItemTooltip("Show the flat base-plane re-meshed projection (with its\n"
+                                  "wireframe edges) built when extracting with an offset axis.");
+            ImGui::EndDisabled();
+        }
         ImGui::Unindent();
         ImGui::PopID();
     }

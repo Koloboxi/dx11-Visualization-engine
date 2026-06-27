@@ -119,10 +119,11 @@ bool SemSession::ImportOffsets(Scene& scene, const std::string& dir) {
     // cache; recomputing either would clobber it, so mark both clean. The mesh
     // and everything downstream is stale relative to the imported offsets.
     DropMesh(scene);
-    m_dirty[STAGE_SUBDIVIDE] = false;
-    m_dirty[STAGE_OFFSETS]   = false;
-    m_dirty[STAGE_MESH]      = true;
-    m_dirty[STAGE_THERMAL]   = true;
+    m_dirty[STAGE_SUBDIVIDE]  = false;
+    m_dirty[STAGE_OFFSETS]    = false;
+    m_dirty[STAGE_MESH]       = true;
+    m_dirty[STAGE_THERMAL]    = true;
+    m_dirty[STAGE_ISOSURFACE] = true;
     scene.UpdateLight();
     snprintf(status, sizeof(status), "Imported offsets.");
     return true;
@@ -149,7 +150,7 @@ bool SemSession::ImportMesh(Scene& scene, const std::string& path) {
     // based, so the offsets are not needed to re-solve). Require an explicit
     // thermal solve before an isotherm can be extracted.
     m_dirty[STAGE_SUBDIVIDE] = m_dirty[STAGE_OFFSETS] = m_dirty[STAGE_MESH] = false;
-    m_dirty[STAGE_THERMAL]   = true;
+    m_dirty[STAGE_THERMAL]   = m_dirty[STAGE_ISOSURFACE] = true;
     m_thermalSolved = false;
     scene.UpdateLight();
     snprintf(status, sizeof(status), "Imported mesh: %s", BaseName(path).c_str());
@@ -209,6 +210,9 @@ void SemSession::LoadSessionStages(Scene& scene) {
                                        AttachParent(), &green, Colors::BLUE, Colors::RED);
         if (dim == 3 && m_isoline) ConfigureSurface3D(m_isoline);
         m_isolinePath = isoPath;
+        // Both the solved field and its isosurface were reloaded from disk, so
+        // neither stage needs recomputing (ImportMesh had marked thermal stale).
+        m_dirty[STAGE_THERMAL] = m_dirty[STAGE_ISOSURFACE] = false;
     }
 
     snprintf(status, sizeof(status), "Loaded session: %s",

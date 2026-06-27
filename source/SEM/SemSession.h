@@ -10,7 +10,8 @@
 
 namespace SemSessionNS {
 
-enum Stage { STAGE_SUBDIVIDE = 0, STAGE_OFFSETS = 1, STAGE_MESH = 2, STAGE_THERMAL = 3 };
+enum Stage { STAGE_SUBDIVIDE = 0, STAGE_OFFSETS = 1, STAGE_MESH = 2, STAGE_THERMAL = 3,
+             STAGE_ISOSURFACE = 4 };
 enum OffsetMode { OFFSET_EVEN = 0, OFFSET_GAPS = 1 };
 
 struct Stats {
@@ -57,6 +58,7 @@ public:
     float tetMaxEdgeLen = 10.0f;
 
     bool  thermalEnabled = true;
+    bool  isoEnabled     = true;
     float isoValue   = 0.8f;
     // isoAxis = 0: plain extraction (clip planes only). 1/2/3 (X/Y/Z): offset-and-
     // remesh an open iso sheet, shifted along its pseudonormals by isoOffsetValue
@@ -97,12 +99,20 @@ public:
     SceneNode*  OffsetsNode() const;
     Primitive*  MeshPrim()    const;
     Primitive*  IsolinePrim() const;
+    // Intermediate iso-extraction stages, available only after an offset-and-remesh
+    // (projection) extraction; null otherwise. See ShowSourceIsosurface3D below.
+    Primitive*  IsoSourcePrim()     const;
+    Primitive*  IsoProjectionPrim() const;
     Primitive*  SrcRevSurf()  const;
     Primitive*  IsoRevSurf()  const;
     bool        HasSource()   const;
     int         Dim()         const;
     bool        ThermalSolved() const;
     bool        HasIsolinePath() const;
+    // True once an isosurface has been extracted with an offset axis (offset-and-
+    // remesh / CDT proj-unproj). Only then do the SEM_Get{Source,Projection}
+    // isosurface caches hold a result, so this gates the two Show* toggles below.
+    bool        HasIsoProjection() const;
 
     const std::string& WorkDir() const { return m_workDir; }
 
@@ -166,18 +176,28 @@ public:
     double OffsetsTimeMs() const { return m_offsetsMs; }
     double MeshTimeMs()    const { return m_meshMs; }
     double ThermalTimeMs() const { return m_thermalMs; }
+    double IsoTimeMs()     const { return m_isoMs; }
     double TotalTimeMs()   const;
 
     void DropSrcRev(Scene& scene);
     void DropIsoRev(Scene& scene);
 
-    bool ApplyThermalStage(Scene& scene, bool silent);
     bool ApplyThermal(Scene& scene, bool silent);
     bool ApplyIsoline(Scene& scene, bool silent);
 
     // Reverse the winding of the extracted 3D isosurface (turn it inside-out) and
     // reload the displayed primitive. 3D only; requires an extracted isosurface.
     bool FlipIsosurface3D(Scene& scene, bool silent);
+
+    // Show/hide the two intermediate stages of an offset-and-remesh extraction,
+    // fetched on demand from the SEM cache (they are not serialized to disk):
+    //   ShowSourceIsosurface3D     - the original extracted iso sheet, before the
+    //                                offset/remesh stage (SEM_GetSourceIsosurface3D).
+    //   ShowIsosurfaceProjection3D - the flat base-plane re-meshed projection with
+    //                                its wireframe edges (SEM_GetIsosurfaceProjection3D).
+    // Both require HasIsoProjection(); show=false drops the primitive. 3D only.
+    bool ShowSourceIsosurface3D(Scene& scene, bool show, bool silent);
+    bool ShowIsosurfaceProjection3D(Scene& scene, bool show, bool silent);
 
     void SetBCView(Scene& scene, bool on);
 
@@ -212,6 +232,12 @@ private:
     SceneNode*  m_offsets = nullptr;
     Primitive*  m_mesh    = nullptr;
     Primitive*  m_isoline = nullptr;
+    // Intermediate offset-and-remesh iso stages (cache-only, never serialized).
+    Primitive*  m_isoSource = nullptr;   // pre-offset extracted sheet
+    Primitive*  m_isoProj   = nullptr;   // flat re-meshed projection
+    // Set when the last extraction ran with an offset axis (offset-and-remesh /
+    // CDT proj-unproj), so the two intermediate caches are valid to fetch.
+    bool        m_isoProjected = false;
     Primitive*  m_srcRevSurf = nullptr;
     Primitive*  m_isoRevSurf = nullptr;
     bool        m_thermalSolved = false;
@@ -221,9 +247,10 @@ private:
     double m_offsetsMs = -1.0;
     double m_meshMs    = -1.0;
     double m_thermalMs = -1.0;
+    double m_isoMs     = -1.0;
 
     // Per-stage staleness, indexed by Stage. Bind resets all to true.
-    bool        m_dirty[4] = { true, true, true, true };
+    bool        m_dirty[5] = { true, true, true, true, true };
 
     // ---- Asynchronous 3D pipeline state -----------------------------------
     // The atomics are the only members the worker and UI thread touch
@@ -240,8 +267,10 @@ private:
         std::atomic<int>   progressStage{ 0 };     // index of current stage among the planned ones
         std::atomic<int>   totalStages{ 1 };       // number of progress-weighted stages planned
 
-        // Which heavy stages this run executes (planned on the main thread).
-        bool   runOffsets = false, runMesh = false, runThermal = false;
+        // Which heavy stages this run executes (planned on the main thread). The
+        // thermal solve and the isosurface extraction are separate progress-
+        // reporting stages (runThermal solves, runIso extracts).
+        bool   runOffsets = false, runMesh = false, runThermal = false, runIso = false;
         // Visibility to apply to each produced primitive (snapshot of *Enabled).
         bool   offVisible = false, meshVisible = false, isoVisible = false;
 
@@ -259,11 +288,12 @@ private:
         float               maxInward = 1.0f;
 
         // Deterministic output paths the SEM core writes (computed at launch).
-        std::string         expOffsets, expMesh, expIso;
+        // expIsoRemesh is the offset-and-remesh product (offset axis only).
+        std::string         expOffsets, expMesh, expIso, expIsoRemesh;
         // Worker outputs (read by the main thread after join()).
         std::string         offsetsPath, meshPath, isoPath, error;
         // Measured durations (ms) of each heavy stage; < 0 when not part of this run.
-        double              offsetsMs = -1.0, meshMs = -1.0, thermalMs = -1.0;
+        double              offsetsMs = -1.0, meshMs = -1.0, thermalMs = -1.0, isoMs = -1.0;
 
         ~AsyncJob() { if (worker.joinable()) worker.join(); }
     };
@@ -299,10 +329,14 @@ private:
     void DropOffsets(Scene& scene);
     void DropMesh(Scene& scene);
     void DropIsoline(Scene& scene);
+    void DropIsoSource(Scene& scene);
+    void DropIsoProjection(Scene& scene);
     void ReloadMeshColored(Scene& scene);
 
     bool FetchMeshData(Scene& scene, bool silent, CSV3DLoader::CSV3DData& out);
     bool FetchIsoData(Scene& scene, bool silent, CSV3DLoader::CSV3DData& out);
+    bool FetchSourceIsoData(Scene& scene, bool silent, CSV3DLoader::CSV3DData& out);
+    bool FetchIsoProjData(Scene& scene, bool silent, CSV3DLoader::CSV3DData& out);
 
     bool LoadOffsetShells(Scene& scene, bool silent, const std::string& dir = std::string());
     void CleanupOffsetFiles();

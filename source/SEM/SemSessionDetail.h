@@ -33,7 +33,10 @@ int SafeBuildMesh3D(const SEM_MeshParams3D* params);
 int SafeSolveThermal();
 int SafeSolveThermal3D(float max_inward);
 int SafeExtractIsoline(double value);
-int SafeExtractIsosurface3D(double value, int axis, double offset_value);
+int SafeExtractIsosurface3D(double value);
+int SafeOffsetRemeshInPlaneSurface3D(int axis, double offset_value,
+                                     const double* xyz, int num_nodes,
+                                     const int* tris, int num_tris, SEM_MeshView* out);
 int SafeFlipIsosurface3D();
 
 // Verbose detail for the most recent SEM_* failure (SEM_GetLastError), formatted

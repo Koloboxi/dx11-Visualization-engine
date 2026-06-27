@@ -2,6 +2,8 @@
 #include <cmath>
 #include <fstream>
 #include <filesystem>
+#include <sstream>
+#include <algorithm>
 
 namespace fs = std::filesystem;
 
@@ -30,7 +32,7 @@ void SemSession::SetClipPlanes3D(Scene& scene) {
     // Clipping is applied during SEM_BuildMesh3D, so the cached mesh (and the
     // thermal field/isosurface downstream) is now stale.
     DropMesh(scene);
-    m_dirty[STAGE_MESH] = m_dirty[STAGE_THERMAL] = true;
+    m_dirty[STAGE_MESH] = m_dirty[STAGE_THERMAL] = m_dirty[STAGE_ISOSURFACE] = true;
     if (AnyClipMirror()) RebuildClipMirrors(scene);
     scene.UpdateLight();
 
@@ -68,7 +70,7 @@ void SemSession::ClearClipPlanes3D(Scene& scene) {
     DropClipMirrors(scene);
     DropClipPlaneNodes(scene);
     DropMesh(scene);
-    m_dirty[STAGE_MESH] = m_dirty[STAGE_THERMAL] = true;
+    m_dirty[STAGE_MESH] = m_dirty[STAGE_THERMAL] = m_dirty[STAGE_ISOSURFACE] = true;
     scene.UpdateLight();
     m_appliedClipPlanes.clear();
     snprintf(status, sizeof(status), "Clip planes cleared.");
@@ -83,9 +85,10 @@ void SemSession::LoadClipPlanesFromState(Scene& scene) {
     std::ifstream in(statePath);
     if (!in) return;
 
-    // Find the "#clip_planes;<N>" marker, then read 4*N numeric tokens. The DLL
-    // serializes via C++ streams, so read tokens (not lines): this restores the
-    // planes whether the writer packs 4 per line or one value per line.
+    // Find the "#clip_planes;<N>" marker, then read 4*N numeric values. The DLL
+    // writes each plane on its own line with the four components ';'-separated
+    // (e.g. "nx;ny;nz;d"), so split on ';' as well as whitespace: this restores
+    // the planes whether the writer packs 4 per line or one value per line.
     std::vector<XMFLOAT4> planes;
     std::string line;
     const std::string key = "#clip_planes;";
@@ -95,8 +98,14 @@ void SemSession::LoadClipPlanesFromState(Scene& scene) {
         try { n = std::stoi(line.substr(key.size())); } catch (...) { return; }
         std::vector<double> v;
         v.reserve((size_t)n * 4);
-        double x;
-        while ((int)v.size() < n * 4 && (in >> x)) v.push_back(x);
+        std::string vline;
+        while ((int)v.size() < n * 4 && std::getline(in, vline)) {
+            if (!vline.empty() && vline[0] == '#') break;   // next section started
+            std::replace(vline.begin(), vline.end(), ';', ' ');
+            std::istringstream ss(vline);
+            double x;
+            while ((int)v.size() < n * 4 && (ss >> x)) v.push_back(x);
+        }
         if ((int)v.size() < n * 4) return;   // truncated / unexpected layout
         for (int i = 0; i < n; ++i)
             planes.push_back(XMFLOAT4((float)v[i * 4 + 0], (float)v[i * 4 + 1],

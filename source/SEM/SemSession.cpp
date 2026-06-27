@@ -11,18 +11,22 @@ Primitive*  SemSession::SourcePrim()  const { return m_srcPrim; }
 SceneNode*  SemSession::OffsetsNode() const { return m_offsets; }
 Primitive*  SemSession::MeshPrim()    const { return m_mesh; }
 Primitive*  SemSession::IsolinePrim() const { return m_isoline; }
+Primitive*  SemSession::IsoSourcePrim()     const { return m_isoSource; }
+Primitive*  SemSession::IsoProjectionPrim() const { return m_isoProj; }
 Primitive*  SemSession::SrcRevSurf()  const { return m_srcRevSurf; }
 Primitive*  SemSession::IsoRevSurf()  const { return m_isoRevSurf; }
 bool        SemSession::HasSource()   const { return m_srcPrim != nullptr && !m_srcPath.empty(); }
 int         SemSession::Dim()         const { return dim; }
 bool        SemSession::ThermalSolved() const { return m_thermalSolved; }
 bool        SemSession::HasIsolinePath() const { return !m_isolinePath.empty(); }
+bool        SemSession::HasIsoProjection() const { return m_isoProjected; }
 
 double SemSession::TotalTimeMs() const {
     double t = 0.0;
     if (m_offsetsMs >= 0.0) t += m_offsetsMs;
     if (m_meshMs    >= 0.0) t += m_meshMs;
     if (m_thermalMs >= 0.0) t += m_thermalMs;
+    if (m_isoMs     >= 0.0) t += m_isoMs;
     return t;
 }
 
@@ -62,9 +66,9 @@ void SemSession::Bind(Scene& scene, Primitive* prim) {
     DropClipMirrors(scene);
     DropClipPlaneNodes(scene);
     m_appliedClipPlanes.clear();
-    m_offsetsMs = m_meshMs = m_thermalMs = -1.0;
+    m_offsetsMs = m_meshMs = m_thermalMs = m_isoMs = -1.0;
     // A fresh source clears the SEM core cache, so every stage must be recomputed.
-    m_dirty[0] = m_dirty[1] = m_dirty[2] = m_dirty[3] = true;
+    m_dirty[0] = m_dirty[1] = m_dirty[2] = m_dirty[3] = m_dirty[4] = true;
     if (!m_srcPath.empty()) {
         // Point the SEM core at this source's session folder so OutPath can
         // reconstruct the deterministic paths it writes. The folder is chosen at
@@ -93,6 +97,7 @@ void SemSession::Bind(Scene& scene, Primitive* prim) {
 void SemSession::Unbind() {
     m_srcPrim = nullptr; m_srcPath.clear();
     m_offsets = nullptr; m_mesh = nullptr; m_isoline = nullptr;
+    m_isoSource = nullptr; m_isoProj = nullptr; m_isoProjected = false;
     m_srcRevSurf = nullptr; m_isoRevSurf = nullptr;
     m_meshPath.clear(); m_isolinePath.clear();
     m_thermalSolved = false;
@@ -108,6 +113,8 @@ void SemSession::Validate(Scene& scene) {
     if (m_offsets && !Alive(scene, m_offsets)) { m_offsets = nullptr; m_offStats = Stats(); }
     if (m_mesh    && !Alive(scene, m_mesh))    { m_mesh    = nullptr; m_meshStats = Stats(); m_thermalSolved = false; }
     if (m_isoline && !Alive(scene, m_isoline)) { m_isoline = nullptr; }
+    if (m_isoSource && !Alive(scene, m_isoSource)) m_isoSource = nullptr;
+    if (m_isoProj    && !Alive(scene, m_isoProj))    m_isoProj    = nullptr;
     if (m_srcRevSurf && !Alive(scene, m_srcRevSurf)) m_srcRevSurf = nullptr;
     if (m_isoRevSurf && !Alive(scene, m_isoRevSurf)) m_isoRevSurf = nullptr;
     // Drop plane nodes whose subtree was removed externally (e.g. tree delete).
@@ -118,12 +125,12 @@ void SemSession::Validate(Scene& scene) {
 }
 
 void SemSession::MarkStageDirty(Stage st) {
-    if (st >= STAGE_SUBDIVIDE && st <= STAGE_THERMAL) m_dirty[st] = true;
+    if (st >= STAGE_SUBDIVIDE && st <= STAGE_ISOSURFACE) m_dirty[st] = true;
 }
 
 void SemSession::SetSurf3dAlpha(Scene& scene, float a) {
     surf3dAlpha = a;
-    for (Primitive* p : { m_srcPrim, m_mesh, m_isoline })
+    for (Primitive* p : { m_srcPrim, m_mesh, m_isoline, m_isoSource, m_isoProj })
         if (Alive(scene, p)) p->SetAlpha(a);
     // The offsets are a group of shell primitives; apply alpha to each.
     if (Alive(scene, m_offsets)) {

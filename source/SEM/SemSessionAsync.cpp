@@ -20,8 +20,9 @@ float SemSession::AsyncProgress() const {
     int total = m_job.totalStages.load();
     if (total < 1) total = 1;
     // The library exposes a single progress value (0..1) for the call currently
-    // running; it resets to 0 between calls and the quick isosurface step does
-    // not report at all. Fold it into the per-stage band and clamp monotonic.
+    // running (offsets, mesh, thermal solve and isosurface extraction each report
+    // their own); it resets to 0 between calls. Fold it into the per-stage band
+    // and clamp monotonic.
     float p = SEM_GetProgress();
     if (p < 0.0f) p = 0.0f;
     if (p > 1.0f) p = 1.0f;
@@ -48,8 +49,10 @@ void SemSession::RecomputeUpToAsync(Scene& scene, Stage to, bool silent) {
         ran = true;
     }
 
-    // Plan the heavy stages exactly as RecomputeUpTo would execute them.
-    bool runOff = false, runMesh = false, runTherm = false;
+    // Plan the heavy stages exactly as RecomputeUpTo would execute them. The
+    // thermal solve and the isosurface extraction are now distinct stages: each
+    // is a separate progress-reporting SEM call run on the worker.
+    bool runOff = false, runMesh = false, runTherm = false, runIso = false;
     if (to >= STAGE_OFFSETS && (m_dirty[STAGE_OFFSETS] || ran)) {
         if (offEnabled || (m_offsets && Alive(scene, m_offsets))) { runOff = true; ran = true; }
         m_dirty[STAGE_OFFSETS] = false;
@@ -59,22 +62,31 @@ void SemSession::RecomputeUpToAsync(Scene& scene, Stage to, bool silent) {
         m_dirty[STAGE_MESH] = false;
     }
     if (to >= STAGE_THERMAL && (m_dirty[STAGE_THERMAL] || ran)) {
-        if (thermalEnabled || (m_isoline && Alive(scene, m_isoline))) { runTherm = true; ran = true; }
+        if (thermalEnabled || m_thermalSolved) { runTherm = true; ran = true; }
         m_dirty[STAGE_THERMAL] = false;
+    }
+    if (to >= STAGE_ISOSURFACE && (m_dirty[STAGE_ISOSURFACE] || ran)) {
+        if (isoEnabled || (m_isoline && Alive(scene, m_isoline))) { runIso = true; ran = true; }
+        m_dirty[STAGE_ISOSURFACE] = false;
     }
 
     // Rebuilding a stage invalidates everything after 'to' we did not touch.
     if (ran)
-        for (int s = (int)to + 1; s <= STAGE_THERMAL; ++s) m_dirty[s] = true;
+        for (int s = (int)to + 1; s <= STAGE_ISOSURFACE; ++s) m_dirty[s] = true;
 
     // No heavy work (e.g. just a subdivide, or nothing dirty): no worker,
     // no progress bar — just refresh and return.
-    if (!runOff && !runMesh && !runTherm) { scene.UpdateLight(); return; }
+    if (!runOff && !runMesh && !runTherm && !runIso) { scene.UpdateLight(); return; }
 
-    // Precondition the worker cannot check itself (it has no Scene access):
-    // a thermal-only run needs a mesh already built and present.
-    if (runTherm && !runMesh && !(m_mesh && Alive(scene, m_mesh))) {
+    // Preconditions the worker cannot check itself (it has no Scene access):
+    // any solve/extract run needs a mesh already built and present, and an iso
+    // extraction that does not also solve needs the field already solved.
+    if ((runTherm || runIso) && !runMesh && !(m_mesh && Alive(scene, m_mesh))) {
         Report(scene, silent, "Build the mesh first.");
+        return;
+    }
+    if (runIso && !runTherm && !m_thermalSolved) {
+        Report(scene, silent, "Solve thermal first.");
         return;
     }
 
@@ -87,10 +99,11 @@ void SemSession::RecomputeUpToAsync(Scene& scene, Stage to, bool silent) {
     m_job.runOffsets  = runOff;
     m_job.runMesh     = runMesh;
     m_job.runThermal  = runTherm;
+    m_job.runIso      = runIso;
     m_job.offVisible  = offEnabled;
     m_job.meshVisible = meshEnabled;
-    m_job.isoVisible  = thermalEnabled;
-    m_job.totalStages.store((int)runOff + (int)runMesh + (int)runTherm);
+    m_job.isoVisible  = isoEnabled;
+    m_job.totalStages.store((int)runOff + (int)runMesh + (int)runTherm + (int)runIso);
 
     m_job.offsetMode  = offsetMode;
     m_job.firstGap    = firstGap;
@@ -114,13 +127,14 @@ void SemSession::RecomputeUpToAsync(Scene& scene, Stage to, bool silent) {
     m_job.expOffsets = OutPath("_offsets3d.csv3d");
     m_job.expMesh    = OutPath("_mesh3d.csv3d");
     m_job.expIso     = OutPath("_isosurface3d.csv3d");
+    m_job.expIsoRemesh = OutPath("_isosurface3d_remesh3d.csv3d");
 
     m_job.offsetsPath.clear();
     m_job.meshPath.clear();
     m_job.isoPath.clear();
     m_job.error.clear();
-    m_job.offsetsMs = m_job.meshMs = m_job.thermalMs = -1.0;
-    m_job.stageKind.store(runOff ? 0 : runMesh ? 1 : 2);
+    m_job.offsetsMs = m_job.meshMs = m_job.thermalMs = m_job.isoMs = -1.0;
+    m_job.stageKind.store(runOff ? 0 : runMesh ? 1 : runTherm ? 2 : 3);
     m_job.progressStage.store(0);
     m_job.ok.store(false);
     m_job.done.store(false);
@@ -152,6 +166,11 @@ void SemSession::PollAsync(Scene& scene) {
     if (m_job.offsetsMs >= 0.0) m_offsetsMs = m_job.offsetsMs;
     if (m_job.meshMs    >= 0.0) m_meshMs    = m_job.meshMs;
     if (m_job.thermalMs >= 0.0) m_thermalMs = m_job.thermalMs;
+    if (m_job.isoMs     >= 0.0) m_isoMs     = m_job.isoMs;
+
+    // Did the thermal solve actually complete this run? (Planned but skipped by a
+    // cancellation leaves thermalMs < 0, so don't trust runThermal alone.)
+    const bool solvedThisRun = (m_job.thermalMs >= 0.0);
 
     // Offset shells.
     if (!m_job.offsetsPath.empty()) {
@@ -171,7 +190,7 @@ void SemSession::PollAsync(Scene& scene) {
             // When this run also solved the thermal field the cached mesh already
             // holds the solved T, so colour it like the sync solve (blue..red,
             // honouring the BC view). An unsolved mesh keeps cyan..yellow.
-            const bool solved = m_job.runThermal;
+            const bool solved = solvedThisRun;
             m_mesh = scene.AddFromCSV3DData(data, "mesh_" + Stem(m_srcPath),
                                             AttachParent(), nullptr,
                                             solved ? Colors::BLUE : Colors::CYAN,
@@ -180,11 +199,11 @@ void SemSession::PollAsync(Scene& scene) {
             m_meshPath = m_job.meshPath;
             ConfigureSurface3D(m_mesh);
             m_meshStats = ComputeStatsData(data);
-            if (m_job.runThermal) m_thermalSolved = true;
+            if (solvedThisRun) m_thermalSolved = true;
             if (m_mesh && Alive(scene, m_mesh)) scene.SetNodeVisibleCascade(m_mesh, m_job.meshVisible);
         }
     }
-    else if (m_job.runThermal) {
+    else if (solvedThisRun) {
         // Thermal-only run: the mesh was not rebuilt above, but SEM_SolveThermal3D
         // overwrote its file with the solved T. Re-import in place so the existing
         // mesh recolours by the new field.
@@ -192,16 +211,32 @@ void SemSession::PollAsync(Scene& scene) {
         ReloadMeshColored(scene);
     }
 
-    // Isosurface (from the cache-resident result, SEM_GetIsosurface3D).
+    // Isosurface. A plain extraction comes from the cache (SEM_GetIsosurface3D);
+    // an offset-axis run produced a standalone offset-and-remesh file, which the
+    // cache does not hold, so reload that displayed surface from disk.
     if (!m_job.isoPath.empty()) {
-        CSV3DLoader::CSV3DData data;
-        if (FetchIsoData(scene, true, data)) {
+        const XMFLOAT4 green(0.0f, 1.0f, 0.0f, 1.0f);
+        bool built = false;
+        if (m_job.isoAxis != 0) {
             DropIsoline(scene);
-            const XMFLOAT4 green(0.0f, 1.0f, 0.0f, 1.0f);
-            m_isoline = scene.AddFromCSV3DData(data, "isosurface_" + Stem(m_srcPath),
-                                               AttachParent(), &green, Colors::BLUE, Colors::RED);
+            m_isoline = scene.AddFromCSV3D(m_job.isoPath, "isosurface_" + Stem(m_srcPath),
+                                           AttachParent(), &green, Colors::BLUE, Colors::RED);
+            built = (m_isoline != nullptr);
+        } else {
+            CSV3DLoader::CSV3DData data;
+            if (FetchIsoData(scene, true, data)) {
+                DropIsoline(scene);
+                m_isoline = scene.AddFromCSV3DData(data, "isosurface_" + Stem(m_srcPath),
+                                                   AttachParent(), &green, Colors::BLUE, Colors::RED);
+                built = (m_isoline != nullptr);
+            }
+        }
+        if (built) {
             ConfigureSurface3D(m_isoline);
             m_isolinePath = m_job.isoPath;
+            // An offset axis means the standalone offset-and-remesh step ran, so the
+            // intermediate-stage caches (source iso, projection) are valid.
+            m_isoProjected = (m_job.isoAxis != 0);
             if (m_isoline && Alive(scene, m_isoline)) scene.SetNodeVisibleCascade(m_isoline, m_job.isoVisible);
         }
     }
@@ -210,9 +245,10 @@ void SemSession::PollAsync(Scene& scene) {
     // when cancellation skipped it (no output produced) restore that flag so the
     // next Apply recomputes it instead of trusting a stage that never ran.
     if (cancelled) {
-        if (m_job.runOffsets && m_job.offsetsPath.empty()) m_dirty[STAGE_OFFSETS] = true;
-        if (m_job.runMesh    && m_job.meshPath.empty())    m_dirty[STAGE_MESH]    = true;
-        if (m_job.runThermal && m_job.isoPath.empty())     m_dirty[STAGE_THERMAL] = true;
+        if (m_job.runOffsets && m_job.offsetsPath.empty()) m_dirty[STAGE_OFFSETS]    = true;
+        if (m_job.runMesh    && m_job.meshPath.empty())    m_dirty[STAGE_MESH]       = true;
+        if (m_job.runThermal && m_job.thermalMs < 0.0)     m_dirty[STAGE_THERMAL]    = true;
+        if (m_job.runIso     && m_job.isoPath.empty())     m_dirty[STAGE_ISOSURFACE] = true;
     }
 
     if (AnyClipMirror()) RebuildClipMirrors(scene);
@@ -274,7 +310,7 @@ void SemSession::PipelineWorkerBody() {
         ++idx;
     }
 
-    // Steady-state thermal solve + isosurface extraction.
+    // Steady-state thermal solve — SEM_SolveThermal3D (its own progress stage).
     if (m_job.runThermal) {
         if (stopIfCancelled()) return;
         m_job.stageKind.store(2);
@@ -284,17 +320,49 @@ void SemSession::PipelineWorkerBody() {
         m_job.thermalMs = t.GetMillisecondsElapsed();
         if (rc == -100) return Fail("Thermal solver crashed (access violation caught).");
         if (rc != 0) return Fail("SEM_SolveThermal3D failed (" + std::to_string(rc) + ")");
+        ++idx;
+    }
 
-        // Isosurface extraction (quick — no SEM progress; keep progressStage
-        // pinned so the bar holds at the end of the thermal stage).
+    // Isosurface extraction — SEM_ExtractIsosurface3D. Now a long-running call
+    // that reports its own progress, so it is a separate progress-weighted stage.
+    if (m_job.runIso) {
+        if (stopIfCancelled()) return;
         m_job.stageKind.store(3);
+        m_job.progressStage.store(idx);
         double v = m_job.isoValue;
         if (v < 0.0) v = 0.0;
         if (v > 1.0) v = 1.0;
-        rc = SafeExtractIsosurface3D(v, m_job.isoAxis, m_job.isoOffsetValue);
-        if (rc == -100) return Fail("Isosurface extraction crashed (access violation caught).");
-        if (rc != 0) return Fail("SEM_ExtractIsosurface3D failed (" + std::to_string(rc) + ")");
+        Timer t; t.Restart();
+        int rc = SafeExtractIsosurface3D(v);
+        if (rc == -100) { m_job.isoMs = t.GetMillisecondsElapsed();
+                          return Fail("Isosurface extraction crashed (access violation caught)."); }
+        if (rc != 0) { m_job.isoMs = t.GetMillisecondsElapsed();
+                       return Fail("SEM_ExtractIsosurface3D failed (" + std::to_string(rc) + ")"); }
         m_job.isoPath = m_job.expIso;
+        // Offset-and-remesh is now a standalone step that takes the extracted iso
+        // sheet as raw arrays (SEM_OffsetRemeshInPlaneSurface3D), fed straight from
+        // the SEM cache (coords/tris from SEM_GetIsosurface3D). It writes its own
+        // <stem>_isosurface3d_remesh3d.csv3d, which becomes the displayed surface.
+        // The returned view is ignored here; PollAsync reloads from that file on the
+        // main thread.
+        if (m_job.isoAxis != 0) {
+            SEM_MeshView src{};
+            int grc = SEM_GetIsosurface3D(&src);
+            if (grc != 0) {
+                m_job.isoMs = t.GetMillisecondsElapsed();
+                return Fail("SEM_GetIsosurface3D failed (" + std::to_string(grc) + ")");
+            }
+            SEM_MeshView rv{};
+            int rrc = SafeOffsetRemeshInPlaneSurface3D(m_job.isoAxis, m_job.isoOffsetValue,
+                                                       src.coords, src.num_nodes,
+                                                       src.tris, src.num_tris, &rv);
+            m_job.isoMs = t.GetMillisecondsElapsed();
+            if (rrc == -100) return Fail("Isosurface offset/remesh crashed (access violation caught).");
+            if (rrc != 0) return Fail("SEM_OffsetRemeshInPlaneSurface3D failed (" + std::to_string(rrc) + ")");
+            m_job.isoPath = m_job.expIsoRemesh;
+        } else {
+            m_job.isoMs = t.GetMillisecondsElapsed();
+        }
         ++idx;
     }
 

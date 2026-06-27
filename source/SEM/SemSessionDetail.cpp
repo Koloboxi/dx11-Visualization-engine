@@ -244,8 +244,14 @@ int SafeExtractIsoline(double value) {
     __try { return SEM_ExtractIsoline(value); }
     __except (EXCEPTION_EXECUTE_HANDLER) { return -100; }
 }
-int SafeExtractIsosurface3D(double value, int axis, double offset_value) {
-    __try { return SEM_ExtractIsosurface3D(value, axis, offset_value); }
+int SafeExtractIsosurface3D(double value) {
+    __try { return SEM_ExtractIsosurface3D(value); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return -100; }
+}
+int SafeOffsetRemeshInPlaneSurface3D(int axis, double offset_value,
+                                     const double* xyz, int num_nodes,
+                                     const int* tris, int num_tris, SEM_MeshView* out) {
+    __try { return SEM_OffsetRemeshInPlaneSurface3D(axis, offset_value, xyz, num_nodes, tris, num_tris, out); }
     __except (EXCEPTION_EXECUTE_HANDLER) { return -100; }
 }
 int SafeFlipIsosurface3D() {

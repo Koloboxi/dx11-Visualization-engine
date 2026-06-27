@@ -245,6 +245,7 @@
     <ClInclude Include="source\graphics\gui\LuaGlobalsWindow.h" />
     <ClInclude Include="source\graphics\gui\PrimitivesWindow.h" />
     <ClInclude Include="source\graphics\gui\SceneAreaWindow.h" />
+    <ClInclude Include="source\graphics\gui\TransformWindow.h" />
     <ClInclude Include="source\graphics\scene\scene_service.h" />
     <ClInclude Include="source\SEM\SemSession.h" />
     <ClInclude Include="source\SEM\SemSessionDetail.h" />

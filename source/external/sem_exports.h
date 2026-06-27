@@ -215,20 +215,28 @@ SEM_API int SEM_LoadState3D(const char* dir);
 SEM_API int SEM_SolveThermal3D(float max_inward);
 
 // Extract the iso surface at the given level set of the normalized field
-// (value in [0,1]). Writes <stem>_isosurface3d.csv3d.
-//
-// axis = 0: plain extraction (clip planes applied), nothing else.
-// axis = 1/2/3 (X/Y/Z): offset-and-remesh mode for an OPEN iso sheet. The sheet
-//   is shifted along its pseudonormals by offset_value * avg_edge_len, where
-//   avg_edge_len is the source's average edge length and offset_value is a signed
-//   multiple of it (no range limit): positive shifts inward (against the outward
-//   normals, toward the source), negative outward. Vertices that end up closer to
-//   the iso than the shift are dropped (concave folds clean up); the result is
-//   then projected onto the base plane perpendicular to `axis` (that coordinate is
-//   preserved), constrained-CDT re-triangulated with the iso's boundary loops as
-//   constraints, and lifted back. Requires an open isosurface; a closed iso fails.
-//   offset_value is ignored when axis = 0.
-SEM_API int SEM_ExtractIsosurface3D(double value, int axis, double offset_value);
+// (value in [0,1]). Clip planes are applied. Writes <stem>_isosurface3d.csv3d.
+SEM_API int SEM_ExtractIsosurface3D(double value);
+
+// Offset-and-remesh an OPEN surface passed in directly, as a standalone step
+// independent of the loaded pipeline source. The surface is given as raw arrays
+// (same layout as the Mesh fields): `xyz` is 3 * num_nodes doubles (x,y,z
+// interleaved) and `tris` is 3 * num_tris ints (zero-based vertex indices). The
+// sheet is shifted along its angle-weighted pseudonormals by
+// offset_value * avg_edge_len, where avg_edge_len is the surface's own average edge
+// length and offset_value is a signed multiple of it (no range limit): positive
+// shifts inward (against the outward normals), negative outward. Vertices that end
+// up closer to the surface than the shift are dropped (concave folds clean up); the
+// survivors are projected onto the base plane perpendicular to `axis` (1/2/3 =
+// X/Y/Z; that coordinate is preserved), constrained-CDT re-triangulated with the
+// boundary loops as constraints, and lifted back. Requires an open sheet; a closed
+// surface fails. The current clip planes (SEM_SetClipPlanes3D) are applied to the
+// result. Writes surface_remesh3d.csv3d to the working dir and fills `out` (see
+// SEM_MeshView for the lifetime/layout contract).
+SEM_API int SEM_OffsetRemeshInPlaneSurface3D(int axis, double offset_value,
+    const double* xyz, int num_nodes,
+    const int* tris, int num_tris,
+    SEM_MeshView* out);
 
 // Reverse the winding of every triangle of the extracted iso surface (turn it
 // inside-out) and rewrite <stem>_isosurface3d.csv3d. The extraction already makes
@@ -243,3 +251,11 @@ SEM_API int SEM_FlipIsosurface3D(void);
 // (coords/tris). Negative if the result has not been computed/loaded yet.
 SEM_API int SEM_GetMesh3D(SEM_MeshView* out);
 SEM_API int SEM_GetIsosurface3D(SEM_MeshView* out);
+
+// Intermediate stages of SEM_OffsetRemeshInPlaneSurface3D. SEM_GetSourceIsosurface3D
+// fills the input surface it loaded (before the offset-and-remesh, oriented
+// outward). SEM_GetIsosurfaceProjection3D fills the flat base-plane re-meshed
+// projection (coords/tris plus wireframe edges). Both are empty until
+// SEM_OffsetRemeshInPlaneSurface3D has run; negative if not yet computed.
+SEM_API int SEM_GetSourceIsosurface3D(SEM_MeshView* out);
+SEM_API int SEM_GetIsosurfaceProjection3D(SEM_MeshView* out);
