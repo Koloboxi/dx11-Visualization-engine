@@ -172,7 +172,7 @@ private:
         XMFLOAT3 v0 = P(c-h, c-h), v1 = P(c+h, c-h), v2 = P(c+h, c+h), v3 = P(c-h, c+h);
         std::vector<XMFLOAT3> poses = { v0, v1, v2, v0, v2, v3 };
         std::vector<XMFLOAT4> cols(6, col);
-        Primitive* p = PrimitiveConstructor::ColoredTriangles(poses, cols, id, false);
+        Primitive* p = PrimitiveConstructor::ColoredTriangles(poses, cols, id);
         p->SetUseVertexColor(false);
         p->SetColor(col);
         p->SetIlluminationCapability(false);   // flat, uniformly visible from both sides

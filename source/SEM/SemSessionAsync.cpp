@@ -100,9 +100,13 @@ void SemSession::RecomputeUpToAsync(Scene& scene, Stage to, bool silent) {
     m_job.runMesh     = runMesh;
     m_job.runThermal  = runTherm;
     m_job.runIso      = runIso;
-    m_job.offVisible  = offEnabled;
-    m_job.meshVisible = meshEnabled;
-    m_job.isoVisible  = isoEnabled;
+    // Only the stage whose Apply was pressed (== `to`) is shown; the prerequisite
+    // stages this run had to compute to reach it are produced hidden (the user
+    // reveals them with the tree eye). The thermal solve's product is the mesh,
+    // so the mesh is visible when either Mesh or Thermal is the pressed stage.
+    m_job.offVisible  = (to == STAGE_OFFSETS);
+    m_job.meshVisible = (to == STAGE_MESH || to == STAGE_THERMAL);
+    m_job.isoVisible  = (to == STAGE_ISOSURFACE);
     m_job.totalStages.store((int)runOff + (int)runMesh + (int)runTherm + (int)runIso);
 
     m_job.offsetMode  = offsetMode;
@@ -121,6 +125,7 @@ void SemSession::RecomputeUpToAsync(Scene& scene, Stage to, bool silent) {
     m_job.isoValue = isoValue;
     m_job.isoAxis = isoAxis;
     m_job.isoOffsetValue = (double)isoOffsetValue;
+    m_job.isoCullByFold = isoCullByFold;
     m_job.maxInward = maxInward;
 
     // Deterministic output paths the SEM core writes during each compute call.
@@ -195,7 +200,7 @@ void SemSession::PollAsync(Scene& scene) {
                                             AttachParent(), nullptr,
                                             solved ? Colors::BLUE : Colors::CYAN,
                                             solved ? Colors::RED  : Colors::YELLOW,
-                                            true, solved && bcView, /*registerColorSets*/ solved);
+                                            solved && bcView, /*registerColorSets*/ solved);
             m_meshPath = m_job.meshPath;
             ConfigureSurface3D(m_mesh);
             m_meshStats = ComputeStatsData(data);
@@ -206,38 +211,32 @@ void SemSession::PollAsync(Scene& scene) {
     else if (solvedThisRun) {
         // Thermal-only run: the mesh was not rebuilt above, but SEM_SolveThermal3D
         // overwrote its file with the solved T. Re-import in place so the existing
-        // mesh recolours by the new field.
+        // mesh recolours by the new field, then apply this run's visibility intent
+        // (shown when Thermal was the pressed stage, hidden as a prerequisite).
         m_thermalSolved = true;
         ReloadMeshColored(scene);
+        if (m_mesh && Alive(scene, m_mesh)) scene.SetNodeVisibleCascade(m_mesh, m_job.meshVisible);
     }
 
     // Isosurface. A plain extraction comes from the cache (SEM_GetIsosurface3D);
     // an offset-axis run produced a standalone offset-and-remesh file, which the
     // cache does not hold, so reload that displayed surface from disk.
     if (!m_job.isoPath.empty()) {
-        const XMFLOAT4 green(0.0f, 1.0f, 0.0f, 1.0f);
-        bool built = false;
-        if (m_job.isoAxis != 0) {
-            DropIsoline(scene);
-            m_isoline = scene.AddFromCSV3D(m_job.isoPath, "isosurface_" + Stem(m_srcPath),
-                                           AttachParent(), &green, Colors::BLUE, Colors::RED);
-            built = (m_isoline != nullptr);
-        } else {
-            CSV3DLoader::CSV3DData data;
-            if (FetchIsoData(scene, true, data)) {
-                DropIsoline(scene);
-                m_isoline = scene.AddFromCSV3DData(data, "isosurface_" + Stem(m_srcPath),
-                                                   AttachParent(), &green, Colors::BLUE, Colors::RED);
-                built = (m_isoline != nullptr);
-            }
-        }
-        if (built) {
-            ConfigureSurface3D(m_isoline);
+        // The worker already marshalled the displayed isosurface off the cache
+        // (m_job.isoDisplayData) — covering both a plain extraction and the offset-
+        // and-remesh product — so there is no file to re-read here. Route it through
+        // BuildIsoDisplay so the uneven-winding highlight applies.
+        DropIsoline(scene);
+        m_isoData = m_job.isoDisplayData;
+        m_isoline = BuildIsoDisplay(scene, m_isoData);
+        if (m_isoline) {
             m_isolinePath = m_job.isoPath;
             // An offset axis means the standalone offset-and-remesh step ran, so the
-            // intermediate-stage caches (source iso, projection) are valid.
-            m_isoProjected = (m_job.isoAxis != 0);
-            if (m_isoline && Alive(scene, m_isoline)) scene.SetNodeVisibleCascade(m_isoline, m_job.isoVisible);
+            // intermediate-stage caches (source iso, projection) and the offset
+            // points are valid.
+            m_isoProjected   = (m_job.isoAxis != 0);
+            m_isoOffsetPoints = m_job.isoOffsetPoints;
+            if (Alive(scene, m_isoline)) scene.SetNodeVisibleCascade(m_isoline, m_job.isoVisible);
         }
     }
 
@@ -339,13 +338,18 @@ void SemSession::PipelineWorkerBody() {
         if (rc != 0) { m_job.isoMs = t.GetMillisecondsElapsed();
                        return Fail("SEM_ExtractIsosurface3D failed (" + std::to_string(rc) + ")"); }
         m_job.isoPath = m_job.expIso;
-        // Offset-and-remesh is now a standalone step that takes the extracted iso
-        // sheet as raw arrays (SEM_OffsetRemeshInPlaneSurface3D), fed straight from
-        // the SEM cache (coords/tris from SEM_GetIsosurface3D). It writes its own
-        // <stem>_isosurface3d_remesh3d.csv3d, which becomes the displayed surface.
-        // The returned view is ignored here; PollAsync reloads from that file on the
-        // main thread.
+
+        // Copy the result straight off the SEM cache here on the worker thread.
+        // SEM_MeshView pointers live in the process-global cache and stay valid only
+        // until the next mutating SEM call, so we marshal them out now (ViewToData)
+        // instead of having the main thread re-read a serialized file later — that
+        // disk round-trip was redundant and, for the offset-and-remesh product, also
+        // broken: the host looked for a <stem>_isosurface3d_remesh3d.csv3d the core
+        // never writes under that name (it writes surface_remesh3d.csv3d).
         if (m_job.isoAxis != 0) {
+            // Offset-and-remesh: feed the extracted sheet's coords/tris into the
+            // standalone remesh entry point; its result (returned by pointer) is the
+            // displayed surface.
             SEM_MeshView src{};
             int grc = SEM_GetIsosurface3D(&src);
             if (grc != 0) {
@@ -355,13 +359,32 @@ void SemSession::PipelineWorkerBody() {
             SEM_MeshView rv{};
             int rrc = SafeOffsetRemeshInPlaneSurface3D(m_job.isoAxis, m_job.isoOffsetValue,
                                                        src.coords, src.num_nodes,
-                                                       src.tris, src.num_tris, &rv);
+                                                       src.tris, src.num_tris,
+                                                       m_job.isoCullByFold ? 1 : 0, &rv);
             m_job.isoMs = t.GetMillisecondsElapsed();
             if (rrc == -100) return Fail("Isosurface offset/remesh crashed (access violation caught).");
             if (rrc != 0) return Fail("SEM_OffsetRemeshInPlaneSurface3D failed (" + std::to_string(rrc) + ")");
+            m_job.isoDisplayData = ViewToData(rv);            // copy before any further SEM call
             m_job.isoPath = m_job.expIsoRemesh;
+            // Offset, distance-cleaned iso points produced inside the remesh step
+            // (read-only accessor, so it does not disturb the view copied above).
+            int pc = 0;
+            const double* pts = SEM_GetIsosurfaceOffsetPoints3D(&pc);
+            m_job.isoOffsetPoints.clear();
+            if (pts && pc > 0) {
+                m_job.isoOffsetPoints.reserve(pc);
+                for (int i = 0; i < pc; ++i)
+                    m_job.isoOffsetPoints.push_back(XMFLOAT3((float)pts[3 * i + 0],
+                                                             (float)pts[3 * i + 1],
+                                                             (float)pts[3 * i + 2]));
+            }
         } else {
             m_job.isoMs = t.GetMillisecondsElapsed();
+            SEM_MeshView iv{};
+            int grc = SEM_GetIsosurface3D(&iv);
+            if (grc != 0) return Fail("SEM_GetIsosurface3D failed (" + std::to_string(grc) + ")");
+            m_job.isoDisplayData = ViewToData(iv);
+            m_job.isoOffsetPoints.clear();
         }
         ++idx;
     }

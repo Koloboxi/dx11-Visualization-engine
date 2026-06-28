@@ -158,13 +158,18 @@ namespace PrimitiveConstructor {
 	extern ID3D11DeviceContext* deviceContext;
 
 	Primitive* Point(const XMFLOAT3& pos, const XMFLOAT4& col, UINT id);
+	// A cloud of independent points (one draw, POINTLIST, dim 0). Positions are
+	// baked into the vertex buffer; a single flat colour is applied.
+	Primitive* PointCloud(const std::vector<XMFLOAT3>& poses, const XMFLOAT4& col, UINT id);
 	Primitive* Line(const std::vector<XMFLOAT3>& poses, const XMFLOAT4& col, UINT id);
 	// srcIndexOut (optional): receives, for each emitted GPU vertex, the index of
-	// the source poses/cols entry it came from. ColoredTriangles can reorder a
-	// triangle's corners (winding flip), so this mapping is the only reliable way
-	// to build an alternative per-vertex colour set in GPU order afterwards.
+	// the source poses/cols entry it came from (an identity mapping for triangles —
+	// kept for parity with ColoredLine and for building per-vertex colour sets in
+	// GPU order afterwards).
 	Primitive* ColoredLine(const std::vector<XMFLOAT3>& poses, const std::vector<XMFLOAT4>& cols, bool asLineList, UINT id, std::vector<UINT>* srcIndexOut = nullptr);
-	Primitive* ColoredTriangles(const std::vector<XMFLOAT3>& poses, const std::vector<XMFLOAT4>& cols, UINT id, bool ensureCCW = true, std::vector<UINT>* srcIndexOut = nullptr);
+	// Emits each triangle flat-shaded with the supplied winding (no orientation
+	// fix-up); callers must supply a consistently wound surface.
+	Primitive* ColoredTriangles(const std::vector<XMFLOAT3>& poses, const std::vector<XMFLOAT4>& cols, UINT id, std::vector<UINT>* srcIndexOut = nullptr);
 	Primitive* Polygon(const std::vector<XMFLOAT3>& poses, const XMFLOAT4& col, UINT id);
 
 	Primitive* Sphere(float radius, const XMFLOAT3& pos, const UINT numSubdivides, const XMFLOAT4& col, UINT id);

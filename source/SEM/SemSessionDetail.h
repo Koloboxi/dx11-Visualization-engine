@@ -19,6 +19,24 @@ Stats ComputeStats(const std::string& path);
 // valid only until the next SEM_* call, so everything is copied out.
 CSV3DLoader::CSV3DData ViewToData(const SEM_MeshView& v);
 
+// Angle-weighted ("pseudo") vertex normals of a triangle surface, one unit
+// vector per node (Thürmer-Wüthrich: each incident face contributes its unit
+// normal weighted by the interior angle at the vertex). Nodes with no incident
+// triangle (or a degenerate fan) get a zero vector.
+std::vector<XMFLOAT3> VertexPseudonormals(const CSV3DLoader::CSV3DData& d);
+
+// Mean length of the triangle edges of a surface; 1.0 when it has no triangles.
+// Used to size the drawn pseudonormal segments to the model.
+float MeanTriEdgeLen(const CSV3DLoader::CSV3DData& d);
+
+// Per-triangle "minority winding" flags. A consistent orientation is propagated
+// across the triangle adjacency graph (two triangles sharing an edge agree when
+// that edge runs opposite ways in them); within each connected component the
+// smaller orientation class is the minority. Returns true for every triangle
+// that disagrees with its component's majority — i.e. all false when the surface
+// is uniformly wound. data.nodes is unused (topology only).
+std::vector<char> WindingMinorityTris(const CSV3DLoader::CSV3DData& d);
+
 bool SourceBBox(const std::string& path, XMFLOAT3& lo, XMFLOAT3& hi);
 bool OrderedContourFromCSV3D(const std::string& path, std::vector<XMFLOAT3>& out);
 bool IsOpenContourOnYAxis(const std::string& path);
@@ -36,7 +54,8 @@ int SafeExtractIsoline(double value);
 int SafeExtractIsosurface3D(double value);
 int SafeOffsetRemeshInPlaneSurface3D(int axis, double offset_value,
                                      const double* xyz, int num_nodes,
-                                     const int* tris, int num_tris, SEM_MeshView* out);
+                                     const int* tris, int num_tris,
+                                     int cull_by_fold, SEM_MeshView* out);
 int SafeFlipIsosurface3D();
 
 // Verbose detail for the most recent SEM_* failure (SEM_GetLastError), formatted

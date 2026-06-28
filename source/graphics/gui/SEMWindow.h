@@ -322,6 +322,19 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
     else      ImGui::TextDisabled("Mode: 2D contour");
 
     DrawReadout(S);
+
+    // Show/hide the source surface on its own, without touching the pipeline
+    // products parented under it (offsets, mesh, isosurface). Independent of the
+    // tree eye, whose toggle cascades to the whole subtree.
+    {
+        Primitive* sp = S.SourcePrim();
+        bool srcVisible = sp && sp->visible;
+        if (ImGui::Checkbox("Show source surface", &srcVisible))
+            S.ShowSource(scene, srcVisible);
+        ImGui::SetItemTooltip("Show or hide the staged source surface only. The pipeline\n"
+                              "products parented under it (offsets, mesh, isosurface) keep\n"
+                              "their own visibility.");
+    }
     ImGui::Separator();
 
     if (!is3D) {
@@ -335,6 +348,17 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         ImGui::SetItemTooltip("Opacity of the 3D pipeline surfaces (source, offsets, mesh,\n"
                               "isosurface). Back-face culling is set globally via the\n"
                               "NavCube no-cull toggle.");
+
+        // Angle-weighted vertex pseudonormals of the source surface, drawn as
+        // short yellow segments. Belongs in the source/surface section.
+        {
+            bool show = S.SrcNormalsPrim() != nullptr;
+            if (ImGui::Checkbox("Source pseudonormals", &show))
+                S.ShowSourcePseudonormals(scene, show, false);
+            ImGui::SetItemTooltip("Draw the angle-weighted vertex pseudonormals of the source\n"
+                                  "surface as short yellow line segments.");
+        }
+
         ImGui::Separator();
         DrawClipPlanesSection(scene, S);
         ImGui::Separator();
@@ -624,7 +648,27 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
                                   "re-triangulation, in multiples of the source surface's mean\n"
                                   "edge length. Positive shifts inward (toward the source),\n"
                                   "negative outward. Ignored when the axis is None.");
+
+            // Vertex-pruning mode for the offset before re-meshing. Checked = fold
+            // cull (the original behaviour); unchecked = signed-crossing cull.
+            if (ImGui::Checkbox("Cull by fold distance", &S.isoCullByFold))
+                S.MarkStageDirty(STAGE_ISOSURFACE);
+            ImGui::SetItemTooltip("How shifted vertices are pruned before re-triangulation:\n"
+                                  "checked: fold cull - drop vertices that land closer to the\n"
+                                  "  iso than the shift (a concave fold folded the sheet onto itself).\n"
+                                  "unchecked: signed-crossing cull - keep the folds and instead\n"
+                                  "  drop only vertices that crossed THROUGH the iso to the wrong side.");
             ImGui::EndDisabled();
+
+            // Uneven-winding highlight: colour the minority-oriented triangles pure
+            // red. Applied instantly to the already-extracted surface (no re-extract).
+            bool win = S.isoShowWinding;
+            if (ImGui::Checkbox("Highlight uneven winding", &win))
+                S.SetIsoWinding(scene, win);
+            ImGui::SetItemTooltip("When the isosurface winding is uneven (not every shared edge\n"
+                                  "runs opposite ways in its two triangles), paint the minority-\n"
+                                  "oriented triangles pure red and keep the majority green.\n"
+                                  "Nothing turns red when the winding is uniform.");
         }
 
         // Apply extracts the iso sheet from the solved field. It runs on the worker
@@ -652,6 +696,16 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
                                   "outward side faces the wrong way.");
             ImGui::EndDisabled();
 
+            // Angle-weighted vertex pseudonormals of the extracted isosurface,
+            // drawn as short cyan segments. Needs an extracted surface.
+            ImGui::BeginDisabled(!S.HasIsolinePath());
+            bool isoNrm = S.IsoNormalsPrim() != nullptr;
+            if (ImGui::Checkbox("Isosurface pseudonormals", &isoNrm))
+                S.ShowIsoPseudonormals(scene, isoNrm, false);
+            ImGui::SetItemTooltip("Draw the angle-weighted vertex pseudonormals of the extracted\n"
+                                  "isosurface as short cyan line segments.");
+            ImGui::EndDisabled();
+
             // Intermediate stages of an offset-and-remesh extraction. Available
             // only after extracting with an offset axis; fetched from the cache
             // on demand (not serialized), so they go stale on the next extraction.
@@ -666,6 +720,17 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
                 S.ShowIsosurfaceProjection3D(scene, projShown, false);
             ImGui::SetItemTooltip("Show the flat base-plane re-meshed projection (with its\n"
                                   "wireframe edges) built when extracting with an offset axis.");
+            ImGui::EndDisabled();
+
+            // Offset, distance-cleaned isosurface points (SEM_GetIsosurfaceOffsetPoints3D),
+            // produced only by an offset-axis extraction. Shown as a magenta point cloud.
+            ImGui::BeginDisabled(!S.HasIsoOffsetPoints());
+            bool ptsShown = S.IsoOffsetPointsPrim() != nullptr;
+            if (ImGui::Checkbox("Show offset points", &ptsShown))
+                S.ShowIsoOffsetPoints(scene, ptsShown, false);
+            ImGui::SetItemTooltip("Show the offset, distance-cleaned isosurface points (each iso\n"
+                                  "vertex shifted along its pseudonormal) as a magenta point cloud.\n"
+                                  "Produced by an offset-axis extraction.");
             ImGui::EndDisabled();
         }
         ImGui::Unindent();

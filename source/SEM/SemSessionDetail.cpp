@@ -84,6 +84,130 @@ CSV3DLoader::CSV3DData ViewToData(const SEM_MeshView& v) {
     return d;
 }
 
+std::vector<XMFLOAT3> VertexPseudonormals(const CSV3DLoader::CSV3DData& d) {
+    const size_t n = d.nodes.size();
+    std::vector<XMFLOAT3> normals(n, XMFLOAT3(0.0f, 0.0f, 0.0f));
+    if (n == 0) return normals;
+
+    auto sub = [](const XMFLOAT3& a, const XMFLOAT3& b) {
+        return XMFLOAT3(a.x - b.x, a.y - b.y, a.z - b.z);
+    };
+    auto cross = [](const XMFLOAT3& a, const XMFLOAT3& b) {
+        return XMFLOAT3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x);
+    };
+    auto dot = [](const XMFLOAT3& a, const XMFLOAT3& b) { return a.x * b.x + a.y * b.y + a.z * b.z; };
+    auto len = [&](const XMFLOAT3& a) { return std::sqrt(dot(a, a)); };
+
+    for (const auto& t : d.triangles) {
+        const unsigned idx[3] = { t.x, t.y, t.z };
+        if (idx[0] >= n || idx[1] >= n || idx[2] >= n) continue;
+        const XMFLOAT3& A = d.nodes[idx[0]].pos;
+        const XMFLOAT3& B = d.nodes[idx[1]].pos;
+        const XMFLOAT3& C = d.nodes[idx[2]].pos;
+
+        XMFLOAT3 fn = cross(sub(B, A), sub(C, A));
+        float fl = len(fn);
+        if (fl < 1e-20f) continue;                   // degenerate triangle
+        fn = XMFLOAT3(fn.x / fl, fn.y / fl, fn.z / fl);
+
+        const XMFLOAT3 P[3] = { A, B, C };
+        for (int k = 0; k < 3; ++k) {
+            XMFLOAT3 e0 = sub(P[(k + 1) % 3], P[k]);
+            XMFLOAT3 e1 = sub(P[(k + 2) % 3], P[k]);
+            float l0 = len(e0), l1 = len(e1);
+            if (l0 < 1e-20f || l1 < 1e-20f) continue;
+            float c = dot(e0, e1) / (l0 * l1);
+            if (c < -1.0f) c = -1.0f; if (c > 1.0f) c = 1.0f;
+            float w = std::acos(c);                  // interior angle weight
+            XMFLOAT3& vn = normals[idx[k]];
+            vn.x += fn.x * w; vn.y += fn.y * w; vn.z += fn.z * w;
+        }
+    }
+
+    for (auto& vn : normals) {
+        float l = len(vn);
+        if (l > 1e-20f) { vn.x /= l; vn.y /= l; vn.z /= l; }
+    }
+    return normals;
+}
+
+float MeanTriEdgeLen(const CSV3DLoader::CSV3DData& d) {
+    const size_t n = d.nodes.size();
+    double total = 0.0;
+    size_t count = 0;
+    auto edge = [&](unsigned a, unsigned b) {
+        if (a >= n || b >= n) return;
+        const XMFLOAT3& pa = d.nodes[a].pos;
+        const XMFLOAT3& pb = d.nodes[b].pos;
+        float dx = pa.x - pb.x, dy = pa.y - pb.y, dz = pa.z - pb.z;
+        total += std::sqrt((double)(dx * dx + dy * dy + dz * dz));
+        ++count;
+    };
+    for (const auto& t : d.triangles) { edge(t.x, t.y); edge(t.y, t.z); edge(t.z, t.x); }
+    return count ? (float)(total / count) : 1.0f;
+}
+
+std::vector<char> WindingMinorityTris(const CSV3DLoader::CSV3DData& d) {
+    const size_t nT = d.triangles.size();
+    std::vector<char> minority(nT, 0);
+    if (nT == 0) return minority;
+
+    // For each undirected edge, record the triangles using it and which way the
+    // directed edge runs in that triangle (dir = true => low->high). Two triangles
+    // sharing the edge are consistently wound iff their dir values differ.
+    struct Use { int tri; bool dir; };
+    std::map<std::pair<unsigned, unsigned>, std::vector<Use>> edgeMap;
+    for (size_t t = 0; t < nT; ++t) {
+        const unsigned v[3] = { d.triangles[t].x, d.triangles[t].y, d.triangles[t].z };
+        for (int k = 0; k < 3; ++k) {
+            unsigned a = v[k], b = v[(k + 1) % 3];
+            if (a == b) continue;
+            bool dir = a < b;
+            auto key = dir ? std::make_pair(a, b) : std::make_pair(b, a);
+            edgeMap[key].push_back({ (int)t, dir });
+        }
+    }
+
+    // Triangle adjacency graph: neighbour + whether it must be flipped relative to
+    // this triangle to agree (same edge direction in both => one is flipped).
+    struct Adj { int tri; bool flip; };
+    std::vector<std::vector<Adj>> adj(nT);
+    for (const auto& kv : edgeMap) {
+        const auto& us = kv.second;
+        if (us.size() != 2) continue;                // ignore boundary / non-manifold edges
+        bool flip = (us[0].dir == us[1].dir);
+        adj[us[0].tri].push_back({ us[1].tri, flip });
+        adj[us[1].tri].push_back({ us[0].tri, flip });
+    }
+
+    // BFS each connected component, assigning a relative orientation label 0/1;
+    // the smaller label-class in the component is the minority (flagged).
+    std::vector<signed char> label(nT, -1);
+    std::vector<int> stack;
+    for (size_t seed = 0; seed < nT; ++seed) {
+        if (label[seed] != -1) continue;
+        label[seed] = 0;
+        stack.clear();
+        stack.push_back((int)seed);
+        std::vector<int> comp;
+        int count[2] = { 0, 0 };
+        while (!stack.empty()) {
+            int cur = stack.back(); stack.pop_back();
+            comp.push_back(cur);
+            ++count[label[cur]];
+            for (const Adj& a : adj[cur]) {
+                signed char want = a.flip ? (signed char)(1 - label[cur]) : label[cur];
+                if (label[a.tri] == -1) { label[a.tri] = want; stack.push_back(a.tri); }
+            }
+        }
+        // Majority orientation keeps; the smaller class (ties -> label 1, the set
+        // flipped relative to the seed) is painted as the minority.
+        signed char minLabel = (count[1] < count[0]) ? 1 : (count[0] < count[1] ? 0 : 1);
+        for (int t : comp) if (label[t] == minLabel) minority[t] = 1;
+    }
+    return minority;
+}
+
 bool SourceBBox(const std::string& path, XMFLOAT3& lo, XMFLOAT3& hi) {
     CSV3DLoader::CSV3DData d;
     if (!CSV3DLoader::Load(path, d) || d.nodes.empty()) return false;
@@ -250,8 +374,9 @@ int SafeExtractIsosurface3D(double value) {
 }
 int SafeOffsetRemeshInPlaneSurface3D(int axis, double offset_value,
                                      const double* xyz, int num_nodes,
-                                     const int* tris, int num_tris, SEM_MeshView* out) {
-    __try { return SEM_OffsetRemeshInPlaneSurface3D(axis, offset_value, xyz, num_nodes, tris, num_tris, out); }
+                                     const int* tris, int num_tris,
+                                     int cull_by_fold, SEM_MeshView* out) {
+    __try { return SEM_OffsetRemeshInPlaneSurface3D(axis, offset_value, xyz, num_nodes, tris, num_tris, cull_by_fold, out); }
     __except (EXCEPTION_EXECUTE_HANDLER) { return -100; }
 }
 int SafeFlipIsosurface3D() {

@@ -2,6 +2,7 @@
 #include "../graphics/scene/scene.h"
 #include "../graphics/scene/scene_service.h"
 #include "../external/sem_exports.h"
+#include "../loaders/CSV3DLoader.h"
 #include <string>
 #include <vector>
 #include <initializer_list>
@@ -66,6 +67,15 @@ public:
     // positive inward toward the source, negative outward. Ignored when isoAxis = 0.
     int   isoAxis        = 0;
     float isoOffsetValue = 0.0f;
+    // Vertex-pruning mode for the offset-remesh (ignored when isoAxis = 0). true =
+    // fold cull (drop vertices that fall closer to the iso than |shift|); false =
+    // signed-crossing cull (keep folds, drop only vertices that crossed through the
+    // iso to the wrong side). Maps to SEM_OffsetRemeshInPlaneSurface3D's cull_by_fold.
+    bool  isoCullByFold  = true;
+    // When set, the extracted isosurface is drawn with its real (possibly
+    // inconsistent) winding and the minority-oriented triangles are painted pure
+    // red instead of the uniform green. See SetIsoWinding / WindingMinorityTris.
+    bool  isoShowWinding = false;
     // false = "T field" (gradient over the solved temperature); true = "BC" (only
     // Dirichlet boundary nodes tinted, interior grey).
     bool  bcView     = false;
@@ -103,6 +113,13 @@ public:
     // (projection) extraction; null otherwise. See ShowSourceIsosurface3D below.
     Primitive*  IsoSourcePrim()     const;
     Primitive*  IsoProjectionPrim() const;
+    // Pseudonormal line overlays of the source surface / extracted isosurface,
+    // null when not shown. See Show{Source,Iso}Pseudonormals.
+    Primitive*  SrcNormalsPrim() const;
+    Primitive*  IsoNormalsPrim() const;
+    // Offset-points overlay, and whether an offset-axis extraction produced any.
+    Primitive*  IsoOffsetPointsPrim() const;
+    bool        HasIsoOffsetPoints() const;
     Primitive*  SrcRevSurf()  const;
     Primitive*  IsoRevSurf()  const;
     bool        HasSource()   const;
@@ -140,7 +157,6 @@ public:
     void RecomputeUpTo(Scene& scene, Stage to, bool silent);
 
     SceneNode* StagePrim(Stage st) const;
-    void SetStageVisible(Scene& scene, Stage st, bool show);
     void ResetStage(Scene& scene, Stage st);
 
     bool ValidateRevolutionContour(Scene& scene);
@@ -152,6 +168,12 @@ public:
     void SetIsoRevAlpha(Scene& scene, float a);
 
     void SetSurf3dAlpha(Scene& scene, float a);
+
+    // Show/hide ONLY the source surface primitive (and its own "(edges)"
+    // wireframe child), without cascading to the pipeline products parented
+    // under it (offsets, mesh, isosurface, ...). Rendering is per-primitive, so
+    // toggling the source's own `visible` flag leaves the children untouched.
+    void ShowSource(Scene& scene, bool show);
 
     // --- Clip planes -----------------------------------------------------
     void SetClipPlanes3D(Scene& scene);
@@ -184,6 +206,24 @@ public:
 
     bool ApplyThermal(Scene& scene, bool silent);
     bool ApplyIsoline(Scene& scene, bool silent);
+
+    // Toggle the uneven-winding highlight (isoShowWinding). When an isosurface is
+    // already extracted this recolours it in place from the cached display data —
+    // no re-extraction; otherwise it just stores the flag for the next extraction.
+    void SetIsoWinding(Scene& scene, bool on);
+
+    // Show/hide angle-weighted vertex pseudonormals as short line segments:
+    //   source   - computed from the staged source surface file (yellow);
+    //   isosurface - computed from the displayed isosurface geometry (cyan).
+    // show=false drops the overlay. 3D only; the iso form needs an extracted
+    // isosurface.
+    bool ShowSourcePseudonormals(Scene& scene, bool show, bool silent);
+    bool ShowIsoPseudonormals(Scene& scene, bool show, bool silent);
+
+    // Show/hide the offset isosurface points (SEM_GetIsosurfaceOffsetPoints3D) as a
+    // point cloud. Available only after an offset-axis isosurface extraction. 3D
+    // only; show=false drops the cloud.
+    bool ShowIsoOffsetPoints(Scene& scene, bool show, bool silent);
 
     // Reverse the winding of the extracted 3D isosurface (turn it inside-out) and
     // reload the displayed primitive. 3D only; requires an extracted isosurface.
@@ -240,6 +280,17 @@ private:
     bool        m_isoProjected = false;
     Primitive*  m_srcRevSurf = nullptr;
     Primitive*  m_isoRevSurf = nullptr;
+    // Pseudonormal line overlays (vertex normals drawn as segments).
+    Primitive*  m_srcNormals = nullptr;
+    Primitive*  m_isoNormals = nullptr;
+    // Copy of the geometry currently displayed as the isosurface, kept so the
+    // winding highlight can recolour and the pseudonormals can be computed without
+    // re-extracting or re-reading a file (handles the offset-and-remesh case too).
+    CSV3DLoader::CSV3DData m_isoData;
+    // Offset, distance-cleaned isosurface points from SEM_GetIsosurfaceOffsetPoints3D
+    // (populated only by an offset-axis extraction); the optional point-cloud overlay.
+    std::vector<XMFLOAT3> m_isoOffsetPoints;
+    Primitive*  m_isoOffsetPointsPrim = nullptr;
     bool        m_thermalSolved = false;
     Stats m_srcStats, m_offStats, m_meshStats;
 
@@ -285,6 +336,7 @@ private:
         double              isoValue = 0.5;
         int                 isoAxis = 0;
         double              isoOffsetValue = 0.0;
+        bool                isoCullByFold = true;
         float               maxInward = 1.0f;
 
         // Deterministic output paths the SEM core writes (computed at launch).
@@ -292,6 +344,15 @@ private:
         std::string         expOffsets, expMesh, expIso, expIsoRemesh;
         // Worker outputs (read by the main thread after join()).
         std::string         offsetsPath, meshPath, isoPath, error;
+        // Isosurface geometry copied off the SEM cache on the worker thread (so the
+        // main thread neither re-reads a file nor races the cache lifetime). For an
+        // offset-axis run this is the offset-and-remesh result the cache holds only
+        // transiently — reloading it from disk was both redundant and broken (the
+        // host expected a <stem>_isosurface3d_remesh3d.csv3d the core never writes
+        // under that name). isoOffsetPoints holds SEM_GetIsosurfaceOffsetPoints3D
+        // (only an offset-axis run produces them; empty otherwise).
+        CSV3DLoader::CSV3DData isoDisplayData;
+        std::vector<XMFLOAT3>  isoOffsetPoints;
         // Measured durations (ms) of each heavy stage; < 0 when not part of this run.
         double              offsetsMs = -1.0, meshMs = -1.0, thermalMs = -1.0, isoMs = -1.0;
 
@@ -319,6 +380,12 @@ private:
     void BuildSourceRevolution(Scene& scene);
     void BuildIsolineRevolution(Scene& scene);
 
+    // Single grouping node that owns every clip-plane node, so the planes form
+    // one collapsible subtree under the source instead of N siblings. Created
+    // lazily by ClipGroup() and torn down with DropClipPlaneNodes.
+    SceneNode* m_clipGroup = nullptr;
+    SceneNode* ClipGroup(Scene& scene);
+
     void BuildClipPlaneRect(Scene& scene, ClipPlaneNode* node, const XMFLOAT4& plane);
     void DropClipPlaneNodes(Scene& scene);
     // Last (normal, d) set pushed to the core, so AutoApplyClipPlanes only
@@ -331,7 +398,20 @@ private:
     void DropIsoline(Scene& scene);
     void DropIsoSource(Scene& scene);
     void DropIsoProjection(Scene& scene);
+    void DropSrcNormals(Scene& scene);
+    void DropIsoNormals(Scene& scene);
+    void DropIsoOffsetPoints(Scene& scene);
     void ReloadMeshColored(Scene& scene);
+
+    // Build the displayed isosurface primitive from `data`, honouring
+    // isoShowWinding (per-triangle minority-red colouring) or the plain green
+    // surface, named and surface-configured. Does not touch m_isoline/m_isoData.
+    Primitive* BuildIsoDisplay(Scene& scene, const CSV3DLoader::CSV3DData& data);
+    // Build a line-list primitive of angle-weighted vertex pseudonormals for the
+    // surface in `data`, parented under `parent` and drawn in `color`.
+    Primitive* BuildPseudonormalLines(Scene& scene, const CSV3DLoader::CSV3DData& data,
+                                      const XMFLOAT4& color, const std::string& name,
+                                      SceneNode* parent);
 
     bool FetchMeshData(Scene& scene, bool silent, CSV3DLoader::CSV3DData& out);
     bool FetchIsoData(Scene& scene, bool silent, CSV3DLoader::CSV3DData& out);

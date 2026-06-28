@@ -486,6 +486,19 @@ void Scene::AddPoint(const XMFLOAT3& pos, const XMFLOAT4& col)
 	m_sortedDirty = true;
 }
 
+Primitive* Scene::AddPointCloud(const std::vector<XMFLOAT3>& poses, const XMFLOAT4& col,
+	const std::string& name, SceneNode* parent)
+{
+	if (poses.empty()) return nullptr;
+	Primitive* p = PrimitiveConstructor::PointCloud(poses, col, NextId());
+	if (!p) return nullptr;
+	if (!name.empty()) p->name = name;
+	this->primitives.push_back(p);
+	(parent ? parent : &root)->AddChild(p);
+	m_sortedDirty = true;
+	return p;
+}
+
 void Scene::AddLine(const std::vector<XMFLOAT3>& poses, const XMFLOAT4& col)
 {
 	auto* p = PrimitiveConstructor::Line(poses, col, NextId());
@@ -630,7 +643,7 @@ void Scene::AddFromCSVMesh(const std::string& path, const XMFLOAT4& lineCol, con
 }
 
 Primitive* Scene::AddFromCSV3D(const std::string& path, const std::string& name, SceneNode* parent, const XMFLOAT4* overrideColor,
-	const XMFLOAT4& gradLow, const XMFLOAT4& gradHigh, bool ensureCCW, bool bcView, bool registerColorSets)
+	const XMFLOAT4& gradLow, const XMFLOAT4& gradHigh, bool bcView, bool registerColorSets)
 {
 	CSV3DLoader::CSV3DData data;
 	if (!CSV3DLoader::Load(path, data)) {
@@ -646,13 +659,13 @@ Primitive* Scene::AddFromCSV3D(const std::string& path, const std::string& name,
 		primName = (dot != std::string::npos) ? file.substr(0, dot) : file;
 	}
 
-	Primitive* p = AddFromCSV3DData(data, primName, parent, overrideColor, gradLow, gradHigh, ensureCCW, bcView, registerColorSets);
+	Primitive* p = AddFromCSV3DData(data, primName, parent, overrideColor, gradLow, gradHigh, bcView, registerColorSets);
 	if (!p) ErrorLogger::Log("CSV3D file contains no drawable geometry: " + path);
 	return p;
 }
 
 Primitive* Scene::AddFromCSV3DData(const CSV3DLoader::CSV3DData& data, const std::string& name, SceneNode* parent, const XMFLOAT4* overrideColor,
-	const XMFLOAT4& gradLow, const XMFLOAT4& gradHigh, bool ensureCCW, bool bcView, bool registerColorSets)
+	const XMFLOAT4& gradLow, const XMFLOAT4& gradHigh, bool bcView, bool registerColorSets)
 {
 	std::string primName = name.empty() ? std::string("csv3d") : name;
 
@@ -715,7 +728,7 @@ Primitive* Scene::AddFromCSV3DData(const CSV3DLoader::CSV3DData& data, const std
 			emit(t.x); emit(t.y); emit(t.z);
 		}
 		if (!tposes.empty())
-			surface = PrimitiveConstructor::ColoredTriangles(tposes, tcols, NextId(), ensureCCW,
+			surface = PrimitiveConstructor::ColoredTriangles(tposes, tcols, NextId(),
 				registerColorSets ? &triGpuToSrc : nullptr);
 	}
 
@@ -816,10 +829,10 @@ Primitive* Scene::AddRevolutionSurface(const std::vector<XMFLOAT3>& profile, UIN
 }
 
 Primitive* Scene::AddColoredTriangles(const std::vector<XMFLOAT3>& poses, const std::vector<XMFLOAT4>& cols,
-	const std::string& name, SceneNode* parent, bool ensureCCW)
+	const std::string& name, SceneNode* parent)
 {
 	if (poses.empty() || poses.size() % 3 != 0) return nullptr;
-	Primitive* p = PrimitiveConstructor::ColoredTriangles(poses, cols, NextId(), ensureCCW);
+	Primitive* p = PrimitiveConstructor::ColoredTriangles(poses, cols, NextId());
 	if (!p) return nullptr;
 	p->name = name;
 	this->primitives.push_back(p);

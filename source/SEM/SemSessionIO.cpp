@@ -71,7 +71,7 @@ Primitive* SemSession::ImportSource(Scene& scene, const std::string& path,
     if (path.empty()) return nullptr;
     Primitive* src = nullptr;
     try {
-        src = scene.AddFromCSV3D(path, "", nullptr, nullptr, Colors::BLUE, Colors::RED, false);
+        src = scene.AddFromCSV3D(path, "", nullptr, nullptr, Colors::BLUE, Colors::RED);
         if (!src) { Report(scene, false, "Import failed: could not load CSV3D."); return nullptr; }
         src->semSourcePath = path;
         // Session folder to serialize into; empty => Bind allocates a fresh one.

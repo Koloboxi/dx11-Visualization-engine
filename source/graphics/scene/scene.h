@@ -105,6 +105,11 @@ public:
 	std::vector<Primitive*> primitives;
 
 	void AddPoint(const XMFLOAT3& pos, const XMFLOAT4& col);
+	// A point cloud from explicit positions, drawn as a single dim-0 POINTLIST
+	// primitive in one flat colour. Parented under `parent` (or root); returns the
+	// primitive (null when `poses` is empty) so the caller can track/remove it.
+	Primitive* AddPointCloud(const std::vector<XMFLOAT3>& poses, const XMFLOAT4& col,
+		const std::string& name = "", SceneNode* parent = nullptr);
 	void AddLine(const std::vector<XMFLOAT3>& poses, const XMFLOAT4& col);
 	void AddPolygon(const std::vector<XMFLOAT3>& poses, const XMFLOAT4& col);
 	void AddSphere(float radius, const XMFLOAT3& pos, const UINT numSubdivides, const XMFLOAT4& col);
@@ -117,8 +122,8 @@ public:
 	// overrideColor: when non-null, every node is drawn in this flat colour
 	// instead of the per-node T gradient.
 	// gradLow/gradHigh: gradient endpoints for the T-value colouring.
-	// ensureCCW: consistent winding for the triangle surface (disabled for the
-	// untouched SEM source surface).
+	// The triangle surface is emitted with its supplied winding as-is (the surface
+	// is assumed consistently wound; there is no orientation fix-up pass).
 	// bcView: when true the per-node colour is not the gradLow..gradHigh gradient
 	// over T. Instead only boundary-condition nodes are tinted (T==0 -> gradLow,
 	// T==1 -> gradHigh) and every interior node is drawn light grey. Used to show
@@ -128,24 +133,22 @@ public:
 	// switch between them via Primitive::ActivateColorSet without rebuilding the
 	// geometry. bcView only selects which of the two is active on creation.
 	Primitive* AddFromCSV3D(const std::string& path, const std::string& name = "", SceneNode* parent = nullptr, const XMFLOAT4* overrideColor = nullptr,
-		const XMFLOAT4& gradLow = Colors::BLUE, const XMFLOAT4& gradHigh = Colors::RED, bool ensureCCW = true, bool bcView = false, bool registerColorSets = false);
+		const XMFLOAT4& gradLow = Colors::BLUE, const XMFLOAT4& gradHigh = Colors::RED, bool bcView = false, bool registerColorSets = false);
 
 	// Build a primitive from already-loaded CSV3D mesh data (the SEM_MeshView the
 	// SEM core exposes in-memory after a compute, marshalled into a CSV3DData),
 	// bypassing the disk round-trip. Same colour/edge/colour-set semantics as
 	// AddFromCSV3D; AddFromCSV3D itself loads the file and delegates here.
 	Primitive* AddFromCSV3DData(const CSV3DLoader::CSV3DData& data, const std::string& name = "", SceneNode* parent = nullptr, const XMFLOAT4* overrideColor = nullptr,
-		const XMFLOAT4& gradLow = Colors::BLUE, const XMFLOAT4& gradHigh = Colors::RED, bool ensureCCW = true, bool bcView = false, bool registerColorSets = false);
+		const XMFLOAT4& gradLow = Colors::BLUE, const XMFLOAT4& gradHigh = Colors::RED, bool bcView = false, bool registerColorSets = false);
 	void AddCubeWireframe(float halfSize, const XMFLOAT3& center, const XMFLOAT4& col);
 	void AddCubeSolid(float halfSize, const XMFLOAT3& center, const XMFLOAT4& col);
 	Primitive* AddRevolutionSurface(const std::vector<XMFLOAT3>& profile, UINT segments, const XMFLOAT4& col, const std::string& name, SceneNode* parent = nullptr);
 
 	// Add a flat triangle-soup surface from explicit per-vertex positions/colours
-	// (poses.size() must be a multiple of 3). ensureCCW makes the winding/normals
-	// locally consistent; pass false to keep the supplied winding (e.g. a single
-	// quad whose normal orientation is already chosen by the caller).
+	// (poses.size() must be a multiple of 3). The supplied winding is kept as-is.
 	Primitive* AddColoredTriangles(const std::vector<XMFLOAT3>& poses, const std::vector<XMFLOAT4>& cols,
-		const std::string& name, SceneNode* parent = nullptr, bool ensureCCW = true);
+		const std::string& name, SceneNode* parent = nullptr);
 
 	// Add a mirror copy of `src` reflected across `plane` (xyz = normal, w = d).
 	// The new primitive is parented under `parent` (or root) and registered like

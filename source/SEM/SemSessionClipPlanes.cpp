@@ -117,7 +117,7 @@ void SemSession::LoadClipPlanesFromState(Scene& scene) {
     for (const XMFLOAT4& pl : planes) {
         ClipPlaneNode* node = new ClipPlaneNode();
         node->name = "clip_plane_" + std::to_string(clipPlaneNodes.size());
-        AttachParent() ? AttachParent()->AddChild(node) : scene.root.AddChild(node);
+        ClipGroup(scene)->AddChild(node);
         BuildClipPlaneRect(scene, node, pl);
         clipPlaneNodes.push_back(node);
     }
@@ -131,6 +131,15 @@ void SemSession::LoadClipPlanesFromState(Scene& scene) {
     for (ClipPlaneNode* node : clipPlaneNodes)
         if (node) m_appliedClipPlanes.push_back(node->GetPlane());
     if (AnyClipMirror()) RebuildClipMirrors(scene);
+}
+
+// The shared grouping node that owns every clip-plane node. Created lazily under
+// the source so the planes form one collapsible subtree; re-created if the
+// previous one was torn down (source rebind, tree delete).
+SceneNode* SemSession::ClipGroup(Scene& scene) {
+    if (m_clipGroup && Alive(scene, m_clipGroup)) return m_clipGroup;
+    m_clipGroup = scene.AddGroupNode("clip_planes", AttachParent());
+    return m_clipGroup;
 }
 
 ClipPlaneNode* SemSession::AddClipPlane(Scene& scene) {
@@ -147,7 +156,7 @@ ClipPlaneNode* SemSession::AddClipPlane(Scene& scene) {
 
     ClipPlaneNode* node = new ClipPlaneNode();
     node->name = "clip_plane_" + std::to_string(clipPlaneNodes.size());
-    AttachParent() ? AttachParent()->AddChild(node) : scene.root.AddChild(node);
+    ClipGroup(scene)->AddChild(node);
 
     BuildClipPlaneRect(scene, node, XMFLOAT4(n0.x, n0.y, n0.z, d0));
     clipPlaneNodes.push_back(node);
@@ -172,8 +181,13 @@ ClipPlaneNode* SemSession::FindClipPlaneByRect(Primitive* prim) const {
 }
 
 void SemSession::DropClipPlaneNodes(Scene& scene) {
-    for (ClipPlaneNode* node : clipPlaneNodes)
+    // Removing the grouping node destroys its whole subtree (every plane node and
+    // its rectangle), so the per-node loop is only the fallback when no group
+    // exists yet. Clear our dangling references afterwards.
+    if (m_clipGroup && Alive(scene, m_clipGroup)) scene.RemoveNode(m_clipGroup);
+    else for (ClipPlaneNode* node : clipPlaneNodes)
         if (node && Alive(scene, node)) scene.RemoveNode(node);
+    m_clipGroup = nullptr;
     clipPlaneNodes.clear();
 }
 
@@ -274,7 +288,7 @@ void SemSession::BuildClipPlaneRect(Scene& scene, ClipPlaneNode* node, const XMF
     const XMFLOAT4 softBlue(0.40f, 0.52f, 0.86f, 0.20f);
     std::vector<XMFLOAT4> cols(6, softRed);
 
-    Primitive* rect = scene.AddColoredTriangles(poses, cols, node->name + "_rect", node, /*ensureCCW*/ false);
+    Primitive* rect = scene.AddColoredTriangles(poses, cols, node->name + "_rect", node);
     if (!rect) return;
     rect->SetIlluminationCapability(false);
     rect->SetUseVertexColor(false);

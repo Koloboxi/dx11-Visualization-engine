@@ -9,7 +9,7 @@
 // surface_extender_mesher public API.
 //
 // Two independent pipelines with parallel signatures: 2D (SEM_*) operates on a
-// contour, 3D (SEM_*3D) on a triangle surface. Each runs the same stages —
+// contour, 3D (SEM_*3D) on a triangle surface. Each runs the same stages ï¿½
 // load -> (subdivide) -> offsets -> mesh -> solve thermal -> extract iso. Both
 // share a single process-global cache but not its state; loading a new source
 // clears that pipeline's cache.
@@ -201,7 +201,7 @@ SEM_API int SEM_LoadMesh3D(const char* path);
 // and thermal-BC origin tags (src/far node ids). These cannot be recovered from
 // the stage files at all (clip planes, subdivision, BC tags) or only via a lossy
 // recompute (SEM_LoadOffsets3D re-derives unsigned, averaged offset distances).
-// Call LAST in the reload sequence — after SEM_LoadOffsets3D and SEM_LoadMesh3D —
+// Call LAST in the reload sequence ï¿½ after SEM_LoadOffsets3D and SEM_LoadMesh3D ï¿½
 // so the restored distances/tags line up with the loaded shells and mesh.
 // `dir` null/empty = working dir. Negative if missing/unparseable or mismatched.
 SEM_API int SEM_LoadState3D(const char* dir);
@@ -233,9 +233,16 @@ SEM_API int SEM_ExtractIsosurface3D(double value);
 // surface fails. The current clip planes (SEM_SetClipPlanes3D) are applied to the
 // result. Writes surface_remesh3d.csv3d to the working dir and fills `out` (see
 // SEM_MeshView for the lifetime/layout contract).
+// `cull_by_fold` selects how the shifted vertices are pruned before re-meshing:
+//   non-zero (default): fold cull â€” drop vertices that end up closer to the iso
+//     than |shift| (a concave fold collapsed the sheet onto itself).
+//   zero: signed-crossing cull â€” keep the fold survivors and instead drop only the
+//     vertices that crossed THROUGH the iso to the wrong side (the signed distance
+//     to the iso ended up opposite in sign to the shift direction).
 SEM_API int SEM_OffsetRemeshInPlaneSurface3D(int axis, double offset_value,
     const double* xyz, int num_nodes,
     const int* tris, int num_tris,
+    int cull_by_fold,
     SEM_MeshView* out);
 
 // Reverse the winding of every triangle of the extracted iso surface (turn it
@@ -259,3 +266,12 @@ SEM_API int SEM_GetIsosurface3D(SEM_MeshView* out);
 // SEM_OffsetRemeshInPlaneSurface3D has run; negative if not yet computed.
 SEM_API int SEM_GetSourceIsosurface3D(SEM_MeshView* out);
 SEM_API int SEM_GetIsosurfaceProjection3D(SEM_MeshView* out);
+
+// Pointer to the flat xyz array of the offset, distance-cleaned isosurface points
+// produced inside SEM_OffsetRemeshInPlaneSurface3D (each iso vertex shifted along
+// its pseudonormal, with concave-fold survivors kept). Layout is x,y,z per point;
+// *out_count receives the number of points (array length is 3*count doubles). The
+// pointer is owned by the cache and stays valid until the next 3D call that
+// recomputes it. Returns null (and *out_count = 0) before
+// SEM_OffsetRemeshInPlaneSurface3D has run.
+SEM_API const double* SEM_GetIsosurfaceOffsetPoints3D(int* out_count);

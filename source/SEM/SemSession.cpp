@@ -13,6 +13,10 @@ Primitive*  SemSession::MeshPrim()    const { return m_mesh; }
 Primitive*  SemSession::IsolinePrim() const { return m_isoline; }
 Primitive*  SemSession::IsoSourcePrim()     const { return m_isoSource; }
 Primitive*  SemSession::IsoProjectionPrim() const { return m_isoProj; }
+Primitive*  SemSession::SrcNormalsPrim() const { return m_srcNormals; }
+Primitive*  SemSession::IsoNormalsPrim() const { return m_isoNormals; }
+Primitive*  SemSession::IsoOffsetPointsPrim() const { return m_isoOffsetPointsPrim; }
+bool        SemSession::HasIsoOffsetPoints() const { return !m_isoOffsetPoints.empty(); }
 Primitive*  SemSession::SrcRevSurf()  const { return m_srcRevSurf; }
 Primitive*  SemSession::IsoRevSurf()  const { return m_isoRevSurf; }
 bool        SemSession::HasSource()   const { return m_srcPrim != nullptr && !m_srcPath.empty(); }
@@ -48,11 +52,18 @@ const Stats& SemSession::MeshStats() const { return m_meshStats; }
 
 void SemSession::Bind(Scene& scene, Primitive* prim) {
     if (prim == m_srcPrim) return;
+    // The previous source's pseudonormal overlay belonged to its subtree; drop it
+    // before rebinding so it does not linger orphaned under the old source.
+    DropSrcNormals(scene);
     m_srcPrim   = prim;
     m_srcPath   = prim ? prim->semSourcePath : std::string();
     m_offsets   = nullptr;
     m_mesh      = nullptr;
     m_isoline   = nullptr;
+    m_isoNormals = nullptr;
+    m_isoOffsetPointsPrim = nullptr;
+    m_isoOffsetPoints.clear();
+    m_isoData   = CSV3DLoader::CSV3DData();
     m_srcRevSurf = nullptr;
     m_isoRevSurf = nullptr;
     m_meshPath.clear();
@@ -98,12 +109,17 @@ void SemSession::Unbind() {
     m_srcPrim = nullptr; m_srcPath.clear();
     m_offsets = nullptr; m_mesh = nullptr; m_isoline = nullptr;
     m_isoSource = nullptr; m_isoProj = nullptr; m_isoProjected = false;
+    m_srcNormals = nullptr; m_isoNormals = nullptr;
+    m_isoOffsetPointsPrim = nullptr; m_isoOffsetPoints.clear();
+    m_isoData = CSV3DLoader::CSV3DData();
     m_srcRevSurf = nullptr; m_isoRevSurf = nullptr;
     m_meshPath.clear(); m_isolinePath.clear();
     m_thermalSolved = false;
-    // The plane nodes were children of the (now-gone) source subtree; just drop
-    // our dangling references — the scene already destroyed the nodes.
+    // The plane nodes (and their grouping node) were children of the (now-gone)
+    // source subtree; just drop our dangling references — the scene already
+    // destroyed the nodes.
     clipPlaneNodes.clear();
+    m_clipGroup = nullptr;
     m_srcStats = m_offStats = m_meshStats = Stats();
     snprintf(status, sizeof(status), "Ready");
 }
@@ -115,6 +131,9 @@ void SemSession::Validate(Scene& scene) {
     if (m_isoline && !Alive(scene, m_isoline)) { m_isoline = nullptr; }
     if (m_isoSource && !Alive(scene, m_isoSource)) m_isoSource = nullptr;
     if (m_isoProj    && !Alive(scene, m_isoProj))    m_isoProj    = nullptr;
+    if (m_srcNormals && !Alive(scene, m_srcNormals)) m_srcNormals = nullptr;
+    if (m_isoNormals && !Alive(scene, m_isoNormals)) m_isoNormals = nullptr;
+    if (m_isoOffsetPointsPrim && !Alive(scene, m_isoOffsetPointsPrim)) m_isoOffsetPointsPrim = nullptr;
     if (m_srcRevSurf && !Alive(scene, m_srcRevSurf)) m_srcRevSurf = nullptr;
     if (m_isoRevSurf && !Alive(scene, m_isoRevSurf)) m_isoRevSurf = nullptr;
     // Drop plane nodes whose subtree was removed externally (e.g. tree delete).
@@ -122,6 +141,7 @@ void SemSession::Validate(Scene& scene) {
         if (*it && !Alive(scene, *it)) it = clipPlaneNodes.erase(it);
         else ++it;
     }
+    if (m_clipGroup && !Alive(scene, m_clipGroup)) m_clipGroup = nullptr;
 }
 
 void SemSession::MarkStageDirty(Stage st) {
@@ -176,6 +196,17 @@ bool SemSession::CheckRc(Scene& scene, bool silent, const char* call, int rc,
     for (const char* e : errs) { if (i == idx) { msg = e; break; } ++i; }
     Report(scene, silent, std::string(call) + " failed (" + std::to_string(rc) + "): " + msg + SemDetail());
     return false;
+}
+
+void SemSession::ShowSource(Scene& scene, bool show) {
+    if (!Alive(scene, m_srcPrim)) return;
+    // Toggle only the source surface itself, not the pipeline products parented
+    // under it. Its own wireframe edges ("(edges)") are part of the source, so
+    // flip them with it; every other direct child keeps its own visibility.
+    m_srcPrim->visible = show;
+    for (SceneNode* ch : m_srcPrim->children)
+        if (ch && ch->IsPrimitive() && ch->name.find("(edges)") != std::string::npos)
+            ch->visible = show;
 }
 
 SceneNode* SemSession::AttachParent() { return m_srcPrim ? static_cast<SceneNode*>(m_srcPrim) : nullptr; }

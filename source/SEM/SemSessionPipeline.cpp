@@ -7,8 +7,13 @@ namespace SemSessionNS {
 
 using namespace detail;
 
+// Synchronous pipeline driver — the 2D path only. 3D is driven asynchronously on
+// a worker thread (RecomputeUpToAsync / PipelineWorkerBody), which the UI always
+// calls; that entry point redirects 2D here. The ApplyOffsets/Mesh/Thermal/Isoline
+// helpers below are therefore 2D-only (their former dim==3 branches duplicated the
+// worker and were dead). The guard makes the 2D-only contract explicit.
 void SemSession::RecomputeUpTo(Scene& scene, Stage to, bool silent) {
-    if (!HasSource()) return;
+    if (!HasSource() || dim == 3) return;
     bool ran = false;
 
     if (m_dirty[STAGE_SUBDIVIDE]) {
@@ -17,10 +22,13 @@ void SemSession::RecomputeUpTo(Scene& scene, Stage to, bool silent) {
         ran = true;
     }
 
+    // Visibility rule for a cascaded run: only the stage whose Apply was pressed
+    // (== `to`) is shown; the prerequisite stages this call had to (re)build to
+    // reach it are created hidden. The user reveals them with the tree eye.
     if (to >= STAGE_OFFSETS && (m_dirty[STAGE_OFFSETS] || ran)) {
         if (offEnabled || (m_offsets && Alive(scene, m_offsets))) {
             if (!ApplyOffsets(scene, silent)) return;
-            if (m_offsets && Alive(scene, m_offsets)) scene.SetNodeVisibleCascade(m_offsets, offEnabled);
+            if (m_offsets && Alive(scene, m_offsets)) scene.SetNodeVisibleCascade(m_offsets, to == STAGE_OFFSETS);
             ran = true;
         }
         m_dirty[STAGE_OFFSETS] = false;
@@ -29,7 +37,7 @@ void SemSession::RecomputeUpTo(Scene& scene, Stage to, bool silent) {
     if (to >= STAGE_MESH && (m_dirty[STAGE_MESH] || ran)) {
         if (meshEnabled || (m_mesh && Alive(scene, m_mesh))) {
             if (!ApplyMesh(scene, silent)) return;
-            if (m_mesh && Alive(scene, m_mesh)) scene.SetNodeVisibleCascade(m_mesh, meshEnabled);
+            if (m_mesh && Alive(scene, m_mesh)) scene.SetNodeVisibleCascade(m_mesh, to == STAGE_MESH);
             ran = true;
         }
         m_dirty[STAGE_MESH] = false;
@@ -40,6 +48,9 @@ void SemSession::RecomputeUpTo(Scene& scene, Stage to, bool silent) {
     if (to >= STAGE_THERMAL && (m_dirty[STAGE_THERMAL] || ran)) {
         if (thermalEnabled || m_thermalSolved) {
             if (!ApplyThermal(scene, silent)) return;
+            // The thermal product is the recoloured mesh: show it only when
+            // thermal is the pressed stage, hide it when it ran as a prerequisite.
+            if (m_mesh && Alive(scene, m_mesh)) scene.SetNodeVisibleCascade(m_mesh, to == STAGE_THERMAL);
             ran = true;
         }
         m_dirty[STAGE_THERMAL] = false;
@@ -50,7 +61,7 @@ void SemSession::RecomputeUpTo(Scene& scene, Stage to, bool silent) {
     if (to >= STAGE_ISOSURFACE && (m_dirty[STAGE_ISOSURFACE] || ran)) {
         if (isoEnabled || (m_isoline && Alive(scene, m_isoline))) {
             if (ApplyIsoline(scene, silent) && m_isoline && Alive(scene, m_isoline))
-                scene.SetNodeVisibleCascade(m_isoline, isoEnabled);
+                scene.SetNodeVisibleCascade(m_isoline, to == STAGE_ISOSURFACE);
             ran = true;
         }
         m_dirty[STAGE_ISOSURFACE] = false;
@@ -74,15 +85,6 @@ SceneNode* SemSession::StagePrim(Stage st) const {
          : nullptr;
 }
 
-void SemSession::SetStageVisible(Scene& scene, Stage st, bool show) {
-    SceneNode* p = StagePrim(st);
-    if (show && !(p && Alive(scene, p))) {
-        RecomputeUpTo(scene, st, false);
-        p = StagePrim(st);
-    }
-    if (p && Alive(scene, p)) scene.SetNodeVisibleCascade(p, show);
-}
-
 void SemSession::ResetStage(Scene& scene, Stage st) {
     if (st <= STAGE_OFFSETS)         { DropOffsets(scene); DropMesh(scene);
                                        m_dirty[STAGE_OFFSETS] = m_dirty[STAGE_MESH] =
@@ -103,15 +105,15 @@ bool SemSession::ApplyThermal(Scene& scene, bool silent) {
     // SEM_SolveThermal overwrites each cached mesh node's T with the steady-state
     // temperature in place AND rewrites the serialized mesh file. Re-import below
     // so the displayed mesh recolours by the solved field; the same field feeds
-    // the isotherm/isosurface.
+    // the isotherm.
     Timer t; t.Restart();
-    int rc = (dim == 3) ? SafeSolveThermal3D(maxInward) : SafeSolveThermal();
+    int rc = SafeSolveThermal();
     const double ms = t.GetMillisecondsElapsed();
     if (rc == -100) {
         Report(scene, silent, "Thermal solver crashed (access violation caught).");
         return false;
     }
-    if (!CheckRc(scene, silent, dim == 3 ? "SEM_SolveThermal3D" : "SEM_SolveThermal", rc,
+    if (!CheckRc(scene, silent, "SEM_SolveThermal", rc,
                  { "", "No source loaded", "No mesh built", "No offsets",
                    "", "No boundary nodes", "Solve failed" }))
         return false;
@@ -127,69 +129,32 @@ bool SemSession::ApplyIsoline(Scene& scene, bool silent) {
     if (!Alive(scene, m_mesh) || !m_thermalSolved) {
         Report(scene, silent, "Solve thermal first."); return false;
     }
+    // 2D only: the 3D isosurface (with its offset-and-remesh) is extracted on the
+    // worker thread (PipelineWorkerBody) — see RecomputeUpTo's note.
     bool revWasShown = Alive(scene, m_isoRevSurf) && m_isoRevSurf->visible;
     try {
         double v = isoValue;
         if (v < 0.0) v = 0.0; if (v > 1.0) v = 1.0;
         Timer t; t.Restart();
-        int rc = (dim == 3) ? SafeExtractIsosurface3D(v)
-                            : SafeExtractIsoline(v);
+        int rc = SafeExtractIsoline(v);
         if (rc == -100) {
-            Report(scene, silent, (dim == 3 ? "Isosurface" : "Isoline")
-                   + std::string(" extraction crashed (access violation caught)."));
+            Report(scene, silent, "Isoline extraction crashed (access violation caught).");
             return false;
         }
-        if (!CheckRc(scene, silent, dim == 3 ? "SEM_ExtractIsosurface3D" : "SEM_ExtractIsoline", rc,
+        if (!CheckRc(scene, silent, "SEM_ExtractIsoline", rc,
                      { "", "No source loaded", "No mesh built", "Invalid value", "Extraction failed" }))
             return false;
 
-        // The offset-and-remesh is now a standalone step (SEM_OffsetRemeshInPlaneSurface3D)
-        // that operates on the just-written iso sheet file. When an offset axis is
-        // chosen, run it and display its re-meshed result; otherwise display the plain
-        // extracted sheet straight from the cache.
         CSV3DLoader::CSV3DData data;
-        std::string p = OutPath(dim == 3 ? "_isosurface3d.csv3d" : "_isoline.csv3d");
-        const bool doRemesh = (dim == 3 && isoAxis != 0);
-        if (doRemesh) {
-            // The remesh entry point now takes the open sheet as raw arrays. Feed it
-            // the just-extracted iso surface straight from the SEM cache (coords/tris
-            // from SEM_GetIsosurface3D); the cache stays valid until the remesh call
-            // consumes it.
-            SEM_MeshView src{};
-            int grc = SEM_GetIsosurface3D(&src);
-            if (grc != 0) {
-                Report(scene, silent, "SEM_GetIsosurface3D failed (" + std::to_string(grc) + ")" + SemDetail());
-                return false;
-            }
-            SEM_MeshView rv{};
-            int rrc = SafeOffsetRemeshInPlaneSurface3D(isoAxis, (double)isoOffsetValue,
-                                                       src.coords, src.num_nodes,
-                                                       src.tris, src.num_tris, &rv);
-            if (rrc == -100) {
-                Report(scene, silent, "Isosurface offset/remesh crashed (access violation caught).");
-                return false;
-            }
-            if (!CheckRc(scene, silent, "SEM_OffsetRemeshInPlaneSurface3D", rrc, { "" }))
-                return false;
-            data = ViewToData(rv);
-            p = OutPath("_isosurface3d_remesh3d.csv3d");
-        } else {
-            if (!FetchIsoData(scene, silent, data)) return false;
-        }
+        if (!FetchIsoData(scene, silent, data)) return false;
         m_isoMs = t.GetMillisecondsElapsed();
+        std::string p = OutPath("_isoline.csv3d");
         DropIsoline(scene);
-        const XMFLOAT4 green(0.0f, 1.0f, 0.0f, 1.0f);
-        const std::string namePrefix = (dim == 3 ? "isosurface_" : "isoline_");
-        m_isoline = scene.AddFromCSV3DData(data, namePrefix + Stem(m_srcPath), AttachParent(), &green, Colors::BLUE, Colors::RED);
-        if (dim == 3) ConfigureSurface3D(m_isoline);
+        m_isoData = data;
+        m_isoline = BuildIsoDisplay(scene, m_isoData);
         m_isolinePath = p;
-        // The offset-and-remesh step filled the intermediate-stage caches (source
-        // sheet + projection), so they are valid to fetch now.
-        m_isoProjected = doRemesh;
         if (revWasShown && m_isoline) BuildIsolineRevolution(scene);
-        if (AnyClipMirror()) RebuildClipMirrors(scene);
-        snprintf(status, sizeof(status), "%s T=%.3f: %s",
-                 dim == 3 ? "Isosurface" : "Isoline", v, BaseName(p).c_str());
+        snprintf(status, sizeof(status), "Isoline T=%.3f: %s", v, BaseName(p).c_str());
         return true;
     }
     catch (const std::exception& e) { Report(scene, silent, std::string("Isoline exception: ") + e.what()); }
@@ -216,9 +181,8 @@ bool SemSession::FlipIsosurface3D(Scene& scene, bool silent) {
         if (!FetchIsoData(scene, silent, data)) return false;
         std::string p = OutPath("_isosurface3d.csv3d");
         DropIsoline(scene);
-        const XMFLOAT4 green(0.0f, 1.0f, 0.0f, 1.0f);
-        m_isoline = scene.AddFromCSV3DData(data, "isosurface_" + Stem(m_srcPath), AttachParent(), &green, Colors::BLUE, Colors::RED);
-        ConfigureSurface3D(m_isoline);
+        m_isoData = data;
+        m_isoline = BuildIsoDisplay(scene, m_isoData);
         m_isolinePath = p;
         if (revWasShown && m_isoline) BuildIsolineRevolution(scene);
         if (AnyClipMirror()) RebuildClipMirrors(scene);
@@ -228,6 +192,147 @@ bool SemSession::FlipIsosurface3D(Scene& scene, bool silent) {
     catch (const std::exception& e) { Report(scene, silent, std::string("Flip exception: ") + e.what()); }
     catch (...)                     { Report(scene, silent, "Flip: unknown exception."); }
     return false;
+}
+
+Primitive* SemSession::BuildIsoDisplay(Scene& scene, const CSV3DLoader::CSV3DData& data) {
+    const std::string name = (dim == 3 ? "isosurface_" : "isoline_") + Stem(m_srcPath);
+    const XMFLOAT4 green = Colors::GREEN;
+    Primitive* prim = nullptr;
+
+    if (dim == 3 && isoShowWinding && !data.triangles.empty()) {
+        // Per-triangle winding-consistency colouring: triangles whose orientation
+        // disagrees with the local majority are painted pure red, the rest green.
+        // The triangles are emitted with their real winding (ColoredTriangles no
+        // longer re-orients), so the minority genuinely reads as red.
+        std::vector<char> minority = WindingMinorityTris(data);
+        const size_t nN = data.nodes.size();
+        std::vector<XMFLOAT3> poses;
+        std::vector<XMFLOAT4> cols;
+        poses.reserve(data.triangles.size() * 3);
+        cols.reserve(data.triangles.size() * 3);
+        for (size_t i = 0; i < data.triangles.size(); ++i) {
+            const auto& t = data.triangles[i];
+            if (t.x >= nN || t.y >= nN || t.z >= nN) continue;
+            const XMFLOAT4& c = minority[i] ? Colors::RED : green;
+            poses.push_back(data.nodes[t.x].pos); cols.push_back(c);
+            poses.push_back(data.nodes[t.y].pos); cols.push_back(c);
+            poses.push_back(data.nodes[t.z].pos); cols.push_back(c);
+        }
+        prim = scene.AddColoredTriangles(poses, cols, name, AttachParent());
+    } else {
+        // The SEM extractor already orients the isosurface consistently, so its
+        // winding is drawn as-is (there is no orientation fix-up pass any more —
+        // it used to mis-flip regions across sharp creases and light them from the
+        // back, the spurious dark-green patch). Use "Flip isosurface" if the whole
+        // sheet faces inward.
+        prim = scene.AddFromCSV3DData(data, name, AttachParent(), &green, Colors::BLUE, Colors::RED);
+    }
+    if (prim && dim == 3) ConfigureSurface3D(prim);
+    return prim;
+}
+
+Primitive* SemSession::BuildPseudonormalLines(Scene& scene, const CSV3DLoader::CSV3DData& data,
+                                              const XMFLOAT4& color, const std::string& name,
+                                              SceneNode* parent) {
+    if (data.nodes.empty() || data.triangles.empty()) return nullptr;
+    std::vector<XMFLOAT3> normals = VertexPseudonormals(data);
+    const float len = MeanTriEdgeLen(data) * 0.8f;
+
+    // One explicit edge per vertex (base -> base + n*len); the standard loader
+    // turns the edge section into a thickened line-list primitive.
+    CSV3DLoader::CSV3DData seg;
+    seg.nodes.reserve(data.nodes.size() * 2);
+    seg.edges.reserve(data.nodes.size());
+    for (size_t i = 0; i < data.nodes.size(); ++i) {
+        const XMFLOAT3& p = data.nodes[i].pos;
+        const XMFLOAT3& nrm = normals[i];
+        if (nrm.x == 0.0f && nrm.y == 0.0f && nrm.z == 0.0f) continue;   // unreferenced vertex
+        unsigned a = (unsigned)seg.nodes.size();
+        CSV3DLoader::Node n0{}; n0.pos = p;
+        CSV3DLoader::Node n1{}; n1.pos = XMFLOAT3(p.x + nrm.x * len, p.y + nrm.y * len, p.z + nrm.z * len);
+        seg.nodes.push_back(n0);
+        seg.nodes.push_back(n1);
+        seg.edges.push_back({ a, a + 1 });
+    }
+    if (seg.edges.empty()) return nullptr;
+    return scene.AddFromCSV3DData(seg, name, parent, &color);
+}
+
+void SemSession::SetIsoWinding(Scene& scene, bool on) {
+    if (isoShowWinding == on) return;
+    isoShowWinding = on;
+    // Nothing displayed yet (or 2D): the flag simply takes effect at the next
+    // extraction.
+    if (dim != 3 || !Alive(scene, m_isoline) || m_isoData.triangles.empty()) return;
+
+    // Recolour in place from the cached display geometry: rebuild only the iso
+    // primitive (and its dependent overlays), preserving visibility and the
+    // revolution / clip-mirror surfaces — no re-extraction.
+    const bool vis = m_isoline->visible;
+    const bool revWasShown  = Alive(scene, m_isoRevSurf) && m_isoRevSurf->visible;
+    const bool normalsShown = m_isoNormals != nullptr;
+
+    DropIsoNormals(scene);
+    DropIsoRev(scene);
+    scene.RemovePrimitive(m_isoline);
+    m_isoline = BuildIsoDisplay(scene, m_isoData);
+    if (m_isoline) {
+        if (Alive(scene, m_isoline)) scene.SetNodeVisibleCascade(m_isoline, vis);
+        if (normalsShown) ShowIsoPseudonormals(scene, true, true);
+        if (revWasShown)  BuildIsolineRevolution(scene);
+    }
+    if (AnyClipMirror()) RebuildClipMirrors(scene);
+    scene.UpdateLight();
+}
+
+bool SemSession::ShowSourcePseudonormals(Scene& scene, bool show, bool silent) {
+    if (!show) { DropSrcNormals(scene); scene.UpdateLight(); return true; }
+    if (!HasSource()) { Report(scene, silent, "Stage a source first."); return false; }
+    if (dim != 3) { Report(scene, silent, "Pseudonormals apply to a 3D surface only."); return false; }
+    CSV3DLoader::CSV3DData data;
+    if (!CSV3DLoader::Load(m_srcPath, data) || data.triangles.empty()) {
+        Report(scene, silent, "Source has no triangle surface.");
+        return false;
+    }
+    DropSrcNormals(scene);
+    m_srcNormals = BuildPseudonormalLines(scene, data, Colors::YELLOW,
+                                          "src_normals_" + Stem(m_srcPath), AttachParent());
+    if (!m_srcNormals) { Report(scene, silent, "Source pseudonormals: build failed."); return false; }
+    scene.UpdateLight();
+    snprintf(status, sizeof(status), "Source pseudonormals shown.");
+    return true;
+}
+
+bool SemSession::ShowIsoPseudonormals(Scene& scene, bool show, bool silent) {
+    if (!show) { DropIsoNormals(scene); scene.UpdateLight(); return true; }
+    if (dim != 3) { Report(scene, silent, "Pseudonormals apply to the 3D isosurface only."); return false; }
+    if (!Alive(scene, m_isoline) || m_isoData.triangles.empty()) {
+        Report(scene, silent, "Extract the isosurface first.");
+        return false;
+    }
+    DropIsoNormals(scene);
+    m_isoNormals = BuildPseudonormalLines(scene, m_isoData, Colors::CYAN,
+                                          "iso_normals_" + Stem(m_srcPath), m_isoline);
+    if (!m_isoNormals) { Report(scene, silent, "Isosurface pseudonormals: build failed."); return false; }
+    scene.UpdateLight();
+    snprintf(status, sizeof(status), "Isosurface pseudonormals shown.");
+    return true;
+}
+
+bool SemSession::ShowIsoOffsetPoints(Scene& scene, bool show, bool silent) {
+    if (!show) { DropIsoOffsetPoints(scene); scene.UpdateLight(); return true; }
+    if (dim != 3) { Report(scene, silent, "Offset points are a 3D feature."); return false; }
+    if (m_isoOffsetPoints.empty()) {
+        Report(scene, silent, "Extract the isosurface with an offset axis first.");
+        return false;
+    }
+    DropIsoOffsetPoints(scene);
+    m_isoOffsetPointsPrim = scene.AddPointCloud(m_isoOffsetPoints, Colors::MAGENTA,
+                                                "iso_offset_pts_" + Stem(m_srcPath), AttachParent());
+    if (!m_isoOffsetPointsPrim) { Report(scene, silent, "Offset points: build failed."); return false; }
+    scene.UpdateLight();
+    snprintf(status, sizeof(status), "Offset points shown (%zu).", m_isoOffsetPoints.size());
+    return true;
 }
 
 void SemSession::SetBCView(Scene& scene, bool on) {
@@ -332,7 +437,7 @@ void SemSession::ReloadMeshColored(Scene& scene) {
     // Register both colour sets ("tfield"/"bc") so the BC/T toggle can switch the
     // mesh in place afterwards without reloading the file (see SetBCView).
     m_mesh = scene.AddFromCSV3DData(data, "mesh_" + Stem(m_srcPath), AttachParent(),
-                                    nullptr, Colors::BLUE, Colors::RED, true, bcView, true);
+                                    nullptr, Colors::BLUE, Colors::RED, bcView, true);
     if (!m_mesh) { Report(scene, true, "Recolour mesh: reload failed."); return; }
     m_meshPath  = path;
     m_meshStats = keepStats;
@@ -366,8 +471,16 @@ bool SemSession::FetchIsoData(Scene& scene, bool silent, CSV3DLoader::CSV3DData&
 }
 
 void SemSession::DropIsoline(Scene& scene) {
+    // Drop the pseudonormal overlay first — it is parented under m_isoline, so
+    // removing the isosurface would otherwise destroy it and dangle the pointer.
+    DropIsoNormals(scene);
+    // The offset-points overlay is parented under the source (not m_isoline), so it
+    // must be dropped explicitly; its data is tied to this extraction.
+    DropIsoOffsetPoints(scene);
+    m_isoOffsetPoints.clear();
     if (Alive(scene, m_isoline)) scene.RemovePrimitive(m_isoline);
     m_isoline = nullptr;
+    m_isoData = CSV3DLoader::CSV3DData();
     DropIsoRev(scene);
     m_isolinePath.clear();
     // A new (or cleared) extraction invalidates the intermediate offset/remesh
@@ -375,6 +488,21 @@ void SemSession::DropIsoline(Scene& scene) {
     DropIsoSource(scene);
     DropIsoProjection(scene);
     m_isoProjected = false;
+}
+
+void SemSession::DropSrcNormals(Scene& scene) {
+    if (Alive(scene, m_srcNormals)) scene.RemovePrimitive(m_srcNormals);
+    m_srcNormals = nullptr;
+}
+
+void SemSession::DropIsoNormals(Scene& scene) {
+    if (Alive(scene, m_isoNormals)) scene.RemovePrimitive(m_isoNormals);
+    m_isoNormals = nullptr;
+}
+
+void SemSession::DropIsoOffsetPoints(Scene& scene) {
+    if (Alive(scene, m_isoOffsetPointsPrim)) scene.RemovePrimitive(m_isoOffsetPointsPrim);
+    m_isoOffsetPointsPrim = nullptr;
 }
 
 void SemSession::DropIsoSource(Scene& scene) {
@@ -480,14 +608,12 @@ bool SemSession::ApplyOffsets(Scene& scene, bool silent) {
         if (offsetMode == OFFSET_GAPS) {
             if (gaps.empty()) { Report(scene, silent, "Add at least one gap."); return false; }
             std::vector<double> g(gaps.begin(), gaps.end());
-            rc = (dim == 3) ? SEM_ComputeOffsetsAt3D(g.data(), (int)g.size())
-                            : SEM_ComputeOffsetsAt(g.data(), (int)g.size());
+            rc = SEM_ComputeOffsetsAt(g.data(), (int)g.size());
         } else {
-            rc = (dim == 3) ? SEM_ComputeOffsets3D(firstGap, numOffsets, grading)
-                            : SEM_ComputeOffsets(firstGap, numOffsets, grading);
+            rc = SEM_ComputeOffsets(firstGap, numOffsets, grading);
         }
         const double ms = t.GetMillisecondsElapsed();
-        if (!CheckRc(scene, silent, dim == 3 ? "SEM_ComputeOffsets3D" : "SEM_ComputeOffsets", rc,
+        if (!CheckRc(scene, silent, "SEM_ComputeOffsets", rc,
                      { "", "No source loaded", "Invalid parameters" }))
             return false;
         m_offsetsMs = ms;
@@ -501,52 +627,30 @@ bool SemSession::ApplyOffsets(Scene& scene, bool silent) {
 
 bool SemSession::ApplyMesh(Scene& scene, bool silent) {
     try {
-        int rc;
-        if (dim == 3) {
-            double param = (double)tetParam;
-            if (tetParamEdgeUnits && tetParam > 0.0f && tetMethod == SEM_TET_BAND)
-                param *= TetParamFactor();
-            SEM_MeshParams3D params3d{ tetMethod, param, (double)tetMaxEdgeLen };
-            Timer t; t.Restart();
-            rc = SafeBuildMesh3D(&params3d);
-            const double ms = t.GetMillisecondsElapsed();
-            if (rc == -100) {
-                Report(scene, silent, "TetGen DLL crashed (access violation caught). "
-                                      "Try a larger volume or a looser quality bound.");
-                return false;
-            }
-            if (!CheckRc(scene, silent, "SEM_BuildMesh3D", rc,
-                         { "", "No surface loaded", "Compute offsets first",
-                           "", "Tetrahedralization failed", "Invalid method" }))
-                return false;
-            m_meshMs = ms;
-        } else {
-            double param = (double)meshParam;
-            if (meshParamEdgeUnits && meshParam > 0.0f && meshMethod == SEM_STEINER_GRID)
-                param *= MeshParamFactor();
-            SEM_MeshParams params{ meshMethod, param, (double)steinerMargin };
-            Timer t; t.Restart();
-            rc = SafeBuildMesh(&params);
-            const double ms = t.GetMillisecondsElapsed();
-            if (rc == -100) {
-                Report(scene, silent, "Mesher DLL crashed (access violation caught). "
-                                      "Try another Steiner method or a larger parameter.");
-                return false;
-            }
-            if (!CheckRc(scene, silent, "SEM_BuildMesh", rc,
-                         { "", "No source loaded", "Compute offsets first",
-                           "Not enough valid lines", "Triangulation failed", "Invalid method" }))
-                return false;
-            m_meshMs = ms;
+        double param = (double)meshParam;
+        if (meshParamEdgeUnits && meshParam > 0.0f && meshMethod == SEM_STEINER_GRID)
+            param *= MeshParamFactor();
+        SEM_MeshParams params{ meshMethod, param, (double)steinerMargin };
+        Timer t; t.Restart();
+        int rc = SafeBuildMesh(&params);
+        const double ms = t.GetMillisecondsElapsed();
+        if (rc == -100) {
+            Report(scene, silent, "Mesher DLL crashed (access violation caught). "
+                                  "Try another Steiner method or a larger parameter.");
+            return false;
         }
+        if (!CheckRc(scene, silent, "SEM_BuildMesh", rc,
+                     { "", "No source loaded", "Compute offsets first",
+                       "Not enough valid lines", "Triangulation failed", "Invalid method" }))
+            return false;
+        m_meshMs = ms;
 
         CSV3DLoader::CSV3DData data;
         if (!FetchMeshData(scene, silent, data)) return false;
-        std::string p = OutPath(dim == 3 ? "_mesh3d.csv3d" : "_mesh.csv3d");
+        std::string p = OutPath("_mesh.csv3d");
         DropMesh(scene);
         m_mesh = scene.AddFromCSV3DData(data, "mesh_" + Stem(m_srcPath), AttachParent(), nullptr, Colors::CYAN, Colors::YELLOW);
         m_meshPath = p;
-        if (dim == 3) ConfigureSurface3D(m_mesh);
         m_meshStats = ComputeStatsData(data);
         snprintf(status, sizeof(status), "Mesh: %s", BaseName(p).c_str());
         return true;
