@@ -19,6 +19,12 @@ Stats ComputeStats(const std::string& path);
 // valid only until the next SEM_* call, so everything is copied out.
 CSV3DLoader::CSV3DData ViewToData(const SEM_MeshView& v);
 
+// Copy the per-vertex normals (3 * num_nodes interleaved doubles) of a
+// SEM_MeshView into one unit vector per node. Returns empty when the view has no
+// normals (v.normals == null) — only the Surface-backed views (source surface /
+// source isosurface) carry them. Valid only until the next SEM_* call, like the view.
+std::vector<XMFLOAT3> ViewNormals(const SEM_MeshView& v);
+
 // Angle-weighted ("pseudo") vertex normals of a triangle surface, one unit
 // vector per node (Thürmer-Wüthrich: each incident face contributes its unit
 // normal weighted by the interior angle at the vertex). Nodes with no incident
@@ -52,11 +58,7 @@ int SafeSolveThermal();
 int SafeSolveThermal3D(float max_inward);
 int SafeExtractIsoline(double value);
 int SafeExtractIsosurface3D(double value);
-int SafeOffsetRemeshInPlaneSurface3D(int axis, double offset_value,
-                                     const double* xyz, int num_nodes,
-                                     const int* tris, int num_tris,
-                                     int cull_by_fold, SEM_MeshView* out);
-int SafeFlipIsosurface3D();
+int SafeOffsetRemeshIsosurface3D(int axis, double offset_value, double min_offset_value);
 
 // Verbose detail for the most recent SEM_* failure (SEM_GetLastError), formatted
 // as " — <text>" for appending to a status message, or "" when none. MUST be

@@ -312,6 +312,11 @@ void OrientationTransformer::HandleObjMove(XMFLOAT2& actionAxisScreen, XMFLOAT2&
 		prevActionPointNdc = actionPointNdc;
 	}
 
+	// Positions changed by the gizmo are manual edits, not motion: suppress the
+	// per-frame velocity so no velocity arrow is drawn while dragging targets.
+	for (Primitive* target : this->targetObjects)
+		target->MarkManuallyMoved();
+
 	this->Update();
 }
 

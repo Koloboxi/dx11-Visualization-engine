@@ -162,38 +162,6 @@ bool SemSession::ApplyIsoline(Scene& scene, bool silent) {
     return false;
 }
 
-bool SemSession::FlipIsosurface3D(Scene& scene, bool silent) {
-    if (!HasSource()) return false;
-    if (dim != 3) { Report(scene, silent, "Flip applies to the 3D isosurface only."); return false; }
-    if (!Alive(scene, m_isoline)) { Report(scene, silent, "Extract the isosurface first."); return false; }
-    bool revWasShown = Alive(scene, m_isoRevSurf) && m_isoRevSurf->visible;
-    try {
-        int rc = SafeFlipIsosurface3D();
-        if (rc == -100) {
-            Report(scene, silent, "Isosurface flip crashed (access violation caught).");
-            return false;
-        }
-        if (!CheckRc(scene, silent, "SEM_FlipIsosurface3D", rc,
-                     { "", "No isosurface extracted" }))
-            return false;
-
-        CSV3DLoader::CSV3DData data;
-        if (!FetchIsoData(scene, silent, data)) return false;
-        std::string p = OutPath("_isosurface3d.csv3d");
-        DropIsoline(scene);
-        m_isoData = data;
-        m_isoline = BuildIsoDisplay(scene, m_isoData);
-        m_isolinePath = p;
-        if (revWasShown && m_isoline) BuildIsolineRevolution(scene);
-        if (AnyClipMirror()) RebuildClipMirrors(scene);
-        snprintf(status, sizeof(status), "Isosurface flipped: %s", BaseName(p).c_str());
-        return true;
-    }
-    catch (const std::exception& e) { Report(scene, silent, std::string("Flip exception: ") + e.what()); }
-    catch (...)                     { Report(scene, silent, "Flip: unknown exception."); }
-    return false;
-}
-
 Primitive* SemSession::BuildIsoDisplay(Scene& scene, const CSV3DLoader::CSV3DData& data) {
     const std::string name = (dim == 3 ? "isosurface_" : "isoline_") + Stem(m_srcPath);
     const XMFLOAT4 green = Colors::GREEN;
@@ -234,8 +202,18 @@ Primitive* SemSession::BuildIsoDisplay(Scene& scene, const CSV3DLoader::CSV3DDat
 Primitive* SemSession::BuildPseudonormalLines(Scene& scene, const CSV3DLoader::CSV3DData& data,
                                               const XMFLOAT4& color, const std::string& name,
                                               SceneNode* parent) {
+    return BuildPseudonormalLines(scene, data, VertexPseudonormals(data), color, name, parent);
+}
+
+Primitive* SemSession::BuildPseudonormalLines(Scene& scene, const CSV3DLoader::CSV3DData& data,
+                                              const std::vector<XMFLOAT3>& normalsIn,
+                                              const XMFLOAT4& color, const std::string& name,
+                                              SceneNode* parent) {
     if (data.nodes.empty() || data.triangles.empty()) return nullptr;
-    std::vector<XMFLOAT3> normals = VertexPseudonormals(data);
+    // Fall back to geometry-derived pseudonormals when none were supplied (or the
+    // supplied set does not match the vertex count).
+    std::vector<XMFLOAT3> normals = (normalsIn.size() == data.nodes.size())
+                                  ? normalsIn : VertexPseudonormals(data);
     const float len = MeanTriEdgeLen(data) * 0.8f;
 
     // One explicit edge per vertex (base -> base + n*len); the standard loader
@@ -289,13 +267,19 @@ bool SemSession::ShowSourcePseudonormals(Scene& scene, bool show, bool silent) {
     if (!show) { DropSrcNormals(scene); scene.UpdateLight(); return true; }
     if (!HasSource()) { Report(scene, silent, "Stage a source first."); return false; }
     if (dim != 3) { Report(scene, silent, "Pseudonormals apply to a 3D surface only."); return false; }
-    CSV3DLoader::CSV3DData data;
-    if (!CSV3DLoader::Load(m_srcPath, data) || data.triangles.empty()) {
+    // Take the active source surface and its vertex pseudonormals straight from the
+    // SEM core (the geometry as the pipeline sees it — subdivided and clip-snapped),
+    // so the drawn normals match the ones the core computes. Read both off the same
+    // view before any other SEM_* call (the pointers are cache-owned, see SEM_MeshView).
+    SEM_MeshView v{};
+    if (SEM_GetSourceSurface3D(&v) != 0 || v.num_nodes <= 0 || v.num_tris <= 0) {
         Report(scene, silent, "Source has no triangle surface.");
         return false;
     }
+    CSV3DLoader::CSV3DData data = ViewToData(v);
+    std::vector<XMFLOAT3> normals = ViewNormals(v);
     DropSrcNormals(scene);
-    m_srcNormals = BuildPseudonormalLines(scene, data, Colors::YELLOW,
+    m_srcNormals = BuildPseudonormalLines(scene, data, normals, Colors::YELLOW,
                                           "src_normals_" + Stem(m_srcPath), AttachParent());
     if (!m_srcNormals) { Report(scene, silent, "Source pseudonormals: build failed."); return false; }
     scene.UpdateLight();
@@ -319,19 +303,31 @@ bool SemSession::ShowIsoPseudonormals(Scene& scene, bool show, bool silent) {
     return true;
 }
 
-bool SemSession::ShowIsoOffsetPoints(Scene& scene, bool show, bool silent) {
-    if (!show) { DropIsoOffsetPoints(scene); scene.UpdateLight(); return true; }
-    if (dim != 3) { Report(scene, silent, "Offset points are a 3D feature."); return false; }
-    if (m_isoOffsetPoints.empty()) {
+bool SemSession::ShowSourceIsoPseudonormals(Scene& scene, bool show, bool silent) {
+    if (!show) { DropIsoSrcNormals(scene); scene.UpdateLight(); return true; }
+    if (dim != 3) { Report(scene, silent, "Pseudonormals apply to the 3D isosurface only."); return false; }
+    if (!m_isoProjected) {
         Report(scene, silent, "Extract the isosurface with an offset axis first.");
         return false;
     }
-    DropIsoOffsetPoints(scene);
-    m_isoOffsetPointsPrim = scene.AddPointCloud(m_isoOffsetPoints, Colors::MAGENTA,
-                                                "iso_offset_pts_" + Stem(m_srcPath), AttachParent());
-    if (!m_isoOffsetPointsPrim) { Report(scene, silent, "Offset points: build failed."); return false; }
+    // The pre-offset source isosurface (the orange sheet) lives only in the SEM
+    // cache; fetch it on demand so the overlay shows even when the sheet itself is
+    // hidden. Its pseudonormals (the core's, the directions the remesh shifted each
+    // vertex along) come straight off the same view — read before any other SEM_* call.
+    SEM_MeshView v{};
+    if (SEM_GetSourceIsosurface3D(&v) != 0) {
+        Report(scene, silent, "SEM_GetSourceIsosurface3D failed" + SemDetail());
+        return false;
+    }
+    CSV3DLoader::CSV3DData data = ViewToData(v);
+    std::vector<XMFLOAT3> normals = ViewNormals(v);
+    DropIsoSrcNormals(scene);
+    const XMFLOAT4 orange(1.0f, 0.5f, 0.0f, 1.0f);
+    m_isoSrcNormals = BuildPseudonormalLines(scene, data, normals, orange,
+                                             "isosrc_normals_" + Stem(m_srcPath), AttachParent());
+    if (!m_isoSrcNormals) { Report(scene, silent, "Source isosurface pseudonormals: build failed."); return false; }
     scene.UpdateLight();
-    snprintf(status, sizeof(status), "Offset points shown (%zu).", m_isoOffsetPoints.size());
+    snprintf(status, sizeof(status), "Source isosurface pseudonormals shown.");
     return true;
 }
 
@@ -474,19 +470,17 @@ void SemSession::DropIsoline(Scene& scene) {
     // Drop the pseudonormal overlay first — it is parented under m_isoline, so
     // removing the isosurface would otherwise destroy it and dangle the pointer.
     DropIsoNormals(scene);
-    // The offset-points overlay is parented under the source (not m_isoline), so it
-    // must be dropped explicitly; its data is tied to this extraction.
-    DropIsoOffsetPoints(scene);
-    m_isoOffsetPoints.clear();
     if (Alive(scene, m_isoline)) scene.RemovePrimitive(m_isoline);
     m_isoline = nullptr;
     m_isoData = CSV3DLoader::CSV3DData();
     DropIsoRev(scene);
     m_isolinePath.clear();
     // A new (or cleared) extraction invalidates the intermediate offset/remesh
-    // stages and their caches, so drop their primitives and the gate flag too.
+    // stages and their caches, so drop their primitives (and the source-iso
+    // pseudonormal overlay computed from them) and the gate flag too.
     DropIsoSource(scene);
     DropIsoProjection(scene);
+    DropIsoSrcNormals(scene);
     m_isoProjected = false;
 }
 
@@ -500,9 +494,9 @@ void SemSession::DropIsoNormals(Scene& scene) {
     m_isoNormals = nullptr;
 }
 
-void SemSession::DropIsoOffsetPoints(Scene& scene) {
-    if (Alive(scene, m_isoOffsetPointsPrim)) scene.RemovePrimitive(m_isoOffsetPointsPrim);
-    m_isoOffsetPointsPrim = nullptr;
+void SemSession::DropIsoSrcNormals(Scene& scene) {
+    if (Alive(scene, m_isoSrcNormals)) scene.RemovePrimitive(m_isoSrcNormals);
+    m_isoSrcNormals = nullptr;
 }
 
 void SemSession::DropIsoSource(Scene& scene) {

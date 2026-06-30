@@ -63,7 +63,15 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         ImGui::SetNextItemWidth(200);
         changed |= ImGui::DragFloat("d", &pl.w, 0.5f, -1.0e6f, 1.0e6f, "%.3f");
         if (changed) {
+            // Re-normalise the (just-edited) normal here. SetPlane interprets w as
+            // the distance for a *unit* normal and divides by |n|; feeding it the
+            // de-normalised vector that editing one component produces would rescale
+            // d every frame, sliding the plane smoothly toward an intermediate spot.
+            XMVECTOR n = XMVectorSet(pl.x, pl.y, pl.z, 0.0f);
+            float len = XMVectorGetX(XMVector3Length(n));
+            if (len > 1e-9f) { pl.x /= len; pl.y /= len; pl.z /= len; }
             plane->SetPlane(pl);
+            if (plane->rect) plane->rect->MarkManuallyMoved();
             scene.orientationTransformer.Update();
             if (S.AnyClipMirror()) S.RebuildClipMirrors(scene);
         }
@@ -84,6 +92,7 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         ImGui::SetNextItemWidth(200);
         if (ImGui::DragFloat3("pos", &pos.x, 0.5f, -1.0e9f, 1.0e9f, "%.3f")) {
             sel->SetPosition(pos);
+            sel->MarkManuallyMoved();
             scene.orientationTransformer.Update();
         }
 

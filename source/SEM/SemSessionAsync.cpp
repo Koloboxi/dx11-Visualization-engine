@@ -47,6 +47,9 @@ void SemSession::RecomputeUpToAsync(Scene& scene, Stage to, bool silent) {
         if (!ApplySubdivide(scene, silent)) return;
         m_dirty[STAGE_SUBDIVIDE] = false;
         ran = true;
+        // The cached source geometry changed; recreate the displayed source so it
+        // matches what the offsets/mesh will be built from.
+        RebuildSourcePrim(scene);
     }
 
     // Plan the heavy stages exactly as RecomputeUpTo would execute them. The
@@ -125,7 +128,7 @@ void SemSession::RecomputeUpToAsync(Scene& scene, Stage to, bool silent) {
     m_job.isoValue = isoValue;
     m_job.isoAxis = isoAxis;
     m_job.isoOffsetValue = (double)isoOffsetValue;
-    m_job.isoCullByFold = isoCullByFold;
+    m_job.isoMinOffsetValue = (double)isoMinOffsetValue;
     m_job.maxInward = maxInward;
 
     // Deterministic output paths the SEM core writes during each compute call.
@@ -218,9 +221,8 @@ void SemSession::PollAsync(Scene& scene) {
         if (m_mesh && Alive(scene, m_mesh)) scene.SetNodeVisibleCascade(m_mesh, m_job.meshVisible);
     }
 
-    // Isosurface. A plain extraction comes from the cache (SEM_GetIsosurface3D);
-    // an offset-axis run produced a standalone offset-and-remesh file, which the
-    // cache does not hold, so reload that displayed surface from disk.
+    // Isosurface. A plain extraction is the extracted iso (SEM_GetSourceIsosurface3D);
+    // an offset-axis run is the offset-and-remesh product (SEM_GetIsosurface3D).
     if (!m_job.isoPath.empty()) {
         // The worker already marshalled the displayed isosurface off the cache
         // (m_job.isoDisplayData) — covering both a plain extraction and the offset-
@@ -231,11 +233,9 @@ void SemSession::PollAsync(Scene& scene) {
         m_isoline = BuildIsoDisplay(scene, m_isoData);
         if (m_isoline) {
             m_isolinePath = m_job.isoPath;
-            // An offset axis means the standalone offset-and-remesh step ran, so the
-            // intermediate-stage caches (source iso, projection) and the offset
-            // points are valid.
+            // An offset axis means the offset-and-remesh step ran, so the
+            // intermediate-stage caches (source iso, projection) are valid.
             m_isoProjected   = (m_job.isoAxis != 0);
-            m_isoOffsetPoints = m_job.isoOffsetPoints;
             if (Alive(scene, m_isoline)) scene.SetNodeVisibleCascade(m_isoline, m_job.isoVisible);
         }
     }
@@ -251,6 +251,9 @@ void SemSession::PollAsync(Scene& scene) {
     }
 
     if (AnyClipMirror()) RebuildClipMirrors(scene);
+    // The on-plane overlay also covers the source/final isosurfaces, so rebuild it
+    // once a pipeline run has (re)extracted them.
+    if (m_clipOnPlaneShown) RefreshClipOnPlane(scene);
     scene.UpdateLight();
     snprintf(status, sizeof(status), cancelled ? "Cancelled." : "Done.");
 }
@@ -347,44 +350,29 @@ void SemSession::PipelineWorkerBody() {
         // broken: the host looked for a <stem>_isosurface3d_remesh3d.csv3d the core
         // never writes under that name (it writes surface_remesh3d.csv3d).
         if (m_job.isoAxis != 0) {
-            // Offset-and-remesh: feed the extracted sheet's coords/tris into the
-            // standalone remesh entry point; its result (returned by pointer) is the
-            // displayed surface.
-            SEM_MeshView src{};
-            int grc = SEM_GetIsosurface3D(&src);
-            if (grc != 0) {
-                m_job.isoMs = t.GetMillisecondsElapsed();
-                return Fail("SEM_GetIsosurface3D failed (" + std::to_string(grc) + ")");
-            }
-            SEM_MeshView rv{};
-            int rrc = SafeOffsetRemeshInPlaneSurface3D(m_job.isoAxis, m_job.isoOffsetValue,
-                                                       src.coords, src.num_nodes,
-                                                       src.tris, src.num_tris,
-                                                       m_job.isoCullByFold ? 1 : 0, &rv);
+            // Offset-and-remesh the cached extracted iso (SEM_GetSourceIsosurface3D)
+            // in place — the final pipeline stage. The remeshed result is cached and
+            // read back through SEM_GetIsosurface3D.
+            int rrc = SafeOffsetRemeshIsosurface3D(m_job.isoAxis, m_job.isoOffsetValue,
+                                                   m_job.isoMinOffsetValue);
+            if (rrc == -100) { m_job.isoMs = t.GetMillisecondsElapsed();
+                               return Fail("Isosurface offset/remesh crashed (access violation caught)."); }
+            if (rrc != 0) { m_job.isoMs = t.GetMillisecondsElapsed();
+                            return Fail("SEM_OffsetRemeshIsosurface3D failed (" + std::to_string(rrc) + ")"); }
             m_job.isoMs = t.GetMillisecondsElapsed();
-            if (rrc == -100) return Fail("Isosurface offset/remesh crashed (access violation caught).");
-            if (rrc != 0) return Fail("SEM_OffsetRemeshInPlaneSurface3D failed (" + std::to_string(rrc) + ")");
+            SEM_MeshView rv{};
+            int grc = SEM_GetIsosurface3D(&rv);
+            if (grc != 0) return Fail("SEM_GetIsosurface3D failed (" + std::to_string(grc) + ")");
             m_job.isoDisplayData = ViewToData(rv);            // copy before any further SEM call
             m_job.isoPath = m_job.expIsoRemesh;
-            // Offset, distance-cleaned iso points produced inside the remesh step
-            // (read-only accessor, so it does not disturb the view copied above).
-            int pc = 0;
-            const double* pts = SEM_GetIsosurfaceOffsetPoints3D(&pc);
-            m_job.isoOffsetPoints.clear();
-            if (pts && pc > 0) {
-                m_job.isoOffsetPoints.reserve(pc);
-                for (int i = 0; i < pc; ++i)
-                    m_job.isoOffsetPoints.push_back(XMFLOAT3((float)pts[3 * i + 0],
-                                                             (float)pts[3 * i + 1],
-                                                             (float)pts[3 * i + 2]));
-            }
         } else {
+            // Plain extraction: the displayed surface is the extracted iso itself
+            // (no remesh ran, so SEM_GetIsosurface3D is empty — read the source iso).
             m_job.isoMs = t.GetMillisecondsElapsed();
             SEM_MeshView iv{};
-            int grc = SEM_GetIsosurface3D(&iv);
-            if (grc != 0) return Fail("SEM_GetIsosurface3D failed (" + std::to_string(grc) + ")");
+            int grc = SEM_GetSourceIsosurface3D(&iv);
+            if (grc != 0) return Fail("SEM_GetSourceIsosurface3D failed (" + std::to_string(grc) + ")");
             m_job.isoDisplayData = ViewToData(iv);
-            m_job.isoOffsetPoints.clear();
         }
         ++idx;
     }

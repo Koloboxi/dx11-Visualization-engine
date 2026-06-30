@@ -162,6 +162,11 @@ inline void DrawRevolutionSection(Scene& scene, SemSessionNS::SemSession& S) {
     using namespace SemSessionNS;
     ImGui::PushID("rev");
 
+    if (!ImGui::CollapsingHeader("Revolution", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::PopID();
+        return;
+    }
+
     bool rm = S.revolutionMode;
     if (ImGui::Checkbox("Revolution mode (around Y)", &rm)) {
         S.SetRevolutionMode(scene, rm);
@@ -210,10 +215,21 @@ inline void DrawRevolutionSection(Scene& scene, SemSessionNS::SemSession& S) {
 // rectangles and pushed to the mesher automatically whenever they change
 // (SemSession::AutoApplyClipPlanes -> SEM_SetClipPlanes3D).
 inline void DrawClipPlanesSection(Scene& scene, SemSessionNS::SemSession& S) {
+    // Push the live plane transforms to the mesher every frame (even when the
+    // section is collapsed) so gizmo edits keep applying.
     S.AutoApplyClipPlanes(scene);
+    // A clip change re-snaps the source in the core; rebuild the displayed source
+    // once the user is no longer dragging the gizmo or editing a field, so the
+    // gizmo / Transform window are not yanked mid-edit.
+    if (S.SrcRebuildPending() && !scene.orientationTransformer.HasActiveObject() &&
+        !ImGui::IsAnyItemActive())
+        S.RebuildSourcePrim(scene);
+
     ImGui::PushID("clip");
-    ImGui::Text("Clip planes");
-    ImGui::SameLine();
+    if (!ImGui::CollapsingHeader("Clip planes", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::PopID();
+        return;
+    }
     if (ImGui::SmallButton("Clear")) S.ClearClipPlanes3D(scene);
     ImGui::SetItemTooltip("Half-space clips applied during 3D meshing. The normal points\n"
                           "into the kept region (shown soft red); the removed side is soft blue.\n"
@@ -243,6 +259,36 @@ inline void DrawClipPlanesSection(Scene& scene, SemSessionNS::SemSession& S) {
 
     if (ImGui::Button("+ Add plane")) S.AddClipPlane(scene);
     ImGui::SetItemTooltip("Create a draggable clip-plane rectangle in the scene.");
+
+    // Snap tolerance pushed to the mesher (SEM_SetClipPlanes3D's on_plane_rel_tol):
+    // source geometry within this band of a plane is snapped exactly onto it before
+    // the cut. Re-apply the planes once the edit settles.
+    {
+        float tol = S.clipPlaneTol;
+        if (ImGui::DragFloat("On-plane snap tol (x edge)", &tol, 0.001f, 0.0f, 100.0f, "%.4f"))
+            S.clipPlaneTol = (tol < 0.0f ? 0.0f : tol);
+        if (ImGui::IsItemDeactivatedAfterEdit()) S.SetClipPlanes3D(scene);
+        ImGui::SetItemTooltip("Source vertices within this distance of a clip plane are snapped\n"
+                              "exactly onto it before cutting, in multiples of the source surface's\n"
+                              "mean edge length (default 0.01; 0 = exact, no snapping).");
+    }
+
+    // Overlay of the geometry lying exactly on the clip planes, for the source
+    // surface (white), the source isosurface (orange) and the final isosurface
+    // (cyan). Planar triangles draw as filled faces, on-plane edges as lines and
+    // isolated on-plane vertices as points (any may appear).
+    {
+        bool show = S.ClipOnPlaneShown();
+        if (ImGui::Checkbox("Show geometry on planes", &show))
+            S.ShowClipOnPlane(scene, show);
+        ImGui::SetItemTooltip("Draw the vertices, edges and triangles that lie on the clip planes\n"
+                              "for three surfaces at once: the source surface (white), the source\n"
+                              "isosurface (orange) and the final isosurface (cyan). A triangle with\n"
+                              "all three vertices on one plane draws as a filled face; an edge with\n"
+                              "both endpoints on a plane draws as a line; an on-plane vertex covered\n"
+                              "by neither draws as a point. The isosurface overlays appear once those\n"
+                              "stages have been extracted.");
+    }
 
     ImGui::Unindent();
     ImGui::PopID();
@@ -323,46 +369,42 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
 
     DrawReadout(S);
 
-    // Show/hide the source surface on its own, without touching the pipeline
-    // products parented under it (offsets, mesh, isosurface). Independent of the
-    // tree eye, whose toggle cascades to the whole subtree.
     {
-        Primitive* sp = S.SourcePrim();
-        bool srcVisible = sp && sp->visible;
-        if (ImGui::Checkbox("Show source surface", &srcVisible))
-            S.ShowSource(scene, srcVisible);
-        ImGui::SetItemTooltip("Show or hide the staged source surface only. The pipeline\n"
-                              "products parented under it (offsets, mesh, isosurface) keep\n"
-                              "their own visibility.");
-    }
-    ImGui::Separator();
+        ImGui::PushID("srcsurf");
+        if (ImGui::CollapsingHeader("Source surface", ImGuiTreeNodeFlags_DefaultOpen)) {
+            // Show/hide the source surface on its own, without touching the pipeline
+            // products parented under it (offsets, mesh, isosurface). Independent of
+            // the tree eye, whose toggle cascades to the whole subtree.
+            Primitive* sp = S.SourcePrim();
+            bool srcVisible = sp && sp->visible;
+            if (ImGui::Checkbox("Show source surface", &srcVisible))
+                S.ShowSource(scene, srcVisible);
+            ImGui::SetItemTooltip("Show or hide the staged source surface only. The pipeline\n"
+                                  "products parented under it (offsets, mesh, isosurface) keep\n"
+                                  "their own visibility.");
 
-    if (!is3D) {
-        DrawRevolutionSection(scene, S);
-        ImGui::Separator();
-    }
-    else {
-        float a = S.surf3dAlpha;
-        if (ImGui::DragFloat("Surface opacity", &a, 0.005f, 0.05f, 1.0f, "%.2f"))
-            S.SetSurf3dAlpha(scene, a);
-        ImGui::SetItemTooltip("Opacity of the 3D pipeline surfaces (source, offsets, mesh,\n"
-                              "isosurface). Back-face culling is set globally via the\n"
-                              "NavCube no-cull toggle.");
+            if (is3D) {
+                float a = S.surf3dAlpha;
+                if (ImGui::DragFloat("Surface opacity", &a, 0.005f, 0.05f, 1.0f, "%.2f"))
+                    S.SetSurf3dAlpha(scene, a);
+                ImGui::SetItemTooltip("Opacity of the 3D pipeline surfaces (source, offsets, mesh,\n"
+                                      "isosurface). Back-face culling is set globally via the\n"
+                                      "NavCube no-cull toggle.");
 
-        // Angle-weighted vertex pseudonormals of the source surface, drawn as
-        // short yellow segments. Belongs in the source/surface section.
-        {
-            bool show = S.SrcNormalsPrim() != nullptr;
-            if (ImGui::Checkbox("Source pseudonormals", &show))
-                S.ShowSourcePseudonormals(scene, show, false);
-            ImGui::SetItemTooltip("Draw the angle-weighted vertex pseudonormals of the source\n"
-                                  "surface as short yellow line segments.");
+                // Angle-weighted vertex pseudonormals of the source surface, drawn
+                // as short yellow segments.
+                bool show = S.SrcNormalsPrim() != nullptr;
+                if (ImGui::Checkbox("Source pseudonormals", &show))
+                    S.ShowSourcePseudonormals(scene, show, false);
+                ImGui::SetItemTooltip("Draw the angle-weighted vertex pseudonormals of the source\n"
+                                      "surface as short yellow line segments.");
+            }
         }
-
-        ImGui::Separator();
-        DrawClipPlanesSection(scene, S);
-        ImGui::Separator();
+        ImGui::PopID();
     }
+
+    if (!is3D) DrawRevolutionSection(scene, S);
+    else       DrawClipPlanesSection(scene, S);
 
     // The 3D pipeline stages have no auto-apply: their compute is heavy and runs
     // on a worker thread, so every stage is driven explicitly by its Apply button.
@@ -382,8 +424,8 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
 
     {
         ImGui::PushID("sub");
-        ImGui::Text("Subdivide");
-        autoTag(&S.subAuto);
+        if (ImGui::CollapsingHeader("Subdivide", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (!is3D) ImGui::Checkbox("Auto-apply", &S.subAuto);
 
         ImGui::Indent();
         bool changed = false, released = false;
@@ -400,18 +442,16 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         if (!is3D && S.subAuto) { if (changed || released) S.RecomputeUpToAsync(scene, STAGE_SUBDIVIDE, true); }
         else if (ImGui::Button("Apply", {160, 0})) S.RecomputeUpToAsync(scene, STAGE_SUBDIVIDE, false);
         ImGui::Unindent();
+        }
         ImGui::PopID();
     }
 
-    ImGui::Separator();
-
     {
         ImGui::PushID("off");
-        ImGui::Text("Offsets");
-        autoTag(&S.offAuto);
-        ImGui::SameLine();
+        if (ImGui::CollapsingHeader("Offsets", ImGuiTreeNodeFlags_DefaultOpen)) {
         if (ImGui::SmallButton("Reset##off")) S.ResetStage(scene, STAGE_OFFSETS);
         stageTime(S.OffsetsTimeMs());
+        autoTag(&S.offAuto);
 
         ImGui::Indent();
         bool changed = false, released = false;
@@ -455,18 +495,16 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         if (!is3D && S.offAuto) { if (changed || released) S.RecomputeUpToAsync(scene, STAGE_OFFSETS, true); }
         else if (ImGui::Button("Apply", {160, 0})) S.RecomputeUpToAsync(scene, STAGE_OFFSETS, false);
         ImGui::Unindent();
+        }
         ImGui::PopID();
     }
 
-    ImGui::Separator();
-
     {
         ImGui::PushID("mesh");
-        ImGui::Text("Mesh");
-        autoTag(&S.meshAuto);
-        ImGui::SameLine();
+        if (ImGui::CollapsingHeader("Mesh", ImGuiTreeNodeFlags_DefaultOpen)) {
         if (ImGui::SmallButton("Reset##mesh")) S.ResetStage(scene, STAGE_MESH);
         stageTime(S.MeshTimeMs());
+        autoTag(&S.meshAuto);
 
         ImGui::Indent();
         bool changed = false, released = false;
@@ -552,15 +590,13 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         if (!is3D && S.meshAuto) { if (changed || released) S.RecomputeUpToAsync(scene, STAGE_MESH, true); }
         else if (ImGui::Button("Apply", {160, 0})) S.RecomputeUpToAsync(scene, STAGE_MESH, false);
         ImGui::Unindent();
+        }
         ImGui::PopID();
     }
 
-    ImGui::Separator();
-
     {
         ImGui::PushID("thermal");
-        ImGui::Text("Thermal solve");
-        ImGui::SameLine();
+        if (ImGui::CollapsingHeader("Thermal solve", ImGuiTreeNodeFlags_DefaultOpen)) {
         if (ImGui::SmallButton("Reset##thermal")) S.ResetStage(scene, STAGE_THERMAL);
         stageTime(S.ThermalTimeMs());
 
@@ -601,15 +637,13 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
                               "T=0, red for T=1 — and every interior node is light grey.");
         ImGui::EndDisabled();
         ImGui::Unindent();
+        }
         ImGui::PopID();
     }
 
-    ImGui::Separator();
-
     {
         ImGui::PushID("iso");
-        ImGui::Text(is3D ? "Isosurface" : "Isoline");
-        ImGui::SameLine();
+        if (ImGui::CollapsingHeader(is3D ? "Isosurface" : "Isoline", ImGuiTreeNodeFlags_DefaultOpen)) {
         if (ImGui::SmallButton("Reset##iso")) S.ResetStage(scene, STAGE_ISOSURFACE);
         stageTime(S.IsoTimeMs());
 
@@ -649,15 +683,18 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
                                   "edge length. Positive shifts inward (toward the source),\n"
                                   "negative outward. Ignored when the axis is None.");
 
-            // Vertex-pruning mode for the offset before re-meshing. Checked = fold
-            // cull (the original behaviour); unchecked = signed-crossing cull.
-            if (ImGui::Checkbox("Cull by fold distance", &S.isoCullByFold))
-                S.MarkStageDirty(STAGE_ISOSURFACE);
-            ImGui::SetItemTooltip("How shifted vertices are pruned before re-triangulation:\n"
-                                  "checked: fold cull - drop vertices that land closer to the\n"
-                                  "  iso than the shift (a concave fold folded the sheet onto itself).\n"
-                                  "unchecked: signed-crossing cull - keep the folds and instead\n"
-                                  "  drop only vertices that crossed THROUGH the iso to the wrong side.");
+            // Minimum clearance a shifted vertex must keep from the iso before it is
+            // pruned, in the same edge-length units as the shift. v_min == v_max =>
+            // no ImGui clamp (the meaningful range is [0, |Iso offset|]).
+            ImGui::DragFloat("Iso min offset (x edge)", &S.isoMinOffsetValue, 0.05f, 0.0f, 0.0f, "%.3f");
+            if (ImGui::IsItemDeactivatedAfterEdit()) S.MarkStageDirty(STAGE_ISOSURFACE);
+            ImGui::SetItemTooltip("Minimum clearance a shifted vertex must keep from the iso before\n"
+                                  "it is pruned, in multiples of the source's mean edge length (same\n"
+                                  "unit as the shift). With c = (min offset) / (iso offset):\n"
+                                  "  c = 1 (min == shift): fold cull - drop every concave fold that\n"
+                                  "    folded the sheet onto itself.\n"
+                                  "  c = 0 (min == 0): signed-crossing cull - keep the folds and drop\n"
+                                  "    only vertices that crossed THROUGH the iso to the wrong side.");
             ImGui::EndDisabled();
 
             // Uneven-winding highlight: colour the minority-oriented triangles pure
@@ -683,19 +720,7 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
             : "Extract the isotherm at the chosen value from the solved field.\n"
               "Solves the thermal field first if it is not yet solved.");
 
-        // Flip the isosurface inside-out (reverse triangle winding). The extraction
-        // orients the surface consistently but its global outward side is arbitrary;
-        // use this when it faces the wrong way. 3D only, needs an extracted surface.
         if (is3D) {
-            ImGui::SameLine();
-            ImGui::BeginDisabled(!S.HasIsolinePath());
-            if (ImGui::Button("Flip isosurface", {160, 0}))
-                S.FlipIsosurface3D(scene, true);
-            ImGui::SetItemTooltip("Reverse the winding of every triangle of the extracted\n"
-                                  "isosurface, turning it inside-out. Use it when the surface's\n"
-                                  "outward side faces the wrong way.");
-            ImGui::EndDisabled();
-
             // Angle-weighted vertex pseudonormals of the extracted isosurface,
             // drawn as short cyan segments. Needs an extracted surface.
             ImGui::BeginDisabled(!S.HasIsolinePath());
@@ -715,25 +740,23 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
                 S.ShowSourceIsosurface3D(scene, srcShown, false);
             ImGui::SetItemTooltip("Show the original extracted iso sheet, before the offset/remesh\n"
                                   "stage (oriented outward). Requires an offset-axis extraction.");
+            // Pseudonormals of that orange source iso sheet — the directions the
+            // offset-and-remesh shifted each vertex along. Same gate as above.
+            bool srcNrm = S.IsoSrcNormalsPrim() != nullptr;
+            if (ImGui::Checkbox("Source isosurface pseudonormals", &srcNrm))
+                S.ShowSourceIsoPseudonormals(scene, srcNrm, false);
+            ImGui::SetItemTooltip("Draw the angle-weighted vertex pseudonormals of the pre-offset\n"
+                                  "source isosurface (the orange sheet) as short orange line segments —\n"
+                                  "the directions the offset/remesh shifted each iso vertex along.");
             bool projShown = S.IsoProjectionPrim() != nullptr;
             if (ImGui::Checkbox("Show iso projection", &projShown))
                 S.ShowIsosurfaceProjection3D(scene, projShown, false);
             ImGui::SetItemTooltip("Show the flat base-plane re-meshed projection (with its\n"
                                   "wireframe edges) built when extracting with an offset axis.");
             ImGui::EndDisabled();
-
-            // Offset, distance-cleaned isosurface points (SEM_GetIsosurfaceOffsetPoints3D),
-            // produced only by an offset-axis extraction. Shown as a magenta point cloud.
-            ImGui::BeginDisabled(!S.HasIsoOffsetPoints());
-            bool ptsShown = S.IsoOffsetPointsPrim() != nullptr;
-            if (ImGui::Checkbox("Show offset points", &ptsShown))
-                S.ShowIsoOffsetPoints(scene, ptsShown, false);
-            ImGui::SetItemTooltip("Show the offset, distance-cleaned isosurface points (each iso\n"
-                                  "vertex shifted along its pseudonormal) as a magenta point cloud.\n"
-                                  "Produced by an offset-axis extraction.");
-            ImGui::EndDisabled();
         }
         ImGui::Unindent();
+        }
         ImGui::PopID();
     }
 

@@ -84,6 +84,18 @@ CSV3DLoader::CSV3DData ViewToData(const SEM_MeshView& v) {
     return d;
 }
 
+std::vector<XMFLOAT3> ViewNormals(const SEM_MeshView& v) {
+    std::vector<XMFLOAT3> out;
+    if (v.num_nodes > 0 && v.normals) {
+        out.reserve(v.num_nodes);
+        for (int i = 0; i < v.num_nodes; ++i)
+            out.push_back(XMFLOAT3((float)v.normals[3 * i + 0],
+                                   (float)v.normals[3 * i + 1],
+                                   (float)v.normals[3 * i + 2]));
+    }
+    return out;
+}
+
 std::vector<XMFLOAT3> VertexPseudonormals(const CSV3DLoader::CSV3DData& d) {
     const size_t n = d.nodes.size();
     std::vector<XMFLOAT3> normals(n, XMFLOAT3(0.0f, 0.0f, 0.0f));
@@ -372,15 +384,8 @@ int SafeExtractIsosurface3D(double value) {
     __try { return SEM_ExtractIsosurface3D(value); }
     __except (EXCEPTION_EXECUTE_HANDLER) { return -100; }
 }
-int SafeOffsetRemeshInPlaneSurface3D(int axis, double offset_value,
-                                     const double* xyz, int num_nodes,
-                                     const int* tris, int num_tris,
-                                     int cull_by_fold, SEM_MeshView* out) {
-    __try { return SEM_OffsetRemeshInPlaneSurface3D(axis, offset_value, xyz, num_nodes, tris, num_tris, cull_by_fold, out); }
-    __except (EXCEPTION_EXECUTE_HANDLER) { return -100; }
-}
-int SafeFlipIsosurface3D() {
-    __try { return SEM_FlipIsosurface3D(); }
+int SafeOffsetRemeshIsosurface3D(int axis, double offset_value, double min_offset_value) {
+    __try { return SEM_OffsetRemeshIsosurface3D(axis, offset_value, min_offset_value); }
     __except (EXCEPTION_EXECUTE_HANDLER) { return -100; }
 }
 

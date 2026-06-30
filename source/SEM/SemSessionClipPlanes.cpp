@@ -4,6 +4,8 @@
 #include <filesystem>
 #include <sstream>
 #include <algorithm>
+#include <set>
+#include <vector>
 
 namespace fs = std::filesystem;
 
@@ -24,7 +26,7 @@ void SemSession::SetClipPlanes3D(Scene& scene) {
         flat.push_back(p.x); flat.push_back(p.y); flat.push_back(p.z); flat.push_back(p.w);
     }
     const int count = (int)(flat.size() / 4);
-    int rc = SEM_SetClipPlanes3D(flat.empty() ? nullptr : flat.data(), count);
+    int rc = SEM_SetClipPlanes3D(flat.empty() ? nullptr : flat.data(), count, clipPlaneTol);
     if (!CheckRc(scene, false, "SEM_SetClipPlanes3D", rc,
                  { "", "No surface loaded", "Invalid planes" }))
         return;
@@ -34,6 +36,9 @@ void SemSession::SetClipPlanes3D(Scene& scene) {
     DropMesh(scene);
     m_dirty[STAGE_MESH] = m_dirty[STAGE_THERMAL] = m_dirty[STAGE_ISOSURFACE] = true;
     if (AnyClipMirror()) RebuildClipMirrors(scene);
+    // The core re-snapped the source onto the planes; request a rebuild of the
+    // displayed source (deferred by the caller until no plane is being dragged).
+    m_srcRebuildPending = true;
     scene.UpdateLight();
 
     m_appliedClipPlanes.clear();
@@ -71,8 +76,11 @@ void SemSession::ClearClipPlanes3D(Scene& scene) {
     DropClipPlaneNodes(scene);
     DropMesh(scene);
     m_dirty[STAGE_MESH] = m_dirty[STAGE_THERMAL] = m_dirty[STAGE_ISOSURFACE] = true;
-    scene.UpdateLight();
     m_appliedClipPlanes.clear();
+    // The pristine source is restored in the core; rebuild the displayed one (which
+    // also refreshes the on-plane overlay — now empty, no planes) to drop snapping.
+    RebuildSourcePrim(scene);
+    scene.UpdateLight();
     snprintf(status, sizeof(status), "Clip planes cleared.");
 }
 
@@ -266,6 +274,176 @@ void SemSession::ShowClipMirror(Scene& scene, int planeIdx, bool show) {
     if (clipPlaneNodes[planeIdx]) clipPlaneNodes[planeIdx]->showMirror = show;
     RebuildClipMirrors(scene);
     snprintf(status, sizeof(status), "Clip mirror %d: %s", planeIdx, show ? "on" : "off");
+}
+
+static const char* kOnPlanePrefix = "sem_onplane_";
+
+// Per-surface overlay colours: source surface white, source isosurface orange,
+// final isosurface cyan (matching the orange/cyan pseudonormal conventions used
+// elsewhere for those two sheets).
+static const XMFLOAT4 kOnPlaneSrcColor    = Colors::WHITE;
+static const XMFLOAT4 kOnPlaneIsoSrcColor = XMFLOAT4(1.0f, 0.55f, 0.0f, 1.0f);
+static const XMFLOAT4 kOnPlaneIsoFinColor = Colors::CYAN;
+
+void SemSession::DropClipOnPlane(Scene& scene) {
+    if (m_onPlaneGroup && Alive(scene, m_onPlaneGroup)) scene.RemoveNode(m_onPlaneGroup);
+    m_onPlaneGroup = nullptr;
+}
+
+// Add one surface's on-plane overlay under `grp`. The test is strict: the core has
+// already snapped on-plane geometry exactly onto each plane (the source via
+// SEM_SetClipPlanes3D's on_plane_rel_tol, the isosurfaces by being cut flush), so a
+// vertex counts as "on a plane" when its signed distance is within only `tol`
+// (a small float-rounding band). A triangle whose three vertices all lie on a
+// SINGLE plane is drawn as a filled face (lifted off the surface by `lift` along
+// that plane's normal to avoid z-fighting); an edge with both endpoints on one
+// plane that is not part of such a triangle is drawn as a line; an on-plane vertex
+// covered by neither is drawn as a point.
+bool SemSession::BuildOnPlaneOverlay(Scene& scene, SceneNode* grp,
+                                     const CSV3DLoader::CSV3DData& data,
+                                     const std::vector<XMFLOAT4>& planes,
+                                     float tol, float lift, const XMFLOAT4& color,
+                                     const char* tag) {
+    const size_t n = data.nodes.size();
+    if (n == 0 || data.triangles.empty() || planes.empty()) return false;
+
+    // Per-plane on-plane flags for every vertex.
+    std::vector<std::vector<char>> on(planes.size(), std::vector<char>(n, 0));
+    std::vector<char> onAny(n, 0);
+    for (size_t p = 0; p < planes.size(); ++p) {
+        const XMFLOAT4& pl = planes[p];
+        for (size_t i = 0; i < n; ++i) {
+            const XMFLOAT3& q = data.nodes[i].pos;
+            float dist = pl.x * q.x + pl.y * q.y + pl.z * q.z + pl.w;
+            if (std::fabs(dist) <= tol) { on[p][i] = 1; onAny[i] = 1; }
+        }
+    }
+
+    std::vector<char> covered(n, 0);
+
+    // Planar triangles: all three vertices on a single plane. Each is emitted as an
+    // explicit triangle soup lifted off the surface along that plane's normal, and
+    // marks its vertices and its three edges as covered so they are not redrawn.
+    std::vector<XMFLOAT3> tposes;
+    std::vector<XMFLOAT4> tcols;
+    std::set<std::pair<unsigned, unsigned>> triEdges;
+    auto markEdge = [&](unsigned a, unsigned b) {
+        triEdges.insert(a < b ? std::make_pair(a, b) : std::make_pair(b, a));
+    };
+    for (const auto& t : data.triangles) {
+        if (t.x >= n || t.y >= n || t.z >= n) continue;
+        for (size_t p = 0; p < planes.size(); ++p) {
+            if (!(on[p][t.x] && on[p][t.y] && on[p][t.z])) continue;
+            const XMFLOAT4& pl = planes[p];
+            for (unsigned idx : { t.x, t.y, t.z }) {
+                const XMFLOAT3& q = data.nodes[idx].pos;
+                tposes.push_back(XMFLOAT3(q.x + pl.x * lift, q.y + pl.y * lift, q.z + pl.z * lift));
+                tcols.push_back(color);
+                covered[idx] = 1;
+            }
+            markEdge(t.x, t.y); markEdge(t.y, t.z); markEdge(t.z, t.x);
+            break;
+        }
+    }
+
+    // On-plane edges from the triangle topology (undirected, deduped): drawn when
+    // both endpoints lie on one plane and the edge is not already part of a filled
+    // planar triangle.
+    std::set<std::pair<unsigned, unsigned>> drawn;
+    auto consider = [&](unsigned a, unsigned b) {
+        if (a == b || a >= n || b >= n) return;
+        auto key = a < b ? std::make_pair(a, b) : std::make_pair(b, a);
+        if (triEdges.count(key)) return;
+        for (size_t p = 0; p < planes.size(); ++p)
+            if (on[p][a] && on[p][b]) { drawn.insert(key); return; }
+    };
+    for (const auto& t : data.triangles) { consider(t.x, t.y); consider(t.y, t.z); consider(t.z, t.x); }
+    for (const auto& e : drawn) { covered[e.first] = 1; covered[e.second] = 1; }
+
+    // Isolated on-plane vertices covered by neither a triangle nor an edge.
+    std::vector<XMFLOAT3> pts;
+    for (size_t i = 0; i < n; ++i)
+        if (onAny[i] && !covered[i]) pts.push_back(data.nodes[i].pos);
+
+    if (tposes.empty() && drawn.empty() && pts.empty()) return false;
+
+    if (!tposes.empty()) {
+        Primitive* faces = scene.AddColoredTriangles(tposes, tcols,
+                                                     std::string(kOnPlanePrefix) + tag + "_tris", grp);
+        if (faces) { faces->SetIlluminationCapability(false); faces->SetUseVertexColor(false);
+                     faces->SetColor(color); }
+    }
+    if (!drawn.empty()) {
+        CSV3DLoader::CSV3DData seg;
+        seg.nodes = data.nodes;                   // positions referenced by index
+        seg.edges.assign(drawn.begin(), drawn.end());
+        Primitive* lines = scene.AddFromCSV3DData(seg, std::string(kOnPlanePrefix) + tag + "_lines",
+                                                  grp, &color);
+        if (lines) { lines->SetIlluminationCapability(false); lines->SetUseVertexColor(false);
+                     lines->SetColor(color); }
+    }
+    if (!pts.empty()) {
+        Primitive* cloud = scene.AddPointCloud(pts, color, std::string(kOnPlanePrefix) + tag + "_points", grp);
+        if (cloud) cloud->SetIlluminationCapability(false);
+    }
+    return true;
+}
+
+// Build the on-plane overlay for the three pipeline surfaces at once: the source
+// surface, the source isosurface and the final isosurface. Each is fetched from
+// the core in turn (every view is copied out before the next SEM_* call), tested
+// against the live clip planes and drawn in its own colour. All share one group
+// node so the single "Show geometry on planes" checkbox toggles them together.
+void SemSession::BuildClipOnPlane(Scene& scene) {
+    if (dim != 3 || AsyncRunning()) return;
+
+    std::vector<XMFLOAT4> planes;
+    planes.reserve(clipPlaneNodes.size());
+    for (ClipPlaneNode* node : clipPlaneNodes)
+        if (node) planes.push_back(node->GetPlane());     // GetPlane is unit-normalized
+    if (planes.empty()) return;
+
+    double avg = SEM_GetSurfaceAvgEdgeLen3D();
+    if (avg <= 0.0) avg = 1.0;
+    // Strict on-plane test: only absorb the float-rounding noise from the core's
+    // exact snap (geometry is double there, the view hands it back as float).
+    const float tol  = (float)(1e-4 * avg);
+    const float lift = (float)(2e-3 * avg);       // lift filled tris clear of the surface
+
+    SceneNode* grp = scene.AddGroupNode(kOnPlanePrefix + Stem(m_srcPath), AttachParent());
+    m_onPlaneGroup = grp;
+    bool any = false;
+
+    SEM_MeshView v{};
+    if (Alive(scene, m_srcPrim) && SEM_GetSourceSurface3D(&v) == 0 && v.num_nodes > 0)
+        any |= BuildOnPlaneOverlay(scene, grp, ViewToData(v), planes, tol, lift,
+                                   kOnPlaneSrcColor, "src");
+
+    SEM_MeshView vi{};
+    if (SEM_GetSourceIsosurface3D(&vi) == 0 && vi.num_nodes > 0)
+        any |= BuildOnPlaneOverlay(scene, grp, ViewToData(vi), planes, tol, lift,
+                                   kOnPlaneIsoSrcColor, "isosrc");
+
+    SEM_MeshView vf{};
+    if (SEM_GetIsosurface3D(&vf) == 0 && vf.num_nodes > 0)
+        any |= BuildOnPlaneOverlay(scene, grp, ViewToData(vf), planes, tol, lift,
+                                   kOnPlaneIsoFinColor, "isofin");
+
+    if (!any) { DropClipOnPlane(scene); }         // nothing lay on any plane
+}
+
+void SemSession::RefreshClipOnPlane(Scene& scene) {
+    if (!m_clipOnPlaneShown) return;
+    DropClipOnPlane(scene);
+    BuildClipOnPlane(scene);
+    scene.UpdateLight();
+}
+
+void SemSession::ShowClipOnPlane(Scene& scene, bool show) {
+    m_clipOnPlaneShown = show;
+    DropClipOnPlane(scene);
+    if (show) BuildClipOnPlane(scene);
+    scene.UpdateLight();
 }
 
 void SemSession::BuildClipPlaneRect(Scene& scene, ClipPlaneNode* node, const XMFLOAT4& plane) {

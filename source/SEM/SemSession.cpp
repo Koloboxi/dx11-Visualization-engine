@@ -15,8 +15,7 @@ Primitive*  SemSession::IsoSourcePrim()     const { return m_isoSource; }
 Primitive*  SemSession::IsoProjectionPrim() const { return m_isoProj; }
 Primitive*  SemSession::SrcNormalsPrim() const { return m_srcNormals; }
 Primitive*  SemSession::IsoNormalsPrim() const { return m_isoNormals; }
-Primitive*  SemSession::IsoOffsetPointsPrim() const { return m_isoOffsetPointsPrim; }
-bool        SemSession::HasIsoOffsetPoints() const { return !m_isoOffsetPoints.empty(); }
+Primitive*  SemSession::IsoSrcNormalsPrim() const { return m_isoSrcNormals; }
 Primitive*  SemSession::SrcRevSurf()  const { return m_srcRevSurf; }
 Primitive*  SemSession::IsoRevSurf()  const { return m_isoRevSurf; }
 bool        SemSession::HasSource()   const { return m_srcPrim != nullptr && !m_srcPath.empty(); }
@@ -61,8 +60,7 @@ void SemSession::Bind(Scene& scene, Primitive* prim) {
     m_mesh      = nullptr;
     m_isoline   = nullptr;
     m_isoNormals = nullptr;
-    m_isoOffsetPointsPrim = nullptr;
-    m_isoOffsetPoints.clear();
+    m_isoSrcNormals = nullptr;
     m_isoData   = CSV3DLoader::CSV3DData();
     m_srcRevSurf = nullptr;
     m_isoRevSurf = nullptr;
@@ -77,6 +75,11 @@ void SemSession::Bind(Scene& scene, Primitive* prim) {
     DropClipMirrors(scene);
     DropClipPlaneNodes(scene);
     m_appliedClipPlanes.clear();
+    // The on-plane overlay belonged to the previous source's subtree; abandon the
+    // reference (the staging change tears the old source down) and reset its state.
+    m_onPlaneGroup = nullptr;
+    m_clipOnPlaneShown = false;
+    m_srcRebuildPending = false;
     m_offsetsMs = m_meshMs = m_thermalMs = m_isoMs = -1.0;
     // A fresh source clears the SEM core cache, so every stage must be recomputed.
     m_dirty[0] = m_dirty[1] = m_dirty[2] = m_dirty[3] = m_dirty[4] = true;
@@ -109,8 +112,7 @@ void SemSession::Unbind() {
     m_srcPrim = nullptr; m_srcPath.clear();
     m_offsets = nullptr; m_mesh = nullptr; m_isoline = nullptr;
     m_isoSource = nullptr; m_isoProj = nullptr; m_isoProjected = false;
-    m_srcNormals = nullptr; m_isoNormals = nullptr;
-    m_isoOffsetPointsPrim = nullptr; m_isoOffsetPoints.clear();
+    m_srcNormals = nullptr; m_isoNormals = nullptr; m_isoSrcNormals = nullptr;
     m_isoData = CSV3DLoader::CSV3DData();
     m_srcRevSurf = nullptr; m_isoRevSurf = nullptr;
     m_meshPath.clear(); m_isolinePath.clear();
@@ -120,6 +122,9 @@ void SemSession::Unbind() {
     // destroyed the nodes.
     clipPlaneNodes.clear();
     m_clipGroup = nullptr;
+    m_onPlaneGroup = nullptr;
+    m_clipOnPlaneShown = false;
+    m_srcRebuildPending = false;
     m_srcStats = m_offStats = m_meshStats = Stats();
     snprintf(status, sizeof(status), "Ready");
 }
@@ -133,7 +138,7 @@ void SemSession::Validate(Scene& scene) {
     if (m_isoProj    && !Alive(scene, m_isoProj))    m_isoProj    = nullptr;
     if (m_srcNormals && !Alive(scene, m_srcNormals)) m_srcNormals = nullptr;
     if (m_isoNormals && !Alive(scene, m_isoNormals)) m_isoNormals = nullptr;
-    if (m_isoOffsetPointsPrim && !Alive(scene, m_isoOffsetPointsPrim)) m_isoOffsetPointsPrim = nullptr;
+    if (m_isoSrcNormals && !Alive(scene, m_isoSrcNormals)) m_isoSrcNormals = nullptr;
     if (m_srcRevSurf && !Alive(scene, m_srcRevSurf)) m_srcRevSurf = nullptr;
     if (m_isoRevSurf && !Alive(scene, m_isoRevSurf)) m_isoRevSurf = nullptr;
     // Drop plane nodes whose subtree was removed externally (e.g. tree delete).
@@ -142,6 +147,7 @@ void SemSession::Validate(Scene& scene) {
         else ++it;
     }
     if (m_clipGroup && !Alive(scene, m_clipGroup)) m_clipGroup = nullptr;
+    if (m_onPlaneGroup && !Alive(scene, m_onPlaneGroup)) { m_onPlaneGroup = nullptr; m_clipOnPlaneShown = false; }
 }
 
 void SemSession::MarkStageDirty(Stage st) {
@@ -214,6 +220,65 @@ SceneNode* SemSession::AttachParent() { return m_srcPrim ? static_cast<SceneNode
 void SemSession::ConfigureSurface3D(Primitive* p) {
     if (!p) return;
     p->SetAlpha(surf3dAlpha);
+}
+
+void SemSession::RebuildSourcePrim(Scene& scene) {
+    m_srcRebuildPending = false;
+    if (dim != 3 || AsyncRunning() || !Alive(scene, m_srcPrim)) return;
+
+    SEM_MeshView v{};
+    if (SEM_GetSourceSurface3D(&v) != 0 || v.num_nodes <= 0) return;
+    CSV3DLoader::CSV3DData data = ViewToData(v);
+    if (data.nodes.empty() || data.triangles.empty()) return;
+
+    Primitive* old   = m_srcPrim;
+    SceneNode* parent = old->parent;
+    const bool wasVisible = old->visible;
+
+    // Detach the children that must survive the swap (clip planes, offsets, mesh,
+    // overlays, ...) — everything except the source's own "(edges)" wireframe,
+    // which the rebuild regenerates — so RemovePrimitive does not destroy them.
+    std::vector<SceneNode*> keep;
+    for (SceneNode* ch : old->children)
+        if (!(ch && ch->IsPrimitive() && ch->name.find("(edges)") != std::string::npos))
+            keep.push_back(ch);
+    for (SceneNode* ch : keep) old->RemoveChild(ch);
+
+    Primitive* fresh = scene.AddFromCSV3DData(data, old->name, parent, nullptr, Colors::BLUE, Colors::RED);
+    if (!fresh) {                                  // rebuild failed: undo the detach
+        for (SceneNode* ch : keep) old->AddChild(ch);
+        return;
+    }
+    for (SceneNode* ch : keep) fresh->AddChild(ch);
+
+    // Match the source surface's render configuration (see ImportSource).
+    ConfigureSurface3D(fresh);
+    fresh->SetColor(Colors::FRONT_FACE_WHITE);
+    fresh->SetUseVertexColor(false);
+    fresh->SetTwoSided(true, Colors::BACK_FACE_RED);
+    fresh->visible = wasVisible;
+    for (SceneNode* ch : fresh->children)
+        if (ch && ch->IsPrimitive() && ch->name.find("(edges)") != std::string::npos)
+            ch->visible = wasVisible;
+    fresh->semSourcePath = m_srcPath;
+    fresh->semWorkDir    = m_workDir;
+
+    // RemovePrimitive destroys the old source (and its leftover wireframe), clears
+    // the staging pointer if it was staged, and resets the gizmo target.
+    scene.RemovePrimitive(old);
+    m_srcPrim = fresh;
+    scene.SetStaged(fresh);
+
+    // Restore the gizmo selection: kept primitives keep their `selected` flag, so
+    // re-target whatever is still flagged (the destroyed source/edges drop out).
+    std::vector<Primitive*> sel;
+    for (Primitive* p : scene.primitives) if (p->selected) sel.push_back(p);
+    scene.orientationTransformer.SetTargetObjects(sel);
+
+    m_srcStats = ComputeStatsData(data);
+    if (AnyClipMirror())   RebuildClipMirrors(scene);
+    if (m_clipOnPlaneShown) RefreshClipOnPlane(scene);
+    scene.UpdateLight();
 }
 
 }

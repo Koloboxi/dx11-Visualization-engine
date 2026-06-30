@@ -106,14 +106,24 @@ public:
 	bool HasUpdater() const { return updater != nullptr; }
 	void Update(float t, float dt) {
 		if (updater) updater(*this, t, dt);
-		if (velTracked && dt > 0.0001f) {
+		if (velSuppress) {
+			// Position was set by hand this frame (gizmo / Transform window): it is
+			// not motion, so don't fold the jump into velocity (no spurious arrow).
+			velocity = {};
+		} else if (velTracked && dt > 0.0001f) {
 			velocity.x = (pos.x - velPrevPos.x) / dt;
 			velocity.y = (pos.y - velPrevPos.y) / dt;
 			velocity.z = (pos.z - velPrevPos.z) / dt;
 		}
 		velPrevPos = pos;
+		velSuppress = false;
 		velTracked = true;
 	}
+
+	// Flag a manual (non-physics) reposition so the next Update() treats it as a
+	// teleport: velocity is zeroed immediately (hides the velocity arrow even when
+	// time is paused and Update never runs) and not recomputed from the delta.
+	void MarkManuallyMoved() { velocity = {}; velPrevPos = pos; velSuppress = true; }
 
 private:
 	XMMATRIX worldMatrix = XMMatrixIdentity();
@@ -145,6 +155,7 @@ private:
 
 	XMFLOAT3 velPrevPos{};
 	bool     velTracked = false;
+	bool     velSuppress = false;
 
 	Updater updater;
 

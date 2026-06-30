@@ -67,11 +67,14 @@ public:
     // positive inward toward the source, negative outward. Ignored when isoAxis = 0.
     int   isoAxis        = 0;
     float isoOffsetValue = 0.0f;
-    // Vertex-pruning mode for the offset-remesh (ignored when isoAxis = 0). true =
-    // fold cull (drop vertices that fall closer to the iso than |shift|); false =
-    // signed-crossing cull (keep folds, drop only vertices that crossed through the
-    // iso to the wrong side). Maps to SEM_OffsetRemeshInPlaneSurface3D's cull_by_fold.
-    bool  isoCullByFold  = true;
+    // Minimum clearance a shifted vertex must keep from the iso before it is pruned
+    // (ignored when isoAxis = 0), in the same source mean-edge-length multiples as
+    // isoOffsetValue. The fraction c = isoMinOffsetValue / isoOffsetValue (in [0,1])
+    // interpolates the cull: c = 1 (== |shift|) is fold cull — drop every concave
+    // fold that collapsed the sheet onto itself; c = 0 is signed-crossing cull —
+    // keep the folds and drop only vertices that crossed THROUGH the iso. Maps to
+    // SEM_OffsetRemeshIsosurface3D's min_offset_value.
+    float isoMinOffsetValue = 0.0f;
     // When set, the extracted isosurface is drawn with its real (possibly
     // inconsistent) winding and the minority-oriented triangles are painted pure
     // red instead of the uniform green. See SetIsoWinding / WindingMinorityTris.
@@ -99,6 +102,12 @@ public:
 
     float surf3dAlpha    = 1.f;
 
+    // On-plane snap tolerance handed to SEM_SetClipPlanes3D (its on_plane_rel_tol),
+    // as a fraction of the source surface's mean edge length: vertices within this
+    // band of a clip plane are snapped exactly onto it before cutting. Default 0.01;
+    // 0 means exact (no snapping).
+    float clipPlaneTol = 0.01f;
+
     char  status[256] = "Ready";
 
     // SEM_SetRevolution axis selector: 1 = X, 2 = Y, 3 = Z.
@@ -113,13 +122,11 @@ public:
     // (projection) extraction; null otherwise. See ShowSourceIsosurface3D below.
     Primitive*  IsoSourcePrim()     const;
     Primitive*  IsoProjectionPrim() const;
-    // Pseudonormal line overlays of the source surface / extracted isosurface,
-    // null when not shown. See Show{Source,Iso}Pseudonormals.
+    // Pseudonormal line overlays of the source surface / extracted isosurface /
+    // pre-offset source isosurface, null when not shown. See Show*Pseudonormals.
     Primitive*  SrcNormalsPrim() const;
     Primitive*  IsoNormalsPrim() const;
-    // Offset-points overlay, and whether an offset-axis extraction produced any.
-    Primitive*  IsoOffsetPointsPrim() const;
-    bool        HasIsoOffsetPoints() const;
+    Primitive*  IsoSrcNormalsPrim() const;
     Primitive*  SrcRevSurf()  const;
     Primitive*  IsoRevSurf()  const;
     bool        HasSource()   const;
@@ -193,6 +200,30 @@ public:
     void DropClipMirrors(Scene& scene);
     bool AnyClipMirror() const;
 
+    // Recreate the displayed source-surface primitive from the SEM core's current
+    // active source (SEM_GetSourceSurface3D) — the geometry as the pipeline sees
+    // it, i.e. subdivided and clip-snapped. The replacement keeps the source's
+    // children (clip planes, offsets, mesh, ...), staging and gizmo selection.
+    // 3D only; a no-op while a background compute is running. Called after a 3D
+    // subdivide and, deferred to when no plane is being dragged, after a clip-plane
+    // change (see SrcRebuildPending / AutoApplyClipPlanes).
+    void RebuildSourcePrim(Scene& scene);
+    bool SrcRebuildPending() const { return m_srcRebuildPending; }
+
+    // Overlay of the vertices/edges/triangles that lie on the clip planes (a
+    // vertex is "on a plane" when it lies on it exactly — the core has already
+    // snapped on-plane geometry, so the test is strict). For every surface a
+    // triangle with all three vertices on a single plane is drawn as a filled
+    // face; an edge with both endpoints on the same plane (not part of such a
+    // triangle) is drawn as a line; an on-plane vertex covered by neither is drawn
+    // as a point. Built for three surfaces at once, each in its own colour: the
+    // source surface (white), the source isosurface (orange) and the final
+    // isosurface (cyan). RefreshClipOnPlane rebuilds the overlay in place when it
+    // is shown (after a plane/tol/source/pipeline change). 3D only.
+    void ShowClipOnPlane(Scene& scene, bool show);
+    void RefreshClipOnPlane(Scene& scene);
+    bool ClipOnPlaneShown() const { return m_clipOnPlaneShown; }
+
     // Wall-clock duration (ms) of the most recent compute of each stage, or < 0
     // when the stage has not been computed this session.
     double OffsetsTimeMs() const { return m_offsetsMs; }
@@ -212,22 +243,23 @@ public:
     // no re-extraction; otherwise it just stores the flag for the next extraction.
     void SetIsoWinding(Scene& scene, bool on);
 
-    // Show/hide angle-weighted vertex pseudonormals as short line segments:
-    //   source   - computed from the staged source surface file (yellow);
-    //   isosurface - computed from the displayed isosurface geometry (cyan).
+    // Show/hide vertex normals as short line segments:
+    //   source   - the SEM core's pseudonormals of the active source surface
+    //              (SEM_GetSourceSurface3D, yellow);
+    //   isosurface - angle-weighted pseudonormals computed from the displayed
+    //              (offset-remeshed) isosurface geometry, which the core does not
+    //              carry normals for (cyan).
     // show=false drops the overlay. 3D only; the iso form needs an extracted
     // isosurface.
     bool ShowSourcePseudonormals(Scene& scene, bool show, bool silent);
     bool ShowIsoPseudonormals(Scene& scene, bool show, bool silent);
 
-    // Show/hide the offset isosurface points (SEM_GetIsosurfaceOffsetPoints3D) as a
-    // point cloud. Available only after an offset-axis isosurface extraction. 3D
-    // only; show=false drops the cloud.
-    bool ShowIsoOffsetPoints(Scene& scene, bool show, bool silent);
-
-    // Reverse the winding of the extracted 3D isosurface (turn it inside-out) and
-    // reload the displayed primitive. 3D only; requires an extracted isosurface.
-    bool FlipIsosurface3D(Scene& scene, bool silent);
+    // Show/hide the SEM core's vertex pseudonormals of the PRE-offset source
+    // isosurface (the orange sheet, SEM_GetSourceIsosurface3D) as short orange line
+    // segments — these are the directions the offset-and-remesh shifted each iso
+    // vertex along. Available only after an offset-axis extraction (HasIsoProjection);
+    // show=false drops the overlay. 3D only.
+    bool ShowSourceIsoPseudonormals(Scene& scene, bool show, bool silent);
 
     // Show/hide the two intermediate stages of an offset-and-remesh extraction,
     // fetched on demand from the SEM cache (they are not serialized to disk):
@@ -283,16 +315,26 @@ private:
     // Pseudonormal line overlays (vertex normals drawn as segments).
     Primitive*  m_srcNormals = nullptr;
     Primitive*  m_isoNormals = nullptr;
+    Primitive*  m_isoSrcNormals = nullptr;   // pre-offset source isosurface normals
     // Copy of the geometry currently displayed as the isosurface, kept so the
     // winding highlight can recolour and the pseudonormals can be computed without
     // re-extracting or re-reading a file (handles the offset-and-remesh case too).
     CSV3DLoader::CSV3DData m_isoData;
-    // Offset, distance-cleaned isosurface points from SEM_GetIsosurfaceOffsetPoints3D
-    // (populated only by an offset-axis extraction); the optional point-cloud overlay.
-    std::vector<XMFLOAT3> m_isoOffsetPoints;
-    Primitive*  m_isoOffsetPointsPrim = nullptr;
     bool        m_thermalSolved = false;
     Stats m_srcStats, m_offStats, m_meshStats;
+
+    // Set when a clip-plane change baked new snapped source geometry but a plane is
+    // still being dragged/edited; the source primitive is rebuilt once the edit
+    // settles (DrawClipPlanesSection / AutoApplyClipPlanes), so the gizmo is not
+    // yanked mid-drag.
+    bool        m_srcRebuildPending = false;
+
+    // "Geometry on clip planes" overlay. One group node owns, per surface (source
+    // surface / source isosurface / final isosurface), up to a filled-triangle
+    // child (planar tris), a line-list child (on-plane edges) and a point-cloud
+    // child (isolated on-plane verts).
+    bool        m_clipOnPlaneShown = false;
+    SceneNode*  m_onPlaneGroup = nullptr;
 
     // Stage compute durations in ms; < 0 means "not measured this session".
     double m_offsetsMs = -1.0;
@@ -336,7 +378,7 @@ private:
         double              isoValue = 0.5;
         int                 isoAxis = 0;
         double              isoOffsetValue = 0.0;
-        bool                isoCullByFold = true;
+        double              isoMinOffsetValue = 0.0;
         float               maxInward = 1.0f;
 
         // Deterministic output paths the SEM core writes (computed at launch).
@@ -349,10 +391,8 @@ private:
         // offset-axis run this is the offset-and-remesh result the cache holds only
         // transiently — reloading it from disk was both redundant and broken (the
         // host expected a <stem>_isosurface3d_remesh3d.csv3d the core never writes
-        // under that name). isoOffsetPoints holds SEM_GetIsosurfaceOffsetPoints3D
-        // (only an offset-axis run produces them; empty otherwise).
+        // under that name).
         CSV3DLoader::CSV3DData isoDisplayData;
-        std::vector<XMFLOAT3>  isoOffsetPoints;
         // Measured durations (ms) of each heavy stage; < 0 when not part of this run.
         double              offsetsMs = -1.0, meshMs = -1.0, thermalMs = -1.0, isoMs = -1.0;
 
@@ -388,6 +428,18 @@ private:
 
     void BuildClipPlaneRect(Scene& scene, ClipPlaneNode* node, const XMFLOAT4& plane);
     void DropClipPlaneNodes(Scene& scene);
+
+    void DropClipOnPlane(Scene& scene);
+    void BuildClipOnPlane(Scene& scene);
+    // Add one surface's on-plane overlay (filled planar triangles, on-plane edges
+    // and isolated on-plane points, all in `color`) under `grp`. `tol` is the
+    // strict on-plane band; `lift` nudges the filled triangles off the surface
+    // along the plane normal to avoid z-fighting. `tag` disambiguates the child
+    // primitive names. Returns true if anything was added.
+    bool BuildOnPlaneOverlay(Scene& scene, SceneNode* grp,
+                             const CSV3DLoader::CSV3DData& data,
+                             const std::vector<XMFLOAT4>& planes,
+                             float tol, float lift, const XMFLOAT4& color, const char* tag);
     // Last (normal, d) set pushed to the core, so AutoApplyClipPlanes only
     // re-pushes when a rectangle actually moved.
     std::vector<XMFLOAT4> m_appliedClipPlanes;
@@ -400,15 +452,21 @@ private:
     void DropIsoProjection(Scene& scene);
     void DropSrcNormals(Scene& scene);
     void DropIsoNormals(Scene& scene);
-    void DropIsoOffsetPoints(Scene& scene);
+    void DropIsoSrcNormals(Scene& scene);
     void ReloadMeshColored(Scene& scene);
 
     // Build the displayed isosurface primitive from `data`, honouring
     // isoShowWinding (per-triangle minority-red colouring) or the plain green
     // surface, named and surface-configured. Does not touch m_isoline/m_isoData.
     Primitive* BuildIsoDisplay(Scene& scene, const CSV3DLoader::CSV3DData& data);
-    // Build a line-list primitive of angle-weighted vertex pseudonormals for the
-    // surface in `data`, parented under `parent` and drawn in `color`.
+    // Build a line-list primitive of vertex normals for the surface in `data`,
+    // parented under `parent` and drawn in `color`. The explicit-normals overload
+    // draws the supplied per-vertex normals (e.g. the SEM core's, via ViewNormals);
+    // the other computes angle-weighted pseudonormals from the geometry.
+    Primitive* BuildPseudonormalLines(Scene& scene, const CSV3DLoader::CSV3DData& data,
+                                      const std::vector<XMFLOAT3>& normals,
+                                      const XMFLOAT4& color, const std::string& name,
+                                      SceneNode* parent);
     Primitive* BuildPseudonormalLines(Scene& scene, const CSV3DLoader::CSV3DData& data,
                                       const XMFLOAT4& color, const std::string& name,
                                       SceneNode* parent);
