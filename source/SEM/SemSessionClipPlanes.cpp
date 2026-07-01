@@ -153,14 +153,13 @@ SceneNode* SemSession::ClipGroup(Scene& scene) {
 ClipPlaneNode* SemSession::AddClipPlane(Scene& scene) {
     if (dim != 3 || !HasSource()) { Report(scene, false, "Clip planes apply to the 3D pipeline only."); return nullptr; }
 
-    XMFLOAT3 lo{}, hi{};
-    XMFLOAT3 centre{ 0, 0, 0 };
-    if (SourceBBox(m_srcPath, lo, hi))
-        centre = { (lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f, (lo.z + hi.z) * 0.5f };
-
-    // Default plane: normal +X through the bbox centre.
-    const XMFLOAT3 n0(1, 0, 0);
-    const float d0 = -(n0.x * centre.x + n0.y * centre.y + n0.z * centre.z);
+    // Default plane through the origin (d = 0), axis-aligned by index: the first
+    // three planes get normals +X, +Y, +Z respectively (there are never more).
+    const int idx = (int)clipPlaneNodes.size();
+    const XMFLOAT3 n0 = (idx == 1) ? XMFLOAT3(0, 1, 0)
+                      : (idx == 2) ? XMFLOAT3(0, 0, 1)
+                                   : XMFLOAT3(1, 0, 0);
+    const float d0 = 0.0f;
 
     ClipPlaneNode* node = new ClipPlaneNode();
     node->name = "clip_plane_" + std::to_string(clipPlaneNodes.size());
@@ -380,7 +379,7 @@ bool SemSession::BuildOnPlaneOverlay(Scene& scene, SceneNode* grp,
         Primitive* lines = scene.AddFromCSV3DData(seg, std::string(kOnPlanePrefix) + tag + "_lines",
                                                   grp, &color);
         if (lines) { lines->SetIlluminationCapability(false); lines->SetUseVertexColor(false);
-                     lines->SetColor(color); }
+                     lines->SetColor(color); StyleLines(lines, LINESTYLE_MEDIUM); }
     }
     if (!pts.empty()) {
         Primitive* cloud = scene.AddPointCloud(pts, color, std::string(kOnPlanePrefix) + tag + "_points", grp);

@@ -64,7 +64,32 @@ bool Scene::Initialize(ID3D11Device* device, ID3D11DeviceContext* deviceContext,
 
 	this->root.name = "";
 
+	// Seed the line-thickness presets, ordered thickest to thinnest after the
+	// default. Style 0 keeps the historical width so the grid and trajectories look
+	// unchanged; the SEM overlays map onto styles 1..4 (see LineStyleId).
+	this->lineStyles = {
+		{ "Default",  0.0010f },
+		{ "Thick",    0.0030f },
+		{ "Medium",   0.0016f },
+		{ "Thin",     0.0009f },
+		{ "Hairline", 0.0005f },
+	};
+
 	return true;
+}
+
+float Scene::LineStyleThickness(int idx) const
+{
+	if (idx < 0 || idx >= (int)this->lineStyles.size())
+		return this->lineStyles.empty() ? 0.001f : this->lineStyles[0].thickness;
+	return this->lineStyles[idx].thickness;
+}
+
+void Scene::ApplyLineThickness(float t)
+{
+	if (!this->gsThicknessCB) return;
+	this->gsThicknessCB->data.Thickness = t;
+	this->gsThicknessCB->ApplyChanges();
 }
 
 void Scene::OnResize(ID3D11DepthStencilView* dsView, ID3D11DepthStencilView* dsViewNoMSAA, ID3D11RenderTargetView* mainRTV, int newWidth, int newHeight)
@@ -108,7 +133,11 @@ void Scene::Draw()
 		UCHAR dim = p->GetDimension();
 		switch (dim) {
 		case 0: this->deviceContext->GSSetShader(this->geometryshaderpoints.GetShader(), NULL, 0); break;
-		case 1: this->deviceContext->GSSetShader(this->geometryshaderthickness.GetShader(), NULL, 0); break;
+		case 1:
+			this->deviceContext->GSSetShader(this->geometryshaderthickness.GetShader(), NULL, 0);
+			// Push this line's own style width; the GS reads Thickness per draw.
+			this->ApplyLineThickness(this->LineStyleThickness(p->lineStyle));
+			break;
 		case 2: this->deviceContext->GSSetShader(nullptr, NULL, 0); break;
 		}
 
@@ -218,6 +247,10 @@ void Scene::Draw()
 
 	// Auxiliary geometry (trajectories, velocity arrows, gizmo) must stay whole.
 	this->ApplySectionCB(true);
+
+	// The per-primitive loop left the GS thickness at the last line's style; restore
+	// the default so the trajectories (and any later thick lines) use style 0.
+	this->ApplyLineThickness(this->LineStyleThickness(LINESTYLE_DEFAULT));
 
 	DrawTrajectories();
 

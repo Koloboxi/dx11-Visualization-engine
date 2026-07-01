@@ -753,6 +753,16 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
                 S.ShowIsosurfaceProjection3D(scene, projShown, false);
             ImGui::SetItemTooltip("Show the flat base-plane re-meshed projection (with its\n"
                                   "wireframe edges) built when extracting with an offset axis.");
+
+            // Boundary loops of the source isosurface used as the offset-remesh CDT
+            // constraints (SEM_GetIsosurfaceLoops3D), drawn as a thick magenta
+            // wireframe. Same offset-axis gate as the stages above.
+            bool loopsShown = S.IsoLoopsPrim() != nullptr;
+            if (ImGui::Checkbox("Show isosurface loops", &loopsShown))
+                S.ShowIsosurfaceLoops3D(scene, loopsShown, false);
+            ImGui::SetItemTooltip("Draw the constrained-CDT boundary loops of the source isosurface\n"
+                                  "(the re-triangulation constraints of the offset/remesh) as a thick\n"
+                                  "magenta line wireframe. Requires an offset-axis extraction.");
             ImGui::EndDisabled();
         }
         ImGui::Unindent();

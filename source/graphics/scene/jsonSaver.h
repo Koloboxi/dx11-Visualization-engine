@@ -19,6 +19,8 @@ namespace jsonSaver {
         j["rotation"] = { rot.x, rot.y, rot.z, rot.w };
         j["color"] = { col.x, col.y, col.z, col.w };
 
+        if (p.lineStyle != 0) j["lineStyle"] = p.lineStyle;
+
         if (!p.luaScript.empty()) j["luaScript"] = p.luaScript;
 
         if (p.velocity.x != 0.f || p.velocity.y != 0.f || p.velocity.z != 0.f)
@@ -42,6 +44,7 @@ namespace jsonSaver {
         if (j.contains("id")) p.id = j["id"].get<UINT>();
         if (j.contains("name")) p.name = j["name"].get<std::string>();
         if (j.contains("luaScript")) p.luaScript = j["luaScript"].get<std::string>();
+        if (j.contains("lineStyle")) p.lineStyle = j["lineStyle"].get<int>();
         if (j.contains("velocity") && j["velocity"].is_array())
             p.velocity = { j["velocity"][0].get<float>(), j["velocity"][1].get<float>(), j["velocity"][2].get<float>() };
 

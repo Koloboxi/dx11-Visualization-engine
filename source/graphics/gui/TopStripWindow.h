@@ -150,7 +150,7 @@ inline void DrawMenuBarContents(Scene& scene, bool& blockMousePick, const char* 
     }
 
     if (s_thickOpen) {
-        float popW = 230.f;
+        float popW = 250.f;
         float popX = s_thickBtnMin.x;
         float vpRight = ImGui::GetMainViewport()->WorkPos.x + ImGui::GetMainViewport()->WorkSize.x;
         if (popX + popW > vpRight) popX = vpRight - popW - 4.f;
@@ -163,11 +163,22 @@ inline void DrawMenuBarContents(Scene& scene, bool& blockMousePick, const char* 
             ImGuiWindowFlags_NoSavedSettings  | ImGuiWindowFlags_NoFocusOnAppearing |
             ImGuiWindowFlags_NoDocking        | ImGuiWindowFlags_NoCollapse);
 
-        ImGui::SetNextItemWidth(popW - 90.f);
-        ImGui::DragFloat("Line thickness", &scene.lineThickness, 0.0002f, 0.0002f, 0.05f, "%.4f");
-        ImGui::SetItemTooltip("Width of geometry-shader-thickened lines, in clip-space\n"
-                              "half-width units. Applies live to every thick line.");
-        if (scene.lineThickness < 0.0001f) scene.lineThickness = 0.0001f;
+        ImGui::TextUnformatted("Line styles");
+        ImGui::TextDisabled("Width of thickened lines, in clip-space half-width\n"
+                            "units. Each primitive picks a style in its Transform\n"
+                            "window; style 0 is the default (grid, trajectories).");
+        ImGui::Separator();
+
+        // One editable width per named style. Edits apply live to every line using
+        // that style on the next frame.
+        for (int i = 0; i < (int)scene.lineStyles.size(); ++i) {
+            ImGui::PushID(i);
+            ImGui::SetNextItemWidth(popW - 100.f);
+            ImGui::DragFloat(scene.lineStyles[i].name.c_str(), &scene.lineStyles[i].thickness,
+                             0.0002f, 0.0001f, 0.05f, "%.4f");
+            if (scene.lineStyles[i].thickness < 0.0001f) scene.lineStyles[i].thickness = 0.0001f;
+            ImGui::PopID();
+        }
 
         if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem))
             blockMousePick = true;

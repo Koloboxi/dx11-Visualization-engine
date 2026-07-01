@@ -314,3 +314,12 @@ SEM_API int SEM_GetSourceIsosurface3D(SEM_MeshView* out);
 // SEM_OffsetRemeshIsosurface3D has run; negative if not yet computed.
 SEM_API int SEM_GetIsosurface3D(SEM_MeshView* out);
 SEM_API int SEM_GetIsosurfaceProjection3D(SEM_MeshView* out);
+
+// The CDT constraint loops traced for the offset-remesh (SEM_OffsetRemeshIsosurface3D):
+// the closed boundary loops of the source isosurface used as the re-triangulation
+// constraints. Fills `coords` with the source isosurface vertices
+// (SEM_GetSourceIsosurface3D) and `edges` with the loop wireframe (each loop closed
+// last->first), so the indices index straight into `coords`. Empty until
+// SEM_OffsetRemeshIsosurface3D has run; negative if not yet computed. See SEM_MeshView
+// for the lifetime/layout contract.
+SEM_API int SEM_GetIsosurfaceLoops3D(SEM_MeshView* out);

@@ -14,6 +14,10 @@ bool Graphics::Initialize(HWND hwnd, int width, int height) {
 	if (!this->scene.Initialize(this->device.Get(), this->deviceContext.Get(), this->shadersPath, this->depthStencilView.Get(), this->depthStencilViewNoMSAA.Get(), this->renderTargetView.Get(), &this->vertexshader, this->windowWidth, this->windowHeight))
 		return false;
 
+	// Let the scene push per-primitive line widths into the (already-bound) GS
+	// thickness buffer during Draw.
+	this->scene.gsThicknessCB = &this->cb_gs_geometryshader;
+
 	luaEditor.sceneFloatMap = &this->scene.sceneFloats;
 	luaEditor.BindToScene(this->scene);
 	
@@ -75,10 +79,10 @@ void Graphics::RenderFrame()
 
 	this->deviceContext->OMSetBlendState(this->blendState.Get(), NULL, 0xFFFFFFFF);
 
-	// Push the live line thickness into the GS constant buffer (already bound on
-	// GS slot b0) so the top-strip thickness popup edits the thick-line width
-	// without a resize.
-	this->cb_gs_geometryshader.data.Thickness = this->scene.lineThickness;
+	// Seed the GS constant buffer (already bound on GS slot b0) with the default
+	// line-style width. Scene::Draw overrides Thickness per line primitive from its
+	// chosen style; this baseline covers the grid, drawn before that loop.
+	this->cb_gs_geometryshader.data.Thickness = this->scene.LineStyleThickness(LINESTYLE_DEFAULT);
 	this->cb_gs_geometryshader.ApplyChanges();
 
 	this->scene.Draw();

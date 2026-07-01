@@ -34,6 +34,10 @@ public:
 
 	bool staging = false;
 
+	// Index into Scene::lineStyles selecting the thickness used for this primitive
+	// when it is a thick line (dim==1). Ignored for surfaces/points. 0 = "Default".
+	int lineStyle = 0;
+
 	std::string semSourcePath;
 	// SEM pipeline "session" folder this source serializes into
 	// (%TEMP%/sem/<stem>_<N>/). Chosen at import; SemSession::Bind reads it and

@@ -233,7 +233,11 @@ Primitive* SemSession::BuildPseudonormalLines(Scene& scene, const CSV3DLoader::C
         seg.edges.push_back({ a, a + 1 });
     }
     if (seg.edges.empty()) return nullptr;
-    return scene.AddFromCSV3DData(seg, name, parent, &color);
+    Primitive* lines = scene.AddFromCSV3DData(seg, name, parent, &color);
+    // Normals are the third-thinnest tier (thinner than the on-plane lines, thicker
+    // than the band-mesh edges).
+    StyleLines(lines, LINESTYLE_THIN);
+    return lines;
 }
 
 void SemSession::SetIsoWinding(Scene& scene, bool on) {
@@ -328,6 +332,36 @@ bool SemSession::ShowSourceIsoPseudonormals(Scene& scene, bool show, bool silent
     if (!m_isoSrcNormals) { Report(scene, silent, "Source isosurface pseudonormals: build failed."); return false; }
     scene.UpdateLight();
     snprintf(status, sizeof(status), "Source isosurface pseudonormals shown.");
+    return true;
+}
+
+bool SemSession::ShowIsosurfaceLoops3D(Scene& scene, bool show, bool silent) {
+    if (!show) { DropIsoLoops(scene); scene.UpdateLight(); return true; }
+    if (dim != 3) { Report(scene, silent, "Isosurface loops are 3D only."); return false; }
+    if (!m_isoProjected) {
+        Report(scene, silent, "Extract the isosurface with an offset axis first.");
+        return false;
+    }
+    // The loops are the closed boundary loops of the source isosurface used as the
+    // offset-remesh's CDT constraints: coords are the source-iso vertices, edges the
+    // per-loop wireframe (each loop closed last->first). Both live only in the SEM
+    // cache; ViewToData copies them out before any other SEM_* call invalidates them.
+    SEM_MeshView v{};
+    if (SEM_GetIsosurfaceLoops3D(&v) != 0) {
+        Report(scene, silent, "SEM_GetIsosurfaceLoops3D failed" + SemDetail());
+        return false;
+    }
+    CSV3DLoader::CSV3DData data = ViewToData(v);
+    if (data.edges.empty()) { Report(scene, silent, "No isosurface loops to show."); return false; }
+    DropIsoLoops(scene);
+    const XMFLOAT4 magenta = Colors::MAGENTA;
+    m_isoLoops = scene.AddFromCSV3DData(data, "isoloops_" + Stem(m_srcPath),
+                                        AttachParent(), &magenta);
+    if (!m_isoLoops) { Report(scene, silent, "Isosurface loops: build failed."); return false; }
+    // Thickest tier of the SEM line overlays.
+    StyleLines(m_isoLoops, LINESTYLE_THICK);
+    scene.UpdateLight();
+    snprintf(status, sizeof(status), "Isosurface loops shown.");
     return true;
 }
 
@@ -437,6 +471,7 @@ void SemSession::ReloadMeshColored(Scene& scene) {
     if (!m_mesh) { Report(scene, true, "Recolour mesh: reload failed."); return; }
     m_meshPath  = path;
     m_meshStats = keepStats;
+    StyleLines(m_mesh, LINESTYLE_HAIRLINE);
     if (dim == 3) ConfigureSurface3D(m_mesh);
     if (Alive(scene, m_mesh)) scene.SetNodeVisibleCascade(m_mesh, wasVisible);
     scene.UpdateLight();
@@ -481,6 +516,7 @@ void SemSession::DropIsoline(Scene& scene) {
     DropIsoSource(scene);
     DropIsoProjection(scene);
     DropIsoSrcNormals(scene);
+    DropIsoLoops(scene);
     m_isoProjected = false;
 }
 
@@ -497,6 +533,11 @@ void SemSession::DropIsoNormals(Scene& scene) {
 void SemSession::DropIsoSrcNormals(Scene& scene) {
     if (Alive(scene, m_isoSrcNormals)) scene.RemovePrimitive(m_isoSrcNormals);
     m_isoSrcNormals = nullptr;
+}
+
+void SemSession::DropIsoLoops(Scene& scene) {
+    if (Alive(scene, m_isoLoops)) scene.RemovePrimitive(m_isoLoops);
+    m_isoLoops = nullptr;
 }
 
 void SemSession::DropIsoSource(Scene& scene) {
@@ -644,6 +685,7 @@ bool SemSession::ApplyMesh(Scene& scene, bool silent) {
         std::string p = OutPath("_mesh.csv3d");
         DropMesh(scene);
         m_mesh = scene.AddFromCSV3DData(data, "mesh_" + Stem(m_srcPath), AttachParent(), nullptr, Colors::CYAN, Colors::YELLOW);
+        StyleLines(m_mesh, LINESTYLE_HAIRLINE);
         m_meshPath = p;
         m_meshStats = ComputeStatsData(data);
         snprintf(status, sizeof(status), "Mesh: %s", BaseName(p).c_str());

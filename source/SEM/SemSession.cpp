@@ -16,8 +16,21 @@ Primitive*  SemSession::IsoProjectionPrim() const { return m_isoProj; }
 Primitive*  SemSession::SrcNormalsPrim() const { return m_srcNormals; }
 Primitive*  SemSession::IsoNormalsPrim() const { return m_isoNormals; }
 Primitive*  SemSession::IsoSrcNormalsPrim() const { return m_isoSrcNormals; }
+Primitive*  SemSession::IsoLoopsPrim() const { return m_isoLoops; }
 Primitive*  SemSession::SrcRevSurf()  const { return m_srcRevSurf; }
 Primitive*  SemSession::IsoRevSurf()  const { return m_isoRevSurf; }
+void SemSession::StyleLines(Primitive* p, int style) {
+    if (!p) return;
+    std::function<void(SceneNode*)> rec = [&](SceneNode* n) {
+        if (n->IsPrimitive()) {
+            Primitive* q = static_cast<Primitive*>(n);
+            if (q->GetDimension() == 1) q->lineStyle = style;
+        }
+        for (SceneNode* ch : n->children) rec(ch);
+    };
+    rec(p);
+}
+
 bool        SemSession::HasSource()   const { return m_srcPrim != nullptr && !m_srcPath.empty(); }
 int         SemSession::Dim()         const { return dim; }
 bool        SemSession::ThermalSolved() const { return m_thermalSolved; }
@@ -61,6 +74,7 @@ void SemSession::Bind(Scene& scene, Primitive* prim) {
     m_isoline   = nullptr;
     m_isoNormals = nullptr;
     m_isoSrcNormals = nullptr;
+    m_isoLoops = nullptr;
     m_isoData   = CSV3DLoader::CSV3DData();
     m_srcRevSurf = nullptr;
     m_isoRevSurf = nullptr;
@@ -113,6 +127,7 @@ void SemSession::Unbind() {
     m_offsets = nullptr; m_mesh = nullptr; m_isoline = nullptr;
     m_isoSource = nullptr; m_isoProj = nullptr; m_isoProjected = false;
     m_srcNormals = nullptr; m_isoNormals = nullptr; m_isoSrcNormals = nullptr;
+    m_isoLoops = nullptr;
     m_isoData = CSV3DLoader::CSV3DData();
     m_srcRevSurf = nullptr; m_isoRevSurf = nullptr;
     m_meshPath.clear(); m_isolinePath.clear();
@@ -139,6 +154,7 @@ void SemSession::Validate(Scene& scene) {
     if (m_srcNormals && !Alive(scene, m_srcNormals)) m_srcNormals = nullptr;
     if (m_isoNormals && !Alive(scene, m_isoNormals)) m_isoNormals = nullptr;
     if (m_isoSrcNormals && !Alive(scene, m_isoSrcNormals)) m_isoSrcNormals = nullptr;
+    if (m_isoLoops && !Alive(scene, m_isoLoops)) m_isoLoops = nullptr;
     if (m_srcRevSurf && !Alive(scene, m_srcRevSurf)) m_srcRevSurf = nullptr;
     if (m_isoRevSurf && !Alive(scene, m_isoRevSurf)) m_isoRevSurf = nullptr;
     // Drop plane nodes whose subtree was removed externally (e.g. tree delete).

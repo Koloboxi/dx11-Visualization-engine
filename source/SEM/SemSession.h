@@ -127,6 +127,9 @@ public:
     Primitive*  SrcNormalsPrim() const;
     Primitive*  IsoNormalsPrim() const;
     Primitive*  IsoSrcNormalsPrim() const;
+    // Wireframe of the offset-remesh constraint loops (SEM_GetIsosurfaceLoops3D),
+    // null when not shown. See ShowIsosurfaceLoops3D.
+    Primitive*  IsoLoopsPrim() const;
     Primitive*  SrcRevSurf()  const;
     Primitive*  IsoRevSurf()  const;
     bool        HasSource()   const;
@@ -261,6 +264,13 @@ public:
     // show=false drops the overlay. 3D only.
     bool ShowSourceIsoPseudonormals(Scene& scene, bool show, bool silent);
 
+    // Show/hide the constrained-CDT boundary loops traced for the offset-remesh
+    // (SEM_GetIsosurfaceLoops3D): the closed loops of the source isosurface used as
+    // the re-triangulation constraints, drawn as a magenta thick-line wireframe.
+    // Available only after an offset-axis extraction (HasIsoProjection); show=false
+    // drops the overlay. 3D only.
+    bool ShowIsosurfaceLoops3D(Scene& scene, bool show, bool silent);
+
     // Show/hide the two intermediate stages of an offset-and-remesh extraction,
     // fetched on demand from the SEM cache (they are not serialized to disk):
     //   ShowSourceIsosurface3D     - the original extracted iso sheet, before the
@@ -316,6 +326,7 @@ private:
     Primitive*  m_srcNormals = nullptr;
     Primitive*  m_isoNormals = nullptr;
     Primitive*  m_isoSrcNormals = nullptr;   // pre-offset source isosurface normals
+    Primitive*  m_isoLoops = nullptr;        // offset-remesh constraint loops wireframe
     // Copy of the geometry currently displayed as the isosurface, kept so the
     // winding highlight can recolour and the pseudonormals can be computed without
     // re-extracting or re-reading a file (handles the offset-and-remesh case too).
@@ -453,7 +464,13 @@ private:
     void DropSrcNormals(Scene& scene);
     void DropIsoNormals(Scene& scene);
     void DropIsoSrcNormals(Scene& scene);
+    void DropIsoLoops(Scene& scene);
     void ReloadMeshColored(Scene& scene);
+
+    // Assign line style `style` (a Scene LineStyleId) to every thick-line (dim==1)
+    // primitive in p's subtree — used to give the SEM overlays their thickness tier
+    // (iso loops thickest, on-plane lines, normals, mesh edges thinnest).
+    static void StyleLines(Primitive* p, int style);
 
     // Build the displayed isosurface primitive from `data`, honouring
     // isoShowWinding (per-triangle minority-red colouring) or the plain green

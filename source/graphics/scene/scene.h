@@ -3,6 +3,7 @@
 #include "jsonSaver.h"
 
 #include "../shaders/shaders.h"
+#include "../buffers/constantBuffer.h"
 #include "..\misc\Colors.h"
 
 #include "..\imgui\imgui.h"
@@ -30,6 +31,26 @@ struct GlobalSlider {
     float* valuePtr = nullptr;
     float min = 0.f;
     float max = 1.f;
+};
+
+// A named line-thickness preset. A primitive drawn as a thick line (dim==1)
+// picks one of the scene's styles by index (Primitive::lineStyle); the width is
+// pushed into CB_GS_geometryshader just before that primitive is drawn. The
+// top-strip thickness popup edits each style live. Style 0 is the default and is
+// also used by the grid, trajectories and any unstyled line.
+struct LineStyle {
+    std::string name;
+    float thickness = 0.001f;
+};
+
+// Well-known style indices. Kept stable so callers (e.g. the SEM session) can map
+// their overlays to a thickness tier without a name lookup.
+enum LineStyleId {
+    LINESTYLE_DEFAULT  = 0,
+    LINESTYLE_THICK    = 1,
+    LINESTYLE_MEDIUM   = 2,
+    LINESTYLE_THIN     = 3,
+    LINESTYLE_HAIRLINE = 4
 };
 
 class Scene {
@@ -65,10 +86,22 @@ public:
 	bool rsWireframe = false;
 	bool rsNoCull = true;
 
-	// Width of geometry-shader-thickened lines (dim==1 primitives), in clip-space
-	// half-width units. Pushed into CB_GS_geometryshader each frame by Graphics so
-	// the top-strip thickness popup edits it live.
-	float lineThickness = 0.001f;
+	// Named thickness presets for geometry-shader-thickened lines (dim==1
+	// primitives), in clip-space half-width units. Seeded in Initialize; the
+	// top-strip thickness popup edits each one live and the Transform window lets a
+	// selected line pick its style. Style 0 ("Default") is the baseline used by the
+	// grid, trajectories and any line that has not chosen a style.
+	std::vector<LineStyle> lineStyles;
+
+	// Thickness of style `idx`, clamped to a valid entry (falls back to style 0).
+	float LineStyleThickness(int idx) const;
+
+	// GS thickness constant buffer, owned by Graphics and bound on GS slot b0.
+	// Scene borrows the pointer so Draw() can push a per-primitive line width; set
+	// once by Graphics after the buffer is initialized.
+	ConstantBuffer<CB_GS_geometryshader>* gsThicknessCB = nullptr;
+	// Push a line width into the GS constant buffer (no-op until gsThicknessCB is set).
+	void ApplyLineThickness(float t);
 
 	// Standard-projection orientation for the iso/dim presets driven by the nav
 	// gizmo ball: which axis is "up" (0=X,1=Y,2=Z) and its sign (+1/-1). Set from

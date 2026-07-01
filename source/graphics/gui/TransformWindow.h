@@ -107,6 +107,27 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
             scene.orientationTransformer.Update();
         }
         ImGui::TextDisabled("Degrees; X pitch, Y yaw, Z roll.");
+
+        // Thick lines (dim==1) pick a named width from the scene's line styles.
+        if (sel->GetDimension() == 1 && !scene.lineStyles.empty()) {
+            ImGui::Separator();
+            if (sel->lineStyle < 0 || sel->lineStyle >= (int)scene.lineStyles.size())
+                sel->lineStyle = 0;
+            ImGui::SetNextItemWidth(200);
+            if (ImGui::BeginCombo("line style", scene.lineStyles[sel->lineStyle].name.c_str())) {
+                for (int i = 0; i < (int)scene.lineStyles.size(); ++i) {
+                    bool s = (sel->lineStyle == i);
+                    char lbl[64];
+                    snprintf(lbl, sizeof(lbl), "%s (%.4f)", scene.lineStyles[i].name.c_str(),
+                             scene.lineStyles[i].thickness);
+                    if (ImGui::Selectable(lbl, s)) sel->lineStyle = i;
+                    if (s) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::SetItemTooltip("Line-thickness preset used to draw this line. Edit the widths\n"
+                                  "in the top-strip line-styles popup.");
+        }
     }
 
     if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem | ImGuiHoveredFlags_ChildWindows))

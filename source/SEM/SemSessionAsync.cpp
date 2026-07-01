@@ -205,6 +205,7 @@ void SemSession::PollAsync(Scene& scene) {
                                             solved ? Colors::RED  : Colors::YELLOW,
                                             solved && bcView, /*registerColorSets*/ solved);
             m_meshPath = m_job.meshPath;
+            StyleLines(m_mesh, LINESTYLE_HAIRLINE);
             ConfigureSurface3D(m_mesh);
             m_meshStats = ComputeStatsData(data);
             if (solvedThisRun) m_thermalSolved = true;
