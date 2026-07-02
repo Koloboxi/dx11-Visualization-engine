@@ -1,8 +1,8 @@
 #include "Camera.h"
 #include <algorithm>
 
-static constexpr float SCALE_MIN = 0.000001f;
-static constexpr float SCALE_MAX = 10000000.f;
+static constexpr double SCALE_MIN = 1e-12;
+static constexpr double SCALE_MAX = 1e12;
 
 // Depth range = max(viewWidth, viewHeight) * scale * DEPTH_FACTOR.
 // Factor 10 means the clip volume is 10 viewport-widths deep on each side —
@@ -18,7 +18,7 @@ Camera::Camera() {
 
 float Camera::DynamicHalfDepth() const {
 	float maxDim = baseViewWidth > baseViewHeight ? baseViewWidth : baseViewHeight;
-	float h = maxDim * scale * DEPTH_FACTOR;
+	float h = static_cast<float>(maxDim * scale * DEPTH_FACTOR);
 	return h < 1.0f ? 1.0f : h;
 }
 
@@ -27,8 +27,8 @@ void Camera::SetProjectionValues(float viewWidth, float viewHeight, float /*near
 	this->baseViewHeight = viewHeight;
 	float h = DynamicHalfDepth();
 	this->projectionMatrix = XMMatrixOrthographicRH(
-		this->baseViewWidth  * this->scale,
-		this->baseViewHeight * this->scale,
+		static_cast<float>(this->baseViewWidth  * this->scale),
+		static_cast<float>(this->baseViewHeight * this->scale),
 		-h, h);
 }
 
@@ -77,39 +77,40 @@ const XMMATRIX& Camera::GetRotMatrix() const
 }
 const float Camera::GetScale() const
 {
-	return this->scale;
+	return static_cast<float>(this->scale);
 }
 
 void Camera::SetScale(const float& scaleFactor)
 {
-	this->scale = std::clamp(scaleFactor, SCALE_MIN, SCALE_MAX);
+	this->scale = std::clamp(static_cast<double>(scaleFactor), SCALE_MIN, SCALE_MAX);
 	float h = DynamicHalfDepth();
 	this->projectionMatrix = XMMatrixOrthographicRH(
-		this->baseViewWidth  * this->scale,
-		this->baseViewHeight * this->scale,
+		static_cast<float>(this->baseViewWidth  * this->scale),
+		static_cast<float>(this->baseViewHeight * this->scale),
 		-h, h);
 	UpdateViewMatrix();
 }
 
 void Camera::AdjustScale(const float& scaleFactor, XMFLOAT2 scaleCenterNDC)
 {
-	float newScale = std::clamp(this->scale * scaleFactor, SCALE_MIN, SCALE_MAX);
-	float actualFactor = newScale / this->scale;
+	double newScale = std::clamp(this->scale * scaleFactor, SCALE_MIN, SCALE_MAX);
+	double actualFactor = newScale / this->scale;
 	this->scale = newScale;
 
-	float oldWidth  = baseViewWidth  * (this->scale / actualFactor);
-	float oldHeight = baseViewHeight * (this->scale / actualFactor);
-	float newWidth  = baseViewWidth  * this->scale;
-	float newHeight = baseViewHeight * this->scale;
+	double oldWidth  = baseViewWidth  * (this->scale / actualFactor);
+	double oldHeight = baseViewHeight * (this->scale / actualFactor);
+	double newWidth  = baseViewWidth  * this->scale;
+	double newHeight = baseViewHeight * this->scale;
 
-	float dx = (oldWidth  - newWidth)  * 0.5f * scaleCenterNDC.x;
-	float dy = (oldHeight - newHeight) * 0.5f * scaleCenterNDC.y;
+	float dx = static_cast<float>((oldWidth  - newWidth)  * 0.5 * scaleCenterNDC.x);
+	float dy = static_cast<float>((oldHeight - newHeight) * 0.5 * scaleCenterNDC.y);
 
 	XMVECTOR dPos = this->vec_left * dx + this->vec_upward * dy;
 	this->AdjustPosition(dPos);
 
 	float h = DynamicHalfDepth();
-	this->projectionMatrix = XMMatrixOrthographicRH(newWidth, newHeight, -h, h);
+	this->projectionMatrix = XMMatrixOrthographicRH(
+		static_cast<float>(newWidth), static_cast<float>(newHeight), -h, h);
 	UpdateViewMatrix();
 }
 

@@ -214,6 +214,33 @@ SEM_API int SEM_SolveThermal3D(float max_inward);
 // <stem>_isosurface3d.csv3d.
 SEM_API int SEM_ExtractIsosurface3D(double value);
 
+// Re-meshing strategy for the offset-remesh (`mode` below):
+//   SEM_REMESH_HEIGHTFIELD (0) - single constrained Delaunay of the whole projected
+//       point cloud with the iso boundary loops as constraints; assumes a single-valued
+//       height field over the axis (a folded projection is rejected). The default.
+//   SEM_REMESH_TOPDOWN_SWEEP (1) - top-down height-band sweep: the projected points are
+//       swept from the top (largest coordinate along the axis) downward in bands; each
+//       band is triangulated together with all higher bands and the previous
+//       triangulation's edges are re-imposed as Delaunay constraints, locking the upper
+//       connectivity before the lower points fill in. Tolerates mild folds (coincident
+//       projections collapse to the topmost sheet) and ignores the boundary loops, so it
+//       fills the convex projected footprint.
+enum SEM_IsoRemeshMode {
+    SEM_REMESH_HEIGHTFIELD   = 0,
+    SEM_REMESH_TOPDOWN_SWEEP = 1
+};
+
+// Sweep direction for SEM_REMESH_TOPDOWN_SWEEP (`sweep_dir` below); ignored by
+// SEM_REMESH_HEIGHTFIELD. Selects which end of `axis` the pass starts from:
+//   SEM_SWEEP_DOWN (0) - start at the top (largest coordinate along the axis /
+//       +plane-normal side) and descend; a fold collapses to the topmost sheet. Default.
+//   SEM_SWEEP_UP (1)   - start at the bottom (smallest coordinate) and ascend; a fold
+//       collapses to the bottom-most sheet and the lower connectivity is locked first.
+enum SEM_SweepDir {
+    SEM_SWEEP_DOWN = 0,
+    SEM_SWEEP_UP   = 1
+};
+
 // Offset-and-remesh the extracted isosurface (SEM_ExtractIsosurface3D), as the final
 // pipeline stage producing the target remeshed isosurface. Operates on the cached
 // iso Surface (SEM_GetSourceIsosurface3D) directly: it is shifted along its
@@ -221,14 +248,27 @@ SEM_API int SEM_ExtractIsosurface3D(double value);
 // signed multiple, positive inward against the outward normals, negative outward —
 // concave folds nearer than the min_offset_value clearance are dropped (same cull
 // semantics as the standalone SEM_OffsetRemeshInPlaneSurface3D below), and the
-// survivors are re-meshed as a height field over the base plane perpendicular to
-// `axis` (1/2/3 = X/Y/Z). The current clip planes are applied. The remeshed result
-// is cached (read it back with SEM_GetIsosurface3D, the flat projection with
-// SEM_GetIsosurfaceProjection3D), written to surface_remesh3d.csv3d, and returned in
-// `out` (see SEM_MeshView). Requires an extracted iso surface; negative if absent or
-// on failure.
+// survivors are re-meshed over the base plane perpendicular to `axis` (1/2/3 = X/Y/Z)
+// by the strategy `mode` selects (SEM_IsoRemeshMode). The current clip planes are
+// applied. The remeshed result is cached (read it back with SEM_GetIsosurface3D, the
+// flat projection with SEM_GetIsosurfaceProjection3D) and written to
+// surface_remesh3d.csv3d. Requires an extracted iso surface; negative if absent or on
+// failure.
 SEM_API int SEM_OffsetRemeshIsosurface3D(int axis, double offset_value,
-    double min_offset_value);
+    double min_offset_value, int mode = SEM_REMESH_HEIGHTFIELD,
+    int sweep_dir = SEM_SWEEP_DOWN);
+
+// Final isotropic remesh of the offset-remeshed isosurface (SEM_OffsetRemeshIsosurface3D),
+// in place, as an optional cleanup stage. The height-field re-mesh leaves tall, narrow,
+// near-degenerate triangles where a near-vertical wall projects to a thin sliver over the
+// base plane; this pass runs `iterations` sweeps of short-edge collapse, long-edge split,
+// and tangential relaxation to break those slivers into well-shaped triangles at a target
+// edge length of target_len_mult * the sheet's average edge length (target_len_mult <= 0
+// uses the median edge length). Boundary vertices lying in a clip plane slide flat within
+// it; every other boundary vertex is frozen. The active clip planes are respected. The
+// re-meshed result replaces the cache (read it back with SEM_GetIsosurface3D) and rewrites
+// surface_remesh3d.csv3d. Requires an offset-remeshed iso; negative if absent or on failure.
+SEM_API int SEM_RemeshIsosurface3D(double target_len_mult = 1.0, int iterations = 3);
 
 // --- Reload previously serialized stages into the cache (skip recomputation) ---
 
@@ -281,7 +321,7 @@ SEM_API int SEM_LoadState3D(const char* dir);
 SEM_API int SEM_OffsetRemeshInPlaneSurface3D(int axis, double offset_value,
     const double* xyz, int num_nodes,
     const int* tris, int num_tris,
-    double min_offset_value,
+    double min_offset_value, int mode, int sweep_dir,
     SEM_MeshView* out);
 
 // Average edge length of the loaded source surface (the unit for first_gap).
@@ -323,3 +363,32 @@ SEM_API int SEM_GetIsosurfaceProjection3D(SEM_MeshView* out);
 // SEM_OffsetRemeshIsosurface3D has run; negative if not yet computed. See SEM_MeshView
 // for the lifetime/layout contract.
 SEM_API int SEM_GetIsosurfaceLoops3D(SEM_MeshView* out);
+
+// What one clip-plane operation of the 3D pipeline did to the geometry it ran on:
+//   stage     : "<pipeline stage>/<operation>" label. Stages, in pipeline order:
+//               "source" (the source restriction on load / clip change), "offset<i>"
+//               (the cut of offset shell i), "isosurface" (the extracted-iso
+//               restriction), "remesh" (the final cut of the remeshed sheet).
+//               Operations: "snap" (near-plane vertices projected onto the planes),
+//               "cut<j>" (the half-space cut by plane j), "drop" (coplanar caps
+//               removed).
+//   moved     : vertices the snap moved, 6 doubles each — original x,y,z then
+//               snapped x,y,z. num_moved is the vertex (pair) count. Null/0 for cuts.
+//   removed   : the geometry the operation removed (the clipped-away sheet of a cut,
+//               the dropped coplanar caps), as a compact SEM_MeshView. Empty for
+//               snaps and for calls that removed nothing.
+struct SEM_ClipChangeView {
+    const char*   stage;
+    const double* moved;
+    int           num_moved;
+    SEM_MeshView  removed;
+};
+
+// The log of every clip-plane operation the 3D pipeline stages ran, one
+// SEM_ClipChangeView per call, in pipeline order (source, offsets, isosurface,
+// remesh). Each stage's entries are replaced when that stage reruns and dropped when
+// its geometry is invalidated. Empty (count 0, out null) when no clip planes are set
+// or nothing has run. `*out` points into the cache and follows the SEM_MeshView
+// lifetime contract. The standalone SEM_OffsetRemeshInPlaneSurface3D is not logged
+// (it does not touch the pipeline cache).
+SEM_API int SEM_GetClipChanges3D(const SEM_ClipChangeView** out, int* count);

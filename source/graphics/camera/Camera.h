@@ -46,7 +46,7 @@ private:
 	XMMATRIX viewMatrix;
 	XMMATRIX projectionMatrix;
 
-	float scale = 1.0;
+	double scale = 1.0;
 	float baseViewWidth;
 	float baseViewHeight;
 

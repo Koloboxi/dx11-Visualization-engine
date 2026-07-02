@@ -93,6 +93,7 @@ void SemSession::Bind(Scene& scene, Primitive* prim) {
     // reference (the staging change tears the old source down) and reset its state.
     m_onPlaneGroup = nullptr;
     m_clipOnPlaneShown = false;
+    for (int c = 0; c < CLIPCHG_COUNT; ++c) { m_clipChangeGroup[c] = nullptr; m_clipChangesShown[c] = false; }
     m_srcRebuildPending = false;
     m_offsetsMs = m_meshMs = m_thermalMs = m_isoMs = -1.0;
     // A fresh source clears the SEM core cache, so every stage must be recomputed.
@@ -139,6 +140,7 @@ void SemSession::Unbind() {
     m_clipGroup = nullptr;
     m_onPlaneGroup = nullptr;
     m_clipOnPlaneShown = false;
+    for (int c = 0; c < CLIPCHG_COUNT; ++c) { m_clipChangeGroup[c] = nullptr; m_clipChangesShown[c] = false; }
     m_srcRebuildPending = false;
     m_srcStats = m_offStats = m_meshStats = Stats();
     snprintf(status, sizeof(status), "Ready");
@@ -164,6 +166,10 @@ void SemSession::Validate(Scene& scene) {
     }
     if (m_clipGroup && !Alive(scene, m_clipGroup)) m_clipGroup = nullptr;
     if (m_onPlaneGroup && !Alive(scene, m_onPlaneGroup)) { m_onPlaneGroup = nullptr; m_clipOnPlaneShown = false; }
+    for (int c = 0; c < CLIPCHG_COUNT; ++c)
+        if (m_clipChangeGroup[c] && !Alive(scene, m_clipChangeGroup[c])) {
+            m_clipChangeGroup[c] = nullptr; m_clipChangesShown[c] = false;
+        }
 }
 
 void SemSession::MarkStageDirty(Stage st) {
@@ -294,6 +300,7 @@ void SemSession::RebuildSourcePrim(Scene& scene) {
     m_srcStats = ComputeStatsData(data);
     if (AnyClipMirror())   RebuildClipMirrors(scene);
     if (m_clipOnPlaneShown) RefreshClipOnPlane(scene);
+    RefreshClipChanges(scene);
     scene.UpdateLight();
 }
 

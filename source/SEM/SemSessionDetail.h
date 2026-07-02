@@ -58,7 +58,9 @@ int SafeSolveThermal();
 int SafeSolveThermal3D(float max_inward);
 int SafeExtractIsoline(double value);
 int SafeExtractIsosurface3D(double value);
-int SafeOffsetRemeshIsosurface3D(int axis, double offset_value, double min_offset_value);
+int SafeOffsetRemeshIsosurface3D(int axis, double offset_value, double min_offset_value,
+                                 int mode, int sweep_dir);
+int SafeRemeshIsosurface3D(double target_len_mult, int iterations);
 
 // Verbose detail for the most recent SEM_* failure (SEM_GetLastError), formatted
 // as " — <text>" for appending to a status message, or "" when none. MUST be

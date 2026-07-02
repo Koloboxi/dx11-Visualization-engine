@@ -74,6 +74,9 @@ void SemSession::ClearClipPlanes3D(Scene& scene) {
     CheckRc(scene, false, "SEM_ClearClipPlanes3D", rc, { "", "No surface loaded" });
     DropClipMirrors(scene);
     DropClipPlaneNodes(scene);
+    // No planes => no clip-change records; drop every category overlay (and its
+    // shown flag) so a stale one does not linger.
+    for (int c = 0; c < CLIPCHG_COUNT; ++c) { DropClipChanges(scene, c); m_clipChangesShown[c] = false; }
     DropMesh(scene);
     m_dirty[STAGE_MESH] = m_dirty[STAGE_THERMAL] = m_dirty[STAGE_ISOSURFACE] = true;
     m_appliedClipPlanes.clear();
@@ -442,6 +445,114 @@ void SemSession::ShowClipOnPlane(Scene& scene, bool show) {
     m_clipOnPlaneShown = show;
     DropClipOnPlane(scene);
     if (show) BuildClipOnPlane(scene);
+    scene.UpdateLight();
+}
+
+static const char* kClipChangePrefix = "sem_clipchg_";
+
+// Snap displacements drawn as yellow segments (original -> snapped), removed
+// geometry as a translucent red surface (matching the soft-red "kept" / soft-blue
+// "removed" convention of the plane rectangles, but opaque enough to read as a solid
+// clipped-away sheet).
+static const XMFLOAT4 kClipChgMoveColor   = Colors::YELLOW;
+static const XMFLOAT4 kClipChgRemoveColor = XMFLOAT4(0.90f, 0.30f, 0.30f, 0.45f);
+
+// Map a record's "<stage>/<op>" label to its window-section category: "offset<i>/.."
+// -> Offsets, "isosurface/.." and "remesh/.." -> Isosurface, everything else
+// ("source/..") -> Source surface.
+static int ClipChangeCategoryOf(const char* stage) {
+    if (!stage) return CLIPCHG_SOURCE;
+    std::string s(stage);
+    if (s.rfind("offset", 0) == 0)     return CLIPCHG_OFFSETS;
+    if (s.rfind("isosurface", 0) == 0) return CLIPCHG_ISO;
+    if (s.rfind("remesh", 0) == 0)     return CLIPCHG_ISO;
+    return CLIPCHG_SOURCE;
+}
+
+void SemSession::BuildClipChanges(Scene& scene, int category) {
+    if (dim != 3 || AsyncRunning()) return;
+    if (category < 0 || category >= CLIPCHG_COUNT) return;
+
+    const SEM_ClipChangeView* cc = nullptr;
+    int n = 0;
+    if (SEM_GetClipChanges3D(&cc, &n) != 0 || !cc || n <= 0) return;
+
+    // Copy everything out of the cache-owned views first: the view pointers are only
+    // valid until the next SEM_* call, and the records of this category are gathered
+    // before any scene primitive is built.
+    std::vector<XMFLOAT3> segNodes;                          // pairs: orig, snapped, ...
+    std::vector<std::pair<unsigned, unsigned>> segEdges;
+    std::vector<CSV3DLoader::CSV3DData> removedMeshes;
+    for (int i = 0; i < n; ++i) {
+        if (ClipChangeCategoryOf(cc[i].stage) != category) continue;
+        if (cc[i].moved && cc[i].num_moved > 0) {
+            for (int k = 0; k < cc[i].num_moved; ++k) {
+                const double* m = cc[i].moved + 6 * k;
+                unsigned base = (unsigned)segNodes.size();
+                segNodes.push_back(XMFLOAT3((float)m[0], (float)m[1], (float)m[2]));
+                segNodes.push_back(XMFLOAT3((float)m[3], (float)m[4], (float)m[5]));
+                segEdges.push_back({ base, base + 1 });
+            }
+        }
+        if (cc[i].removed.num_nodes > 0 &&
+            (cc[i].removed.num_tris > 0 || cc[i].removed.num_edges > 0))
+            removedMeshes.push_back(ViewToData(cc[i].removed));
+    }
+    if (segEdges.empty() && removedMeshes.empty()) return;
+
+    SceneNode* grp = scene.AddGroupNode(
+        std::string(kClipChangePrefix) + std::to_string(category) + "_" + Stem(m_srcPath),
+        AttachParent());
+    m_clipChangeGroup[category] = grp;
+
+    if (!segEdges.empty()) {
+        CSV3DLoader::CSV3DData seg;
+        seg.nodes.reserve(segNodes.size());
+        for (const XMFLOAT3& p : segNodes) { CSV3DLoader::Node nd{}; nd.pos = p; seg.nodes.push_back(nd); }
+        seg.edges = std::move(segEdges);
+        Primitive* lines = scene.AddFromCSV3DData(seg, std::string(kClipChangePrefix) + "move",
+                                                  grp, &kClipChgMoveColor);
+        if (lines) { lines->SetIlluminationCapability(false); lines->SetUseVertexColor(false);
+                     lines->SetColor(kClipChgMoveColor); StyleLines(lines, LINESTYLE_MEDIUM); }
+        // Mark where the snapped vertices landed with a point cloud (every odd node).
+        std::vector<XMFLOAT3> pts;
+        pts.reserve(segNodes.size() / 2);
+        for (size_t i = 1; i < segNodes.size(); i += 2) pts.push_back(segNodes[i]);
+        Primitive* cloud = scene.AddPointCloud(pts, kClipChgMoveColor,
+                                               std::string(kClipChangePrefix) + "movepts", grp);
+        if (cloud) cloud->SetIlluminationCapability(false);
+    }
+
+    int ri = 0;
+    for (const CSV3DLoader::CSV3DData& rm : removedMeshes) {
+        Primitive* surf = scene.AddFromCSV3DData(rm, std::string(kClipChangePrefix) + "rem" +
+                                                 std::to_string(ri++), grp, &kClipChgRemoveColor);
+        if (surf) { surf->SetUseVertexColor(false); surf->SetColor(kClipChgRemoveColor);
+                    surf->SetTwoSided(true, kClipChgRemoveColor); surf->SetAlpha(kClipChgRemoveColor.w); }
+    }
+}
+
+void SemSession::DropClipChanges(Scene& scene, int category) {
+    if (category < 0 || category >= CLIPCHG_COUNT) return;
+    if (m_clipChangeGroup[category] && Alive(scene, m_clipChangeGroup[category]))
+        scene.RemoveNode(m_clipChangeGroup[category]);
+    m_clipChangeGroup[category] = nullptr;
+}
+
+void SemSession::ShowClipChanges(Scene& scene, int category, bool show) {
+    if (category < 0 || category >= CLIPCHG_COUNT) return;
+    m_clipChangesShown[category] = show;
+    DropClipChanges(scene, category);
+    if (show) BuildClipChanges(scene, category);
+    scene.UpdateLight();
+}
+
+void SemSession::RefreshClipChanges(Scene& scene) {
+    for (int c = 0; c < CLIPCHG_COUNT; ++c) {
+        if (!m_clipChangesShown[c]) continue;
+        DropClipChanges(scene, c);
+        BuildClipChanges(scene, c);
+    }
     scene.UpdateLight();
 }
 

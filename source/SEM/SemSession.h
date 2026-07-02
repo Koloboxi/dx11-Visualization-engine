@@ -15,6 +15,14 @@ enum Stage { STAGE_SUBDIVIDE = 0, STAGE_OFFSETS = 1, STAGE_MESH = 2, STAGE_THERM
              STAGE_ISOSURFACE = 4 };
 enum OffsetMode { OFFSET_EVEN = 0, OFFSET_GAPS = 1 };
 
+// Grouping of the SEM_GetClipChanges3D records by the pipeline stage that produced
+// them, so each section of the SEM window toggles only the changes it owns:
+//   CLIPCHG_SOURCE  - the "source/..." records (Source surface section)
+//   CLIPCHG_OFFSETS - the "offset<i>/..." records (Offsets section)
+//   CLIPCHG_ISO     - the "isosurface/..." and "remesh/..." records (Isosurface section)
+enum ClipChangeCategory { CLIPCHG_SOURCE = 0, CLIPCHG_OFFSETS = 1, CLIPCHG_ISO = 2,
+                          CLIPCHG_COUNT = 3 };
+
 struct Stats {
     bool valid    = false;
     int  verts    = 0;
@@ -75,6 +83,21 @@ public:
     // keep the folds and drop only vertices that crossed THROUGH the iso. Maps to
     // SEM_OffsetRemeshIsosurface3D's min_offset_value.
     float isoMinOffsetValue = 0.0f;
+    // Re-meshing strategy for the offset-remesh (SEM_IsoRemeshMode; ignored when
+    // isoAxis = 0): SEM_REMESH_HEIGHTFIELD (single boundary-constrained CDT, needs a
+    // single-valued projection) or SEM_REMESH_TOPDOWN_SWEEP (top-down height-band
+    // sweep locking upper connectivity; tolerates folds, fills the convex footprint).
+    int   isoMode = SEM_REMESH_HEIGHTFIELD;
+    // Sweep pass direction for SEM_REMESH_TOPDOWN_SWEEP (SEM_SweepDir; ignored for the
+    // height-field mode and when isoAxis = 0): SEM_SWEEP_DOWN (from the top of the axis
+    // down) or SEM_SWEEP_UP (from the bottom up).
+    int   isoSweepDir = SEM_SWEEP_DOWN;
+    // Optional final isotropic remesh of the offset-remeshed sheet (its own header /
+    // Apply): target edge length as a multiple of the sheet's own average edge length
+    // (<= 0 uses the median), and the sweep count. Maps to SEM_RemeshIsosurface3D. Runs
+    // standalone on the cached offset-remesh result — it does NOT re-extract the iso.
+    float isoFinalTargetMult = 1.0f;
+    int   isoFinalIters      = 3;
     // When set, the extracted isosurface is drawn with its real (possibly
     // inconsistent) winding and the minority-oriented triangles are painted pure
     // red instead of the uniform green. See SetIsoWinding / WindingMinorityTris.
@@ -227,6 +250,19 @@ public:
     void RefreshClipOnPlane(Scene& scene);
     bool ClipOnPlaneShown() const { return m_clipOnPlaneShown; }
 
+    // Overlay of the clip-plane geometry changes the core logged for one pipeline
+    // stage category (SEM_GetClipChanges3D). For every record whose stage belongs to
+    // `category` the snap displacements are drawn as short yellow segments (original
+    // -> snapped vertex) and the removed geometry (the clipped-away sheet / dropped
+    // coplanar caps) as a translucent red surface. Each category has its own checkbox
+    // in the matching SEM window section. RefreshClipChanges rebuilds whichever
+    // categories are shown (after a plane/pipeline change). 3D only.
+    void ShowClipChanges(Scene& scene, int category, bool show);
+    void RefreshClipChanges(Scene& scene);
+    bool ClipChangesShown(int category) const {
+        return category >= 0 && category < CLIPCHG_COUNT && m_clipChangesShown[category];
+    }
+
     // Wall-clock duration (ms) of the most recent compute of each stage, or < 0
     // when the stage has not been computed this session.
     double OffsetsTimeMs() const { return m_offsetsMs; }
@@ -301,6 +337,11 @@ public:
     const char* AsyncStageName() const;
     float AsyncProgress() const;
     void RecomputeUpToAsync(Scene& scene, Stage to, bool silent);
+    // Standalone async final remesh of the offset-remeshed isosurface already in the
+    // cache (SEM_RemeshIsosurface3D). Unlike RecomputeUpToAsync(STAGE_ISOSURFACE) it does
+    // NOT re-extract or re-offset — it operates on the last offset-remesh result — so it
+    // is cheap. Requires an offset-axis iso to have been extracted (m_isoProjected).
+    void ApplyIsoFinalRemeshAsync(Scene& scene, bool silent);
     void PollAsync(Scene& scene);
     void CancelAsync();
     bool AsyncCancelRequested() const;
@@ -347,6 +388,11 @@ private:
     bool        m_clipOnPlaneShown = false;
     SceneNode*  m_onPlaneGroup = nullptr;
 
+    // Per-category clip-change overlay: one group node owns the snap-displacement
+    // lines and removed-geometry surfaces logged for that stage category.
+    bool        m_clipChangesShown[CLIPCHG_COUNT] = { false, false, false };
+    SceneNode*  m_clipChangeGroup[CLIPCHG_COUNT]  = { nullptr, nullptr, nullptr };
+
     // Stage compute durations in ms; < 0 means "not measured this session".
     double m_offsetsMs = -1.0;
     double m_meshMs    = -1.0;
@@ -375,6 +421,9 @@ private:
         // thermal solve and the isosurface extraction are separate progress-
         // reporting stages (runThermal solves, runIso extracts).
         bool   runOffsets = false, runMesh = false, runThermal = false, runIso = false;
+        // Standalone final remesh of the cached offset-remesh sheet (SEM_RemeshIsosurface3D);
+        // set only by ApplyIsoFinalRemeshAsync, never alongside the run* stages above.
+        bool   runIsoFinalRemesh = false;
         // Visibility to apply to each produced primitive (snapshot of *Enabled).
         bool   offVisible = false, meshVisible = false, isoVisible = false;
 
@@ -390,6 +439,10 @@ private:
         int                 isoAxis = 0;
         double              isoOffsetValue = 0.0;
         double              isoMinOffsetValue = 0.0;
+        int                 isoMode = SEM_REMESH_HEIGHTFIELD;
+        int                 isoSweepDir = SEM_SWEEP_DOWN;
+        double              isoFinalTargetMult = 1.0;
+        int                 isoFinalIters = 3;
         float               maxInward = 1.0f;
 
         // Deterministic output paths the SEM core writes (computed at launch).
@@ -442,6 +495,11 @@ private:
 
     void DropClipOnPlane(Scene& scene);
     void BuildClipOnPlane(Scene& scene);
+    // Build/drop the clip-change overlay of one stage category. BuildClipChanges
+    // fetches SEM_GetClipChanges3D, keeps the records whose stage maps to `category`
+    // (ClipChangeCategoryOf), and draws their snap segments and removed geometry.
+    void BuildClipChanges(Scene& scene, int category);
+    void DropClipChanges(Scene& scene, int category);
     // Add one surface's on-plane overlay (filled planar triangles, on-plane edges
     // and isolated on-plane points, all in `color`) under `grp`. `tol` is the
     // strict on-plane band; `lift` nudges the filled triangles off the surface

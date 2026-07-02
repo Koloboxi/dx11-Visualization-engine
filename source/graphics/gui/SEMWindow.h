@@ -398,6 +398,17 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
                     S.ShowSourcePseudonormals(scene, show, false);
                 ImGui::SetItemTooltip("Draw the angle-weighted vertex pseudonormals of the source\n"
                                       "surface as short yellow line segments.");
+
+                // Clip-plane geometry changes logged for the SOURCE restriction:
+                // yellow snap segments (vertex -> its snapped position) and the
+                // translucent red geometry the half-space cut removed.
+                bool srcChg = S.ClipChangesShown(SemSessionNS::CLIPCHG_SOURCE);
+                if (ImGui::Checkbox("Source clip changes", &srcChg))
+                    S.ShowClipChanges(scene, SemSessionNS::CLIPCHG_SOURCE, srcChg);
+                ImGui::SetItemTooltip("Show what the clip planes did to the SOURCE surface: the snap\n"
+                                      "displacements as short yellow segments (each vertex to where it\n"
+                                      "was snapped onto a plane) and the clipped-away geometry as a\n"
+                                      "translucent red surface. Needs clip planes set.");
             }
         }
         ImGui::PopID();
@@ -494,6 +505,17 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         if (changed || released) S.MarkStageDirty(STAGE_OFFSETS);
         if (!is3D && S.offAuto) { if (changed || released) S.RecomputeUpToAsync(scene, STAGE_OFFSETS, true); }
         else if (ImGui::Button("Apply", {160, 0})) S.RecomputeUpToAsync(scene, STAGE_OFFSETS, false);
+
+        // Clip-plane geometry changes logged for the OFFSET shells: the translucent
+        // red geometry each shell's half-space cut removed (offset shells are not
+        // snapped, so there are no snap segments here).
+        if (is3D) {
+            bool offChg = S.ClipChangesShown(SemSessionNS::CLIPCHG_OFFSETS);
+            if (ImGui::Checkbox("Offset clip changes", &offChg))
+                S.ShowClipChanges(scene, SemSessionNS::CLIPCHG_OFFSETS, offChg);
+            ImGui::SetItemTooltip("Show the geometry the clip planes cut away from the offset shells,\n"
+                                  "as a translucent red surface. Needs clip planes set.");
+        }
         ImGui::Unindent();
         }
         ImGui::PopID();
@@ -695,6 +717,37 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
                                   "    folded the sheet onto itself.\n"
                                   "  c = 0 (min == 0): signed-crossing cull - keep the folds and drop\n"
                                   "    only vertices that crossed THROUGH the iso to the wrong side.");
+
+            // Re-meshing strategy of the offset-remesh (SEM_IsoRemeshMode). Only
+            // matters once an offset axis is chosen, hence inside the same disabled
+            // block. Changing it re-extracts on the next Apply.
+            const char* modeItems = "Height field (single CDT)\0Top-down sweep\0";
+            if (ImGui::Combo("Iso remesh mode", &S.isoMode, modeItems))
+                S.MarkStageDirty(STAGE_ISOSURFACE);
+            ImGui::SetItemTooltip("How the offset iso point cloud is re-triangulated:\n"
+                                  "Height field: one constrained Delaunay of the whole projection\n"
+                                  "  using the iso boundary loops as constraints; needs a single-valued\n"
+                                  "  projection (a fold is rejected).\n"
+                                  "Top-down sweep: sweep the points from the top downward in height\n"
+                                  "  bands, locking each higher band's edges as Delaunay constraints\n"
+                                  "  before the lower points fill in. Tolerates mild folds; ignores the\n"
+                                  "  boundary loops, so it fills the convex projected footprint.");
+            if (S.isoMode < 0) S.isoMode = 0;
+            if (S.isoMode > 1) S.isoMode = 1;
+
+            // Sweep pass direction — only meaningful in the top-down sweep mode.
+            ImGui::BeginDisabled(S.isoMode != SEM_REMESH_TOPDOWN_SWEEP);
+            const char* dirItems = "Top-down\0Bottom-up\0";
+            if (ImGui::Combo("Sweep direction", &S.isoSweepDir, dirItems))
+                S.MarkStageDirty(STAGE_ISOSURFACE);
+            ImGui::SetItemTooltip("Which end of the offset axis the height-band sweep starts from:\n"
+                                  "Top-down: start at the largest coordinate along the axis and\n"
+                                  "  descend; a fold collapses to the topmost sheet.\n"
+                                  "Bottom-up: start at the smallest coordinate and ascend; a fold\n"
+                                  "  collapses to the bottom-most sheet and its connectivity locks first.");
+            if (S.isoSweepDir < 0) S.isoSweepDir = 0;
+            if (S.isoSweepDir > 1) S.isoSweepDir = 1;
+            ImGui::EndDisabled();
             ImGui::EndDisabled();
 
             // Uneven-winding highlight: colour the minority-oriented triangles pure
@@ -764,7 +817,54 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
                                   "(the re-triangulation constraints of the offset/remesh) as a thick\n"
                                   "magenta line wireframe. Requires an offset-axis extraction.");
             ImGui::EndDisabled();
+
+            // Clip-plane geometry changes logged for the ISOSURFACE restriction and
+            // the final remesh cut: yellow snap segments and the translucent red
+            // clipped-away/dropped-coplanar geometry. Independent of the offset-axis
+            // gate above — a plain (axis = None) extraction still snaps and cuts.
+            bool isoChg = S.ClipChangesShown(SemSessionNS::CLIPCHG_ISO);
+            if (ImGui::Checkbox("Isosurface clip changes", &isoChg))
+                S.ShowClipChanges(scene, SemSessionNS::CLIPCHG_ISO, isoChg);
+            ImGui::SetItemTooltip("Show what the clip planes did to the isosurface (and the final\n"
+                                  "offset-remesh sheet): the snap displacements as short yellow\n"
+                                  "segments and the clipped-away / dropped coplanar geometry as a\n"
+                                  "translucent red surface. Needs clip planes set.");
         }
+        ImGui::Unindent();
+        }
+        ImGui::PopID();
+    }
+
+    // Final remesh: an optional cleanup pass over the offset-remeshed isosurface that
+    // splits the tall, narrow triangles a height-field re-mesh leaves on a near-vertical
+    // wall. Runs standalone on the cached offset-remesh result (no re-extract), so it is
+    // 3D-only and needs an offset-axis extraction to have produced that result.
+    if (is3D) {
+        ImGui::PushID("isofinal");
+        if (ImGui::CollapsingHeader("Final remesh")) {
+        ImGui::Indent();
+        ImGui::BeginDisabled(!S.HasIsoProjection());
+
+        ImGui::DragFloat("Target edge (x sheet edge)", &S.isoFinalTargetMult, 0.02f, 0.0f, 0.0f, "%.3f");
+        ImGui::SetItemTooltip("Target triangle edge length for the final remesh, in multiples of the\n"
+                              "offset-remeshed sheet's own average edge length. Long edges are split\n"
+                              "toward this size and short ones collapsed. 0 uses the median edge length.");
+        if (S.isoFinalTargetMult < 0.0f) S.isoFinalTargetMult = 0.0f;
+
+        ImGui::DragInt("Iterations", &S.isoFinalIters, 0.1f, 1, 20);
+        ImGui::SetItemTooltip("Number of collapse / split / relax sweeps. More iterations even out the\n"
+                              "distribution further at some cost.");
+        if (S.isoFinalIters < 1)  S.isoFinalIters = 1;
+        if (S.isoFinalIters > 50) S.isoFinalIters = 50;
+
+        if (ImGui::Button("Apply final remesh", {160, 0}))
+            S.ApplyIsoFinalRemeshAsync(scene, false);
+        ImGui::SetItemTooltip("Re-mesh the offset-remeshed isosurface in place: split the long wall\n"
+                              "triangles, collapse the short edges and relax. Operates on the last\n"
+                              "offset-remesh result (does NOT re-extract). Requires an offset-axis\n"
+                              "isosurface extraction first.");
+
+        ImGui::EndDisabled();
         ImGui::Unindent();
         }
         ImGui::PopID();
