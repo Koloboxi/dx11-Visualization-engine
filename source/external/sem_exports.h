@@ -54,9 +54,9 @@ struct SEM_MeshView {
     const double* coords;
     const double* T;
     const double* normals;
-    const int* edges;
-    const int* tris;
-    const int* tets;
+    const int*    edges;
+    const int*    tris;
+    const int*    tets;
     int num_nodes;
     int num_edges;
     int num_tris;
@@ -163,7 +163,7 @@ SEM_API int SEM_SubdivideSurface3D(int n);
 // offset shells are rebuilt against the new clip. Order-independent w.r.t.
 // SEM_ComputeOffsets3D. count = 0 clears all planes (restoring the pristine source).
 SEM_API int SEM_SetClipPlanes3D(const double* planes, int count,
-    double on_plane_rel_tol);
+                                double on_plane_rel_tol);
 SEM_API int SEM_ClearClipPlanes3D(void);
 
 // Compute graded offset shells. Same semantics as the 2D SEM_ComputeOffsets[At]
@@ -181,7 +181,7 @@ SEM_API int SEM_ComputeOffsetsAt3D(const double* gaps, int count);
 //                     flag (0/1): 0 keeps every tet (trim the convex bulge with
 //                     max_edge_len), 1 carves to the band by the source SDF.
 enum SEM_TetMethod {
-    SEM_TET_BAND = 0,
+    SEM_TET_BAND    = 0,
     SEM_TET_LAYERED = 1
 };
 
@@ -214,33 +214,6 @@ SEM_API int SEM_SolveThermal3D(float max_inward);
 // <stem>_isosurface3d.csv3d.
 SEM_API int SEM_ExtractIsosurface3D(double value);
 
-// Re-meshing strategy for the offset-remesh (`mode` below):
-//   SEM_REMESH_HEIGHTFIELD (0) - single constrained Delaunay of the whole projected
-//       point cloud with the iso boundary loops as constraints; assumes a single-valued
-//       height field over the axis (a folded projection is rejected). The default.
-//   SEM_REMESH_TOPDOWN_SWEEP (1) - top-down height-band sweep: the projected points are
-//       swept from the top (largest coordinate along the axis) downward in bands; each
-//       band is triangulated together with all higher bands and the previous
-//       triangulation's edges are re-imposed as Delaunay constraints, locking the upper
-//       connectivity before the lower points fill in. Tolerates mild folds (coincident
-//       projections collapse to the topmost sheet) and ignores the boundary loops, so it
-//       fills the convex projected footprint.
-enum SEM_IsoRemeshMode {
-    SEM_REMESH_HEIGHTFIELD   = 0,
-    SEM_REMESH_TOPDOWN_SWEEP = 1
-};
-
-// Sweep direction for SEM_REMESH_TOPDOWN_SWEEP (`sweep_dir` below); ignored by
-// SEM_REMESH_HEIGHTFIELD. Selects which end of `axis` the pass starts from:
-//   SEM_SWEEP_DOWN (0) - start at the top (largest coordinate along the axis /
-//       +plane-normal side) and descend; a fold collapses to the topmost sheet. Default.
-//   SEM_SWEEP_UP (1)   - start at the bottom (smallest coordinate) and ascend; a fold
-//       collapses to the bottom-most sheet and the lower connectivity is locked first.
-enum SEM_SweepDir {
-    SEM_SWEEP_DOWN = 0,
-    SEM_SWEEP_UP   = 1
-};
-
 // Offset-and-remesh the extracted isosurface (SEM_ExtractIsosurface3D), as the final
 // pipeline stage producing the target remeshed isosurface. Operates on the cached
 // iso Surface (SEM_GetSourceIsosurface3D) directly: it is shifted along its
@@ -249,14 +222,14 @@ enum SEM_SweepDir {
 // concave folds nearer than the min_offset_value clearance are dropped (same cull
 // semantics as the standalone SEM_OffsetRemeshInPlaneSurface3D below), and the
 // survivors are re-meshed over the base plane perpendicular to `axis` (1/2/3 = X/Y/Z)
-// by the strategy `mode` selects (SEM_IsoRemeshMode). The current clip planes are
-// applied. The remeshed result is cached (read it back with SEM_GetIsosurface3D, the
-// flat projection with SEM_GetIsosurfaceProjection3D) and written to
-// surface_remesh3d.csv3d. Requires an extracted iso surface; negative if absent or on
-// failure.
+// as a single boundary-constrained Delaunay of the projected point cloud (a
+// single-valued height field over the axis; a folded projection is rejected). The
+// current clip planes are applied. The remeshed result is cached (read it back with
+// SEM_GetIsosurface3D, the flat projection with SEM_GetIsosurfaceProjection3D) and
+// written to surface_remesh3d.csv3d. Requires an extracted iso surface; negative if
+// absent or on failure.
 SEM_API int SEM_OffsetRemeshIsosurface3D(int axis, double offset_value,
-    double min_offset_value, int mode = SEM_REMESH_HEIGHTFIELD,
-    int sweep_dir = SEM_SWEEP_DOWN);
+                                         double min_offset_value);
 
 // Final isotropic remesh of the offset-remeshed isosurface (SEM_OffsetRemeshIsosurface3D),
 // in place, as an optional cleanup stage. The height-field re-mesh leaves tall, narrow,
@@ -291,9 +264,12 @@ SEM_API int SEM_LoadState3D(const char* dir);
 // --- Helpers and read-only accessors ---------------------------------------
 
 // Offset-and-remesh an OPEN surface passed in directly, as a standalone helper
-// independent of the loaded pipeline source — it does NOT modify the 3D cache (the
-// loaded source/iso/offsets are untouched; the result lives in its own buffer and
-// the returned view is valid until the next standalone call). The surface is given
+// independent of the loaded pipeline source — it leaves the loaded source/iso/offsets
+// untouched (the result lives in its own buffer and the returned view is valid until
+// the next standalone call). As the one exception it publishes the flat base-plane
+// projection into the shared projection cache, so SEM_GetIsosurfaceProjection3D
+// returns it after a standalone call too. Repeated calls that pass identical geometry,
+// clip planes and on-plane tolerance reuse the prepared input Surface. The surface is given
 // as raw arrays (same layout as the Mesh fields): `xyz` is 3 * num_nodes doubles
 // (x,y,z interleaved) and `tris` is 3 * num_tris ints (zero-based vertex indices).
 // The sheet is shifted along its angle-weighted pseudonormals by
@@ -302,11 +278,12 @@ SEM_API int SEM_LoadState3D(const char* dir);
 // shifts inward (against the outward normals), negative outward. Vertices that end
 // up closer to the surface than the shift are dropped (concave folds clean up); the
 // survivors are projected onto the base plane perpendicular to `axis` (1/2/3 =
-// X/Y/Z; that coordinate is preserved), constrained-CDT re-triangulated with the
-// boundary loops as constraints, and lifted back. Requires an open sheet; a closed
-// surface fails. The current clip planes (SEM_SetClipPlanes3D) are applied to the
-// result. Writes surface_remesh3d.csv3d to the working dir and fills `out` (see
-// SEM_MeshView for the lifetime/layout contract).
+// X/Y/Z; that coordinate is preserved), re-triangulated as a single
+// boundary-constrained Delaunay (a single-valued height field over the axis; a folded
+// projection is rejected), and lifted back. Requires an open sheet; a closed surface
+// fails. The current clip planes (SEM_SetClipPlanes3D) are applied to the result.
+// Writes surface_remesh3d.csv3d to the working dir and fills `out` (see SEM_MeshView
+// for the lifetime/layout contract).
 // `min_offset_value` sets the minimum clearance a shifted vertex must keep from the
 // iso before it is pruned, in the SAME avg-edge-length multiples as `offset_value`.
 // Vertices that end up closer to the iso than this are dropped; the fraction
@@ -318,11 +295,17 @@ SEM_API int SEM_LoadState3D(const char* dir);
 //     only vertices that crossed THROUGH the iso to the wrong side (their signed
 //     distance ended up opposite in sign to the shift direction).
 //   intermediate: drop vertices nearer than |shift| * c.
+// Finally, when `iterations` > 0, the offset-remeshed sheet is run through the same
+// isotropic cleanup as SEM_RemeshIsosurface3D (short-edge collapse / long-edge split /
+// tangential relaxation), `iterations` sweeps at a target edge length of
+// `target_len_mult` * the sheet's own average edge length (target_len_mult <= 0 uses
+// the median). iterations <= 0 skips this final remesh.
 SEM_API int SEM_OffsetRemeshInPlaneSurface3D(int axis, double offset_value,
-    const double* xyz, int num_nodes,
-    const int* tris, int num_tris,
-    double min_offset_value, int mode, int sweep_dir,
-    SEM_MeshView* out);
+                                      const double* xyz, int num_nodes,
+                                      const int* tris, int num_tris,
+                                      double min_offset_value,
+                                      double target_len_mult, int iterations,
+                                      SEM_MeshView* out);
 
 // Average edge length of the loaded source surface (the unit for first_gap).
 SEM_API double SEM_GetSurfaceAvgEdgeLen3D();

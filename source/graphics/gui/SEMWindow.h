@@ -287,10 +287,70 @@ inline void DrawClipPlanesSection(Scene& scene, SemSessionNS::SemSession& S) {
                               "all three vertices on one plane draws as a filled face; an edge with\n"
                               "both endpoints on a plane draws as a line; an on-plane vertex covered\n"
                               "by neither draws as a point. The isosurface overlays appear once those\n"
-                              "stages have been extracted.");
+                              "stages have been extracted. In standalone offset-remesh mode the source\n"
+                              "surface (white) and the offset-remeshed result (cyan) are drawn.");
     }
 
     ImGui::Unindent();
+    ImGui::PopID();
+}
+
+// Standalone offset-remesh mode (SESSION_STANDALONE_REMESH): offset-and-remesh the
+// imported surface directly via SEM_OffsetRemeshInPlaneSurface3D, applying the clip
+// planes set above. No offsets / mesh / thermal stages run. 3D only.
+inline void DrawStandaloneRemeshSection(Scene& scene, SemSessionNS::SemSession& S) {
+    using namespace SemSessionNS;
+    ImGui::PushID("standalone_remesh");
+    if (ImGui::CollapsingHeader("Standalone offset-remesh", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Indent();
+        ImGui::TextWrapped("Offset-and-remesh the imported surface directly, applying the "
+                           "clip planes above. The offsets / mesh / thermal pipeline is skipped.");
+
+        const char* axisItems = "X\0Y\0Z\0";
+        int axisIdx = S.soAxis - 1;
+        if (axisIdx < 0) axisIdx = 0; if (axisIdx > 2) axisIdx = 2;
+        if (ImGui::Combo("Base-plane axis", &axisIdx, axisItems)) S.soAxis = axisIdx + 1;
+        ImGui::SetItemTooltip("Axis whose coordinate is preserved as the height field; the sheet is\n"
+                              "projected onto the plane perpendicular to it and re-triangulated.");
+
+        ImGui::DragFloat("Offset (x edge)", &S.soOffset, 0.05f, 0.0f, 0.0f, "%.3f");
+        ImGui::SetItemTooltip("Shift along the surface pseudonormals before re-triangulation, in\n"
+                              "multiples of the surface's mean edge length. Positive shifts inward.");
+
+        ImGui::DragFloat("Min offset (x edge)", &S.soMinOffset, 0.05f, 0.0f, 0.0f, "%.3f");
+        ImGui::SetItemTooltip("Minimum clearance a shifted vertex must keep from the surface before\n"
+                              "it is pruned (same unit as Offset). c = (min)/(offset): 1 = fold cull,\n"
+                              "0 = signed-crossing cull.");
+
+        ImGui::DragFloat("Final target edge (x sheet edge)", &S.soTargetMult, 0.02f, 0.0f, 0.0f, "%.3f");
+        if (S.soTargetMult < 0.0f) S.soTargetMult = 0.0f;
+        ImGui::SetItemTooltip("Target edge length for the final isotropic cleanup, in multiples of the\n"
+                              "remeshed sheet's average edge length. 0 uses the median.");
+
+        ImGui::DragInt("Final iterations", &S.soIters, 0.1f, 0, 20);
+        if (S.soIters < 0)  S.soIters = 0;
+        if (S.soIters > 50) S.soIters = 50;
+        ImGui::SetItemTooltip("Collapse / split / relax sweeps of the final cleanup. 0 skips it.");
+
+        if (ImGui::Button("Apply offset-remesh", {180, 0}))
+            S.ApplyStandaloneOffsetRemeshAsync(scene, false);
+        ImGui::SetItemTooltip("Run SEM_OffsetRemeshInPlaneSurface3D on the imported surface with the\n"
+                              "current clip planes and show the result. Runs on a worker thread with\n"
+                              "a progress bar.");
+
+        // Flat base-plane projection of the offset-remeshed sheet, fetched from the
+        // cache (SEM_GetIsosurfaceProjection3D) — the same in-plane geometry the main
+        // pipeline's isosurface section shows. Available once a standalone offset-remesh
+        // has produced it (HasIsoProjection).
+        ImGui::BeginDisabled(!S.HasIsoProjection());
+        bool projShown = S.IsoProjectionPrim() != nullptr;
+        if (ImGui::Checkbox("Show iso projection", &projShown))
+            S.ShowIsosurfaceProjection3D(scene, projShown, false);
+        ImGui::SetItemTooltip("Show the flat base-plane re-meshed projection (with its wireframe\n"
+                              "edges) of the offset-remeshed surface — its in-plane geometry.");
+        ImGui::EndDisabled();
+        ImGui::Unindent();
+    }
     ImGui::PopID();
 }
 
@@ -367,6 +427,18 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
     if (is3D) ImGui::TextDisabled("Mode: 3D surface (tetrahedral pipeline)");
     else      ImGui::TextDisabled("Mode: 2D contour");
 
+    // 3D session mode: the full pipeline, or a standalone offset-remesh of the
+    // imported surface (clip planes still apply; the pipeline stages are hidden).
+    if (is3D) {
+        ImGui::RadioButton("Pipeline", &S.sessionMode, SemSession::SESSION_PIPELINE);
+        ImGui::SameLine();
+        ImGui::RadioButton("Standalone offset-remesh", &S.sessionMode, SemSession::SESSION_STANDALONE_REMESH);
+        ImGui::SetItemTooltip("Pipeline: load -> offsets -> mesh -> thermal -> isosurface.\n"
+                              "Standalone offset-remesh: skip all of that and offset-and-remesh the\n"
+                              "imported surface directly (SEM_OffsetRemeshInPlaneSurface3D), with the\n"
+                              "clip planes still editable.");
+    }
+
     DrawReadout(S);
 
     {
@@ -432,6 +504,12 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         ImGui::SameLine();
         ImGui::TextDisabled("%.0f ms", ms);
     };
+
+    // Standalone mode replaces the whole pipeline-stage stack with a single
+    // offset-remesh section; the source + clip-plane sections above stay shared.
+    if (is3D && S.sessionMode == SemSession::SESSION_STANDALONE_REMESH) {
+        DrawStandaloneRemeshSection(scene, S);
+    } else {
 
     {
         ImGui::PushID("sub");
@@ -718,36 +796,6 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
                                   "  c = 0 (min == 0): signed-crossing cull - keep the folds and drop\n"
                                   "    only vertices that crossed THROUGH the iso to the wrong side.");
 
-            // Re-meshing strategy of the offset-remesh (SEM_IsoRemeshMode). Only
-            // matters once an offset axis is chosen, hence inside the same disabled
-            // block. Changing it re-extracts on the next Apply.
-            const char* modeItems = "Height field (single CDT)\0Top-down sweep\0";
-            if (ImGui::Combo("Iso remesh mode", &S.isoMode, modeItems))
-                S.MarkStageDirty(STAGE_ISOSURFACE);
-            ImGui::SetItemTooltip("How the offset iso point cloud is re-triangulated:\n"
-                                  "Height field: one constrained Delaunay of the whole projection\n"
-                                  "  using the iso boundary loops as constraints; needs a single-valued\n"
-                                  "  projection (a fold is rejected).\n"
-                                  "Top-down sweep: sweep the points from the top downward in height\n"
-                                  "  bands, locking each higher band's edges as Delaunay constraints\n"
-                                  "  before the lower points fill in. Tolerates mild folds; ignores the\n"
-                                  "  boundary loops, so it fills the convex projected footprint.");
-            if (S.isoMode < 0) S.isoMode = 0;
-            if (S.isoMode > 1) S.isoMode = 1;
-
-            // Sweep pass direction — only meaningful in the top-down sweep mode.
-            ImGui::BeginDisabled(S.isoMode != SEM_REMESH_TOPDOWN_SWEEP);
-            const char* dirItems = "Top-down\0Bottom-up\0";
-            if (ImGui::Combo("Sweep direction", &S.isoSweepDir, dirItems))
-                S.MarkStageDirty(STAGE_ISOSURFACE);
-            ImGui::SetItemTooltip("Which end of the offset axis the height-band sweep starts from:\n"
-                                  "Top-down: start at the largest coordinate along the axis and\n"
-                                  "  descend; a fold collapses to the topmost sheet.\n"
-                                  "Bottom-up: start at the smallest coordinate and ascend; a fold\n"
-                                  "  collapses to the bottom-most sheet and its connectivity locks first.");
-            if (S.isoSweepDir < 0) S.isoSweepDir = 0;
-            if (S.isoSweepDir > 1) S.isoSweepDir = 1;
-            ImGui::EndDisabled();
             ImGui::EndDisabled();
 
             // Uneven-winding highlight: colour the minority-oriented triangles pure
@@ -869,6 +917,8 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         }
         ImGui::PopID();
     }
+
+    } // end pipeline-stage stack (else of the standalone-mode branch)
 
     ImGui::EndDisabled();
 

@@ -37,6 +37,25 @@ public:
     // (SEM_LoadSurface3D, SEM_*3D). Auto-detected on Bind.
     int   dim        = 2;
 
+    // Session mode (3D only): SESSION_PIPELINE runs the full load -> offsets -> mesh ->
+    // thermal -> isosurface chain; SESSION_STANDALONE_REMESH skips all of that and only
+    // offset-and-remeshes the imported surface directly via the standalone
+    // SEM_OffsetRemeshInPlaneSurface3D, with clip planes still editable. The pipeline
+    // stage sections are hidden in the standalone mode (and vice versa).
+    enum SessionMode { SESSION_PIPELINE = 0, SESSION_STANDALONE_REMESH = 1 };
+    int   sessionMode = SESSION_PIPELINE;
+    // Standalone offset-remesh parameters (SESSION_STANDALONE_REMESH). Axis 1/2/3 =
+    // X/Y/Z base plane; soOffset the pseudonormal shift in source mean-edge-length
+    // multiples (positive inward), soMinOffset the clearance cull (same unit); the
+    // final isotropic cleanup runs soIters sweeps toward soTargetMult * the sheet's
+    // own average edge length (soTargetMult <= 0 = median; soIters <= 0 skips it).
+    // These map to SEM_OffsetRemeshInPlaneSurface3D's arguments.
+    int   soAxis      = 3;
+    float soOffset    = 0.2f;
+    float soMinOffset = 0.2f;
+    float soTargetMult = 1.0f;
+    int   soIters     = 3;
+
     int   subMode    = 0;
     int   subN       = 2;
     bool  subEnabled = true;
@@ -83,15 +102,6 @@ public:
     // keep the folds and drop only vertices that crossed THROUGH the iso. Maps to
     // SEM_OffsetRemeshIsosurface3D's min_offset_value.
     float isoMinOffsetValue = 0.0f;
-    // Re-meshing strategy for the offset-remesh (SEM_IsoRemeshMode; ignored when
-    // isoAxis = 0): SEM_REMESH_HEIGHTFIELD (single boundary-constrained CDT, needs a
-    // single-valued projection) or SEM_REMESH_TOPDOWN_SWEEP (top-down height-band
-    // sweep locking upper connectivity; tolerates folds, fills the convex footprint).
-    int   isoMode = SEM_REMESH_HEIGHTFIELD;
-    // Sweep pass direction for SEM_REMESH_TOPDOWN_SWEEP (SEM_SweepDir; ignored for the
-    // height-field mode and when isoAxis = 0): SEM_SWEEP_DOWN (from the top of the axis
-    // down) or SEM_SWEEP_UP (from the bottom up).
-    int   isoSweepDir = SEM_SWEEP_DOWN;
     // Optional final isotropic remesh of the offset-remeshed sheet (its own header /
     // Apply): target edge length as a multiple of the sheet's own average edge length
     // (<= 0 uses the median), and the sweep count. Maps to SEM_RemeshIsosurface3D. Runs
@@ -337,6 +347,13 @@ public:
     const char* AsyncStageName() const;
     float AsyncProgress() const;
     void RecomputeUpToAsync(Scene& scene, Stage to, bool silent);
+    // SESSION_STANDALONE_REMESH driver: offset-and-remesh the imported source surface
+    // directly via the standalone SEM_OffsetRemeshInPlaneSurface3D (soAxis/soOffset/
+    // soMinOffset/soTargetMult/soIters), applying the current clip planes, on the worker
+    // thread (the SEM call reports progress) like the pipeline. Displays the result in
+    // the isosurface slot; does NOT touch the offsets/mesh/thermal caches, but its flat
+    // projection becomes available (HasIsoProjection). 3D only. See PollAsync.
+    void ApplyStandaloneOffsetRemeshAsync(Scene& scene, bool silent);
     // Standalone async final remesh of the offset-remeshed isosurface already in the
     // cache (SEM_RemeshIsosurface3D). Unlike RecomputeUpToAsync(STAGE_ISOSURFACE) it does
     // NOT re-extract or re-offset — it operates on the last offset-remesh result — so it
@@ -424,6 +441,15 @@ private:
         // Standalone final remesh of the cached offset-remesh sheet (SEM_RemeshIsosurface3D);
         // set only by ApplyIsoFinalRemeshAsync, never alongside the run* stages above.
         bool   runIsoFinalRemesh = false;
+        // SESSION_STANDALONE_REMESH: offset-and-remesh a surface passed in as raw arrays
+        // (SEM_OffsetRemeshInPlaneSurface3D). Set only by ApplyStandaloneOffsetRemeshAsync,
+        // never alongside the run* stages above. soXyz/soTris are the input geometry copy.
+        bool   runStandalone = false;
+        int                 soAxis = 3;
+        double              soOffset = 0.0, soMinOffset = 0.0, soTargetMult = 1.0;
+        int                 soIters = 3;
+        std::vector<double> soXyz;
+        std::vector<int>    soTris;
         // Visibility to apply to each produced primitive (snapshot of *Enabled).
         bool   offVisible = false, meshVisible = false, isoVisible = false;
 
@@ -439,8 +465,6 @@ private:
         int                 isoAxis = 0;
         double              isoOffsetValue = 0.0;
         double              isoMinOffsetValue = 0.0;
-        int                 isoMode = SEM_REMESH_HEIGHTFIELD;
-        int                 isoSweepDir = SEM_SWEEP_DOWN;
         double              isoFinalTargetMult = 1.0;
         int                 isoFinalIters = 3;
         float               maxInward = 1.0f;

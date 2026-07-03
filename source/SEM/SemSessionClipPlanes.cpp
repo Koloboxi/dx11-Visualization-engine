@@ -421,15 +421,24 @@ void SemSession::BuildClipOnPlane(Scene& scene) {
         any |= BuildOnPlaneOverlay(scene, grp, ViewToData(v), planes, tol, lift,
                                    kOnPlaneSrcColor, "src");
 
-    SEM_MeshView vi{};
-    if (SEM_GetSourceIsosurface3D(&vi) == 0 && vi.num_nodes > 0)
-        any |= BuildOnPlaneOverlay(scene, grp, ViewToData(vi), planes, tol, lift,
-                                   kOnPlaneIsoSrcColor, "isosrc");
+    if (sessionMode == SESSION_STANDALONE_REMESH) {
+        // Standalone offset-remesh: its result lives only in the host copy (m_isoData);
+        // the pipeline iso caches (SEM_GetSourceIsosurface3D / SEM_GetIsosurface3D) are
+        // empty in this mode. Draw the result's on-plane geometry in the final-iso colour.
+        if (!m_isoData.nodes.empty() && !m_isoData.triangles.empty())
+            any |= BuildOnPlaneOverlay(scene, grp, m_isoData, planes, tol, lift,
+                                       kOnPlaneIsoFinColor, "isofin");
+    } else {
+        SEM_MeshView vi{};
+        if (SEM_GetSourceIsosurface3D(&vi) == 0 && vi.num_nodes > 0)
+            any |= BuildOnPlaneOverlay(scene, grp, ViewToData(vi), planes, tol, lift,
+                                       kOnPlaneIsoSrcColor, "isosrc");
 
-    SEM_MeshView vf{};
-    if (SEM_GetIsosurface3D(&vf) == 0 && vf.num_nodes > 0)
-        any |= BuildOnPlaneOverlay(scene, grp, ViewToData(vf), planes, tol, lift,
-                                   kOnPlaneIsoFinColor, "isofin");
+        SEM_MeshView vf{};
+        if (SEM_GetIsosurface3D(&vf) == 0 && vf.num_nodes > 0)
+            any |= BuildOnPlaneOverlay(scene, grp, ViewToData(vf), planes, tol, lift,
+                                       kOnPlaneIsoFinColor, "isofin");
+    }
 
     if (!any) { DropClipOnPlane(scene); }         // nothing lay on any plane
 }

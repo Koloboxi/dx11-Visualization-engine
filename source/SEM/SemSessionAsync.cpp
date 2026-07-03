@@ -11,6 +11,7 @@ const char* SemSession::AsyncStageName() const {
         case 0:  return "Computing offset shells";
         case 1:  return "Building tetrahedral mesh";
         case 2:  return "Solving thermal field";
+        case 4:  return "Offset-remeshing surface";
         default: return "Extracting isosurface";
     }
 }
@@ -104,6 +105,7 @@ void SemSession::RecomputeUpToAsync(Scene& scene, Stage to, bool silent) {
     m_job.runThermal  = runTherm;
     m_job.runIso      = runIso;
     m_job.runIsoFinalRemesh = false;   // only ApplyIsoFinalRemeshAsync sets this
+    m_job.runStandalone     = false;   // only ApplyStandaloneOffsetRemeshAsync sets this
     // Only the stage whose Apply was pressed (== `to`) is shown; the prerequisite
     // stages this run had to compute to reach it are produced hidden (the user
     // reveals them with the tree eye). The thermal solve's product is the mesh,
@@ -130,8 +132,6 @@ void SemSession::RecomputeUpToAsync(Scene& scene, Stage to, bool silent) {
     m_job.isoAxis = isoAxis;
     m_job.isoOffsetValue = (double)isoOffsetValue;
     m_job.isoMinOffsetValue = (double)isoMinOffsetValue;
-    m_job.isoMode = isoMode;
-    m_job.isoSweepDir = isoSweepDir;
     m_job.maxInward = maxInward;
 
     // Deterministic output paths the SEM core writes during each compute call.
@@ -172,6 +172,7 @@ void SemSession::ApplyIsoFinalRemeshAsync(Scene& scene, bool silent) {
 
     m_job.runOffsets = m_job.runMesh = m_job.runThermal = m_job.runIso = false;
     m_job.runIsoFinalRemesh = true;
+    m_job.runStandalone     = false;
     m_job.isoVisible = true;
     m_job.isoAxis    = isoAxis;                     // keeps m_isoProjected true on apply
     m_job.isoFinalTargetMult = (double)isoFinalTargetMult;
@@ -194,6 +195,57 @@ void SemSession::ApplyIsoFinalRemeshAsync(Scene& scene, bool silent) {
     m_job.running.store(true);
 
     snprintf(status, sizeof(status), "Final remesh...");
+    m_job.worker = std::thread(&SemSession::PipelineWorkerBody, this);
+}
+
+void SemSession::ApplyStandaloneOffsetRemeshAsync(Scene& scene, bool silent) {
+    if (!HasSource()) { Report(scene, silent, "Import a source surface first."); return; }
+    if (dim != 3)     { Report(scene, silent, "Standalone offset-remesh is 3D only."); return; }
+    if (m_job.running.load()) return;
+    if (m_job.worker.joinable()) m_job.worker.join();
+
+    int axis = soAxis;
+    if (axis < 1) axis = 1; if (axis > 3) axis = 3;
+
+    // Copy the active source surface (subdivided / clip-snapped) out of the SEM core
+    // NOW, on the main thread: the standalone call reads the same cache's clip planes
+    // and re-applies them to the result, so its input geometry must be an independent
+    // copy handed in as raw arrays.
+    SEM_MeshView src{};
+    if (SEM_GetSourceSurface3D(&src) != 0 || src.num_nodes <= 0 || src.num_tris <= 0) {
+        Report(scene, silent, "Source has no triangle surface" + SemDetail());
+        return;
+    }
+    m_job.soXyz.assign(src.coords, src.coords + 3 * (size_t)src.num_nodes);
+    m_job.soTris.assign(src.tris,  src.tris  + 3 * (size_t)src.num_tris);
+    m_job.soAxis       = axis;
+    m_job.soOffset     = (double)soOffset;
+    m_job.soMinOffset  = (double)soMinOffset;
+    m_job.soTargetMult = (double)soTargetMult;
+    m_job.soIters      = soIters;
+
+    m_job.runOffsets = m_job.runMesh = m_job.runThermal = m_job.runIso = false;
+    m_job.runIsoFinalRemesh = false;
+    m_job.runStandalone     = true;
+    m_job.isoVisible = true;
+    m_job.totalStages.store(1);
+    m_job.expIsoRemesh = OutPath("_isosurface3d_remesh3d.csv3d");
+
+    m_job.offsetsPath.clear();
+    m_job.meshPath.clear();
+    m_job.isoPath.clear();
+    m_job.error.clear();
+    m_job.offsetsMs = m_job.meshMs = m_job.thermalMs = m_job.isoMs = -1.0;
+    m_job.stageKind.store(4);
+    m_job.progressStage.store(0);
+    m_job.ok.store(false);
+    m_job.done.store(false);
+    m_job.cancel.store(false);
+    m_job.cancelled.store(false);
+    m_progressShown.store(0.0f);
+    m_job.running.store(true);
+
+    snprintf(status, sizeof(status), "Offset-remeshing...");
     m_job.worker = std::thread(&SemSession::PipelineWorkerBody, this);
 }
 
@@ -275,10 +327,18 @@ void SemSession::PollAsync(Scene& scene) {
         m_isoData = m_job.isoDisplayData;
         m_isoline = BuildIsoDisplay(scene, m_isoData);
         if (m_isoline) {
-            m_isolinePath = m_job.isoPath;
-            // An offset axis means the offset-and-remesh step ran, so the
-            // intermediate-stage caches (source iso, projection) are valid.
-            m_isoProjected   = (m_job.isoAxis != 0);
+            if (m_job.runStandalone) {
+                // The standalone result is not serialized under a stem, but its flat
+                // projection cache (iso_flat) IS populated, so the projection overlay
+                // is available (unlike a plain pipeline extraction, gate it on).
+                m_isolinePath.clear();
+                m_isoProjected = true;
+            } else {
+                m_isolinePath = m_job.isoPath;
+                // An offset axis means the offset-and-remesh step ran, so the
+                // intermediate-stage caches (source iso, projection) are valid.
+                m_isoProjected = (m_job.isoAxis != 0);
+            }
             if (Alive(scene, m_isoline)) scene.SetNodeVisibleCascade(m_isoline, m_job.isoVisible);
         }
     }
@@ -400,8 +460,7 @@ void SemSession::PipelineWorkerBody() {
             // in place — the final pipeline stage. The remeshed result is cached and
             // read back through SEM_GetIsosurface3D.
             int rrc = SafeOffsetRemeshIsosurface3D(m_job.isoAxis, m_job.isoOffsetValue,
-                                                   m_job.isoMinOffsetValue, m_job.isoMode,
-                                                   m_job.isoSweepDir);
+                                                   m_job.isoMinOffsetValue);
             if (rrc == -100) { m_job.isoMs = t.GetMillisecondsElapsed();
                                return Fail("Isosurface offset/remesh crashed (access violation caught)."); }
             if (rrc != 0) { m_job.isoMs = t.GetMillisecondsElapsed();
@@ -439,6 +498,29 @@ void SemSession::PipelineWorkerBody() {
         if (grc != 0) return Fail("SEM_GetIsosurface3D failed (" + std::to_string(grc) + ")");
         m_job.isoDisplayData = ViewToData(rv);            // copy before any further SEM call
         m_job.isoPath = m_job.expIsoRemesh;
+        ++idx;
+    }
+
+    // Standalone offset-and-remesh of an imported surface passed in as raw arrays
+    // (SEM_OffsetRemeshInPlaneSurface3D). Self-contained: it reads no pipeline cache
+    // except the clip planes and publishes the flat projection (SEM_GetIsosurface-
+    // Projection3D). Its own progress fills the single stage band.
+    if (m_job.runStandalone) {
+        if (stopIfCancelled()) return;
+        m_job.stageKind.store(4);
+        m_job.progressStage.store(idx);
+        Timer t; t.Restart();
+        SEM_MeshView out{};
+        int rc = SafeOffsetRemeshInPlaneSurface3D(
+                     m_job.soAxis, m_job.soOffset,
+                     m_job.soXyz.data(), (int)(m_job.soXyz.size() / 3),
+                     m_job.soTris.data(), (int)(m_job.soTris.size() / 3),
+                     m_job.soMinOffset, m_job.soTargetMult, m_job.soIters, &out);
+        m_job.isoMs = t.GetMillisecondsElapsed();
+        if (rc == -100) return Fail("Standalone offset-remesh crashed (access violation caught).");
+        if (rc != 0) return Fail("SEM_OffsetRemeshInPlaneSurface3D failed (" + std::to_string(rc) + ")");
+        m_job.isoDisplayData = ViewToData(out);           // copy before any further SEM call
+        m_job.isoPath = m_job.expIsoRemesh;               // non-empty: an iso to display
         ++idx;
     }
 
