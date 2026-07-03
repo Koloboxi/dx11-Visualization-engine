@@ -20,6 +20,23 @@ static bool   s_projOpen      = false;
 static ImVec2 s_projBtnMin    = {};
 static ImVec2 s_projBtnMax    = {};
 
+// Close a dropdown when the user clicks outside both its body and its owning
+// toggle button. `winHovered` must be sampled while the popup window is current
+// (before End()); this call itself must run after End() so the button-rect test
+// is not clipped by the popup window.
+inline void CloseDropdownOnClickOutside(bool& open, bool winHovered,
+                                        const ImVec2& btnMin, const ImVec2& btnMax) {
+    if (open && ImGui::IsMouseClicked(0) && !winHovered &&
+        !ImGui::IsMouseHoveringRect(btnMin, btnMax, false))
+        open = false;
+}
+
+// Keep at most one top-strip dropdown open: opening `self` closes the rest.
+inline void CloseOtherDropdowns(bool& self) {
+    bool* all[] = { &s_lightOpen, &s_sectionOpen, &s_thickOpen, &s_projOpen };
+    for (bool* p : all) if (p != &self) *p = false;
+}
+
 inline void DrawMenuBarContents(Scene& scene, bool& blockMousePick, const char* fpsText = nullptr) {
     if (!ImGui::BeginMenuBar()) return;
 
@@ -37,22 +54,26 @@ inline void DrawMenuBarContents(Scene& scene, bool& blockMousePick, const char* 
     if (scene.smoothShade != prevSmooth) scene.UpdateLight();
     ImGui::SameLine();
 
-    GuiIcons::ToggleIconButton("##light",   &s_lightOpen,                btnSz, GuiIcons::LightbulbIcon);
+    if (GuiIcons::ToggleIconButton("##light",   &s_lightOpen,            btnSz, GuiIcons::LightbulbIcon) && s_lightOpen)
+        CloseOtherDropdowns(s_lightOpen);
     s_lightBtnMin = ImGui::GetItemRectMin();
     s_lightBtnMax = ImGui::GetItemRectMax();
     ImGui::SameLine();
 
-    GuiIcons::ToggleIconButton("##section", &s_sectionOpen,              btnSz, GuiIcons::SectionIcon);
+    if (GuiIcons::ToggleIconButton("##section", &s_sectionOpen,          btnSz, GuiIcons::SectionIcon) && s_sectionOpen)
+        CloseOtherDropdowns(s_sectionOpen);
     s_sectionBtnMin = ImGui::GetItemRectMin();
     s_sectionBtnMax = ImGui::GetItemRectMax();
     ImGui::SameLine();
 
-    GuiIcons::ToggleIconButton("##thickness", &s_thickOpen,              btnSz, GuiIcons::LineWeightIcon);
+    if (GuiIcons::ToggleIconButton("##thickness", &s_thickOpen,          btnSz, GuiIcons::LineWeightIcon) && s_thickOpen)
+        CloseOtherDropdowns(s_thickOpen);
     s_thickBtnMin = ImGui::GetItemRectMin();
     s_thickBtnMax = ImGui::GetItemRectMax();
     ImGui::SameLine();
 
-    GuiIcons::ToggleIconButton("##projparams", &s_projOpen,              btnSz, GuiIcons::ProjectionIcon);
+    if (GuiIcons::ToggleIconButton("##projparams", &s_projOpen,          btnSz, GuiIcons::ProjectionIcon) && s_projOpen)
+        CloseOtherDropdowns(s_projOpen);
     s_projBtnMin = ImGui::GetItemRectMin();
     s_projBtnMax = ImGui::GetItemRectMax();
     ImGui::SameLine();
@@ -66,6 +87,12 @@ inline void DrawMenuBarContents(Scene& scene, bool& blockMousePick, const char* 
     ImGui::SameLine();
     GuiIcons::ToggleIconButton("##nocull", &scene.rsNoCull,    btnSz, GuiIcons::NoCullIcon);
     ImGui::SetItemTooltip("Two-sided faces (disable back-face culling).");
+    ImGui::SameLine();
+    if (GuiIcons::ToggleIconButton("##theme", &scene.lightTheme, btnSz, GuiIcons::ThemeIcon)) {
+        if (scene.lightTheme) ImGui::StyleColorsLight();
+        else                  ImGui::StyleColorsDark();
+    }
+    ImGui::SetItemTooltip("Toggle light / dark UI theme.");
 
     if (fpsText && fpsText[0]) {
         char buf[32];
@@ -75,7 +102,8 @@ inline void DrawMenuBarContents(Scene& scene, bool& blockMousePick, const char* 
         if (avail > tw + 10.f) ImGui::SameLine(0.f, avail - tw - 10.f);
         else ImGui::SameLine();
         ImGui::AlignTextToFramePadding();
-        ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "%s", buf);
+        ImVec4 col = scene.lightTheme ? ImVec4(0.0f, 0.0f, 0.0f, 1.0f) : ImVec4(0.4f, 1.0f, 0.4f, 1.0f);
+        ImGui::TextColored(col, "%s", buf);
     }
 
     ImGui::EndMenuBar();
@@ -100,10 +128,11 @@ inline void DrawMenuBarContents(Scene& scene, bool& blockMousePick, const char* 
         changed |= ImGui::DragFloat("Shininess", &scene.shininess, 0.1f,  0.f, 100.f,"%.1f");
         if (changed) scene.UpdateLight();
 
-        if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem))
-            blockMousePick = true;
+        bool winHovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+        if (winHovered) blockMousePick = true;
 
         ImGui::End();
+        CloseDropdownOnClickOutside(s_lightOpen, winHovered, s_lightBtnMin, s_lightBtnMax);
     }
 
     if (s_sectionOpen) {
@@ -143,10 +172,11 @@ inline void DrawMenuBarContents(Scene& scene, bool& blockMousePick, const char* 
 
         ImGui::EndDisabled();
 
-        if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem))
-            blockMousePick = true;
+        bool winHovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+        if (winHovered) blockMousePick = true;
 
         ImGui::End();
+        CloseDropdownOnClickOutside(s_sectionOpen, winHovered, s_sectionBtnMin, s_sectionBtnMax);
     }
 
     if (s_thickOpen) {
@@ -180,10 +210,11 @@ inline void DrawMenuBarContents(Scene& scene, bool& blockMousePick, const char* 
             ImGui::PopID();
         }
 
-        if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem))
-            blockMousePick = true;
+        bool winHovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+        if (winHovered) blockMousePick = true;
 
         ImGui::End();
+        CloseDropdownOnClickOutside(s_thickOpen, winHovered, s_thickBtnMin, s_thickBtnMax);
     }
 
     if (s_projOpen) {
@@ -210,10 +241,11 @@ inline void DrawMenuBarContents(Scene& scene, bool& blockMousePick, const char* 
         ImGui::RadioButton("+", &scene.projUpSign,  1); ImGui::SameLine();
         ImGui::RadioButton("-", &scene.projUpSign, -1);
 
-        if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem))
-            blockMousePick = true;
+        bool winHovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+        if (winHovered) blockMousePick = true;
 
         ImGui::End();
+        CloseDropdownOnClickOutside(s_projOpen, winHovered, s_projBtnMin, s_projBtnMax);
     }
 }
 

@@ -30,7 +30,7 @@ using namespace DirectX;
 //
 // The loader stores nodes indexed by node_id, triangles as index triples,
 // faces as variable-length index lists, edges as index pairs, and tets as
-// index quads (the 3D band mesh: see SEM_LoadMesh3D / "#tets" in the docs).
+// index quads (the 3D band mesh: see the "#tets" section in the docs).
 
 namespace CSV3DLoader {
 

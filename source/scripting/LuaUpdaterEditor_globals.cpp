@@ -5,8 +5,9 @@ bool LuaUpdaterEditor::DrawGlobals(const std::vector<GlobalSlider>* extraSliders
                                            float currentTime,
                                            bool* global_changed,
                                            bool* outBlockWheel,
-                                           ImGuiWindowFlags extraFlags) {
-    ImGui::Begin("Lua Globals", nullptr, extraFlags);
+                                           ImGuiWindowFlags extraFlags,
+                                           bool embedded) {
+    if (!embedded) ImGui::Begin("Lua Globals", nullptr, extraFlags);
     bool blockPick = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
 
     if (extraSliders && !extraSliders->empty()) {
@@ -24,7 +25,9 @@ bool LuaUpdaterEditor::DrawGlobals(const std::vector<GlobalSlider>* extraSliders
         ImGui::Separator();
     }
 
-    float childH = -ImGui::GetFrameHeightWithSpacing() - 4;
+    // Embedded in a collapsing section: bound the list height instead of
+    // filling to the (much taller) host Scene window's bottom.
+    float childH = embedded ? 180.0f : (-ImGui::GetFrameHeightWithSpacing() - 4);
     if (ImGui::BeginChild("##glist", ImVec2(0, childH))) {
         if (outBlockWheel && ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem))
             *outBlockWheel = true;
@@ -50,6 +53,6 @@ bool LuaUpdaterEditor::DrawGlobals(const std::vector<GlobalSlider>* extraSliders
     ImGui::EndChild();
 
     if (ImGui::Button("+ Add")) globals.push_back({});
-    ImGui::End();
+    if (!embedded) ImGui::End();
     return blockPick;
 }

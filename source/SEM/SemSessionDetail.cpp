@@ -380,16 +380,10 @@ int SafeExtractIsoline(double value) {
     __try { return SEM_ExtractIsoline(value); }
     __except (EXCEPTION_EXECUTE_HANDLER) { return -100; }
 }
-int SafeExtractIsosurface3D(double value) {
-    __try { return SEM_ExtractIsosurface3D(value); }
-    __except (EXCEPTION_EXECUTE_HANDLER) { return -100; }
-}
-int SafeOffsetRemeshIsosurface3D(int axis, double offset_value, double min_offset_value) {
-    __try { return SEM_OffsetRemeshIsosurface3D(axis, offset_value, min_offset_value); }
-    __except (EXCEPTION_EXECUTE_HANDLER) { return -100; }
-}
-int SafeRemeshIsosurface3D(double target_len_mult, int iterations) {
-    __try { return SEM_RemeshIsosurface3D(target_len_mult, iterations); }
+int SafeExtractIsosurface3D(double value, int axis, double offset_value, double min_offset_value,
+                            double target_len_mult, int iterations) {
+    __try { return SEM_ExtractIsosurface3D(value, axis, offset_value, min_offset_value,
+                                           target_len_mult, iterations); }
     __except (EXCEPTION_EXECUTE_HANDLER) { return -100; }
 }
 int SafeOffsetRemeshInPlaneSurface3D(int axis, double offset_value,

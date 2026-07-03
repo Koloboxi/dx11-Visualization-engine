@@ -45,14 +45,15 @@ public:
     enum SessionMode { SESSION_PIPELINE = 0, SESSION_STANDALONE_REMESH = 1 };
     int   sessionMode = SESSION_PIPELINE;
     // Standalone offset-remesh parameters (SESSION_STANDALONE_REMESH). Axis 1/2/3 =
-    // X/Y/Z base plane; soOffset the pseudonormal shift in source mean-edge-length
-    // multiples (positive inward), soMinOffset the clearance cull (same unit); the
+    // X/Y/Z base plane; soOffset the pseudonormal shift as a distance in world units
+    // (positive inward), soMinOffset the clearance cull as a fraction of the
+    // offset (c in [0,1]; the absolute clearance handed to SEM is c * soOffset); the
     // final isotropic cleanup runs soIters sweeps toward soTargetMult * the sheet's
     // own average edge length (soTargetMult <= 0 = median; soIters <= 0 skips it).
     // These map to SEM_OffsetRemeshInPlaneSurface3D's arguments.
     int   soAxis      = 3;
     float soOffset    = 0.2f;
-    float soMinOffset = 0.2f;
+    float soMinOffset = 0.99f;
     float soTargetMult = 1.0f;
     int   soIters     = 3;
 
@@ -67,22 +68,18 @@ public:
     std::vector<float> gaps = { 25.0f, 25.0f, 25.0f };
     bool  offEnabled = true;
 
-    // meshParam: interior Steiner-point spacing (<0 => source mean edge length).
+    // meshParam: interior Steiner-point spacing in world units (<0 => source mean edge length).
     // steinerMargin: minimum spacing from offset lines as a multiple of meshParam.
-    // meshParamEdgeUnits: meshParam is in source mean-edge-length units, not model units.
     int   meshMethod    = SEM_STEINER_GRID;
     float meshParam     = -1.0f;
     float steinerMargin = 0.45f;
     bool  meshEnabled   = true;
-    bool  meshParamEdgeUnits = false;
 
     // tetMethod: SEM_TET_BAND or SEM_TET_LAYERED. tetParam (<0 => per-method auto):
-    // BAND => Steiner grid cell size (a length); LAYERED => use_sdf flag (0/1).
-    // tetParamEdgeUnits: BAND cell size in source mean-edge-length units (ignored for LAYERED).
+    // BAND => Steiner grid cell size (a length in world units); LAYERED => use_sdf flag (0/1).
     int   tetMethod    = SEM_TET_LAYERED;
     float tetParam     = 0.0f;
-    bool  tetParamEdgeUnits = false;
-    // Max tet edge length, in source mean-edge-length units. <= 0 disables the filter.
+    // Max tet edge length, in world units. <= 0 disables the filter.
     float tetMaxEdgeLen = 10.0f;
 
     bool  thermalEnabled = true;
@@ -90,22 +87,22 @@ public:
     float isoValue   = 0.8f;
     // isoAxis = 0: plain extraction (clip planes only). 1/2/3 (X/Y/Z): offset-and-
     // remesh an open iso sheet, shifted along its pseudonormals by isoOffsetValue
-    // in multiples of the source's mean edge length (signed, no range limit):
+    // as a distance in world units (signed, no range limit):
     // positive inward toward the source, negative outward. Ignored when isoAxis = 0.
     int   isoAxis        = 0;
     float isoOffsetValue = 0.0f;
     // Minimum clearance a shifted vertex must keep from the iso before it is pruned
-    // (ignored when isoAxis = 0), in the same source mean-edge-length multiples as
-    // isoOffsetValue. The fraction c = isoMinOffsetValue / isoOffsetValue (in [0,1])
-    // interpolates the cull: c = 1 (== |shift|) is fold cull — drop every concave
-    // fold that collapsed the sheet onto itself; c = 0 is signed-crossing cull —
-    // keep the folds and drop only vertices that crossed THROUGH the iso. Maps to
-    // SEM_OffsetRemeshIsosurface3D's min_offset_value.
-    float isoMinOffsetValue = 0.0f;
-    // Optional final isotropic remesh of the offset-remeshed sheet (its own header /
-    // Apply): target edge length as a multiple of the sheet's own average edge length
-    // (<= 0 uses the median), and the sweep count. Maps to SEM_RemeshIsosurface3D. Runs
-    // standalone on the cached offset-remesh result — it does NOT re-extract the iso.
+    // (ignored when isoAxis = 0), stored as the fraction c in [0,1] of isoOffsetValue.
+    // The absolute clearance handed to SEM is c * isoOffsetValue, from which the core
+    // recomputes c. c = 1 (== |shift|) is fold cull — drop every concave fold that
+    // collapsed the sheet onto itself; c = 0 is signed-crossing cull — keep the folds
+    // and drop only vertices that crossed THROUGH the iso. Maps to
+    // SEM_ExtractIsosurface3D's min_offset_value.
+    float isoMinOffsetValue = 0.99f;
+    // Final isotropic remesh of the offset-remeshed sheet, now folded into the isosurface
+    // stage: target edge length as a multiple of the sheet's own average edge length
+    // (<= 0 uses the median), and the sweep count (0 skips it). Passed to
+    // SEM_ExtractIsosurface3D's target_len_mult / iterations after the offset-remesh.
     float isoFinalTargetMult = 1.0f;
     int   isoFinalIters      = 3;
     // When set, the extracted isosurface is drawn with its real (possibly
@@ -185,14 +182,11 @@ public:
 
     void LoadSessionStages(Scene& scene);
 
-    double MeshParamFactor() const;
-    double TetParamFactor() const;
-
     const Stats& SrcStats()  const;
     const Stats& OffStats()  const;
     const Stats& MeshStats() const;
 
-    void Bind(Scene& scene, Primitive* prim);
+    void Bind(Scene& scene, Primitive* prim, bool reload = false);
     void Unbind();
     void Validate(Scene& scene);
 
@@ -224,8 +218,8 @@ public:
     void ClearClipPlanes3D(Scene& scene);
 
     ClipPlaneNode* AddClipPlane(Scene& scene);
-    // Recreate the visual clip-plane rectangles from the serialized session state
-    // (<stem>_state3d.txt). Call after SEM_LoadState3D so the core and the scene
+    // Recreate the visual clip-plane rectangles from the core's active clip planes
+    // (SEM_GetClipPlanes3D). Call after SEM_LoadSession3D so the core and the scene
     // agree; without it a reloaded session clips the mesh but shows no planes.
     void LoadClipPlanesFromState(Scene& scene);
     void RemoveClipPlane(Scene& scene, int idx);
@@ -330,9 +324,12 @@ public:
     void SetBCView(Scene& scene, bool on);
 
     // workDir picks the session folder to serialize into; empty => Bind allocates
-    // a fresh <stem>_<N>.
+    // a fresh <stem>_<N>. reload=true means the caller will follow up with
+    // LoadSessionStages (SEM_LoadSession3D restores the core), so the destructive
+    // SEM_LoadSurface3D in Bind is skipped for 3D — see Bind.
     Primitive* ImportSource(Scene& scene, const std::string& path,
-                            const std::string& workDir = std::string());
+                            const std::string& workDir = std::string(),
+                            bool reload = false);
 
     bool ImportOffsets(Scene& scene, const std::string& dir);
     bool ImportMesh(Scene& scene, const std::string& path);
@@ -354,11 +351,6 @@ public:
     // the isosurface slot; does NOT touch the offsets/mesh/thermal caches, but its flat
     // projection becomes available (HasIsoProjection). 3D only. See PollAsync.
     void ApplyStandaloneOffsetRemeshAsync(Scene& scene, bool silent);
-    // Standalone async final remesh of the offset-remeshed isosurface already in the
-    // cache (SEM_RemeshIsosurface3D). Unlike RecomputeUpToAsync(STAGE_ISOSURFACE) it does
-    // NOT re-extract or re-offset — it operates on the last offset-remesh result — so it
-    // is cheap. Requires an offset-axis iso to have been extracted (m_isoProjected).
-    void ApplyIsoFinalRemeshAsync(Scene& scene, bool silent);
     void PollAsync(Scene& scene);
     void CancelAsync();
     bool AsyncCancelRequested() const;
@@ -438,9 +430,6 @@ private:
         // thermal solve and the isosurface extraction are separate progress-
         // reporting stages (runThermal solves, runIso extracts).
         bool   runOffsets = false, runMesh = false, runThermal = false, runIso = false;
-        // Standalone final remesh of the cached offset-remesh sheet (SEM_RemeshIsosurface3D);
-        // set only by ApplyIsoFinalRemeshAsync, never alongside the run* stages above.
-        bool   runIsoFinalRemesh = false;
         // SESSION_STANDALONE_REMESH: offset-and-remesh a surface passed in as raw arrays
         // (SEM_OffsetRemeshInPlaneSurface3D). Set only by ApplyStandaloneOffsetRemeshAsync,
         // never alongside the run* stages above. soXyz/soTris are the input geometry copy.
@@ -577,6 +566,11 @@ private:
 
     bool LoadOffsetShells(Scene& scene, bool silent, const std::string& dir = std::string());
     void CleanupOffsetFiles();
+
+    // 3D session reload (SEM_LoadSession3D + scene rebuild) and the inverse mapping
+    // of the restored SEM pipeline arguments back into this session's UI fields.
+    void LoadSessionStages3D(Scene& scene);
+    void ApplyPipelineArgs3D();
 
     bool ApplySubdivide(Scene& scene, bool silent);
     bool ApplyOffsets(Scene& scene, bool silent);

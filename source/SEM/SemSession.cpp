@@ -46,23 +46,11 @@ double SemSession::TotalTimeMs() const {
     return t;
 }
 
-double SemSession::MeshParamFactor() const {
-    double avg = SEM_GetAvgEdgeLen();
-    if (avg <= 0.0) avg = 1.0;
-    return avg;
-}
-
-double SemSession::TetParamFactor() const {
-    double avg = SEM_GetSurfaceAvgEdgeLen3D();
-    if (avg <= 0.0) avg = 1.0;
-    return avg;
-}
-
 const Stats& SemSession::SrcStats()  const { return m_srcStats; }
 const Stats& SemSession::OffStats()  const { return m_offStats; }
 const Stats& SemSession::MeshStats() const { return m_meshStats; }
 
-void SemSession::Bind(Scene& scene, Primitive* prim) {
+void SemSession::Bind(Scene& scene, Primitive* prim, bool reload) {
     if (prim == m_srcPrim) return;
     // The previous source's pseudonormal overlay belonged to its subtree; drop it
     // before rebinding so it does not linger orphaned under the old source.
@@ -111,12 +99,20 @@ void SemSession::Bind(Scene& scene, Primitive* prim) {
         std::filesystem::create_directories(m_workDir, ec);
         SEM_SetWorkingDir(m_workDir.c_str());
         dim = DetectSemDim(m_srcPath);
-        int rc = (dim == 3) ? SEM_LoadSurface3D(m_srcPath.c_str())
-                            : SEM_LoadCSV3D(m_srcPath.c_str());
-        if (rc != 0)
-            Report(scene, false, (dim == 3 ? "SEM_LoadSurface3D failed ("
-                                           : "SEM_LoadCSV3D failed (")
-                                + std::to_string(rc) + ")" + SemDetail());
+        // Reopening a saved 3D session: SEM_LoadSession3D (called next via
+        // LoadSessionStages) reloads the source into the core itself and reads
+        // session3d.txt. Calling SEM_LoadSurface3D here would rewrite that manifest
+        // as a bare source and wipe the saved stages before the reload can read it,
+        // so skip it and let the session reload drive the core. 2D has no session
+        // reload, so it still loads the core source here.
+        if (!(reload && dim == 3)) {
+            int rc = (dim == 3) ? SEM_LoadSurface3D(m_srcPath.c_str())
+                                : SEM_LoadCSV3D(m_srcPath.c_str());
+            if (rc != 0)
+                Report(scene, false, (dim == 3 ? "SEM_LoadSurface3D failed ("
+                                               : "SEM_LoadCSV3D failed (")
+                                    + std::to_string(rc) + ")" + SemDetail());
+        }
     }
     m_srcStats = ComputeStats(m_srcPath);
     if (HasSource()) snprintf(status, sizeof(status), "Staged: %s", BaseName(m_srcPath).c_str());

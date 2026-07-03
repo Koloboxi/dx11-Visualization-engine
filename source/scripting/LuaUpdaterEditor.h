@@ -36,12 +36,16 @@ public:
                      bool* inOutOpen = nullptr,
                      ImGuiWindowFlags extraFlags = 0);
 
+    // embedded == true renders the globals editor into the current window (no
+    // Begin/End of its own "Lua Globals" window), for hosting inside a
+    // collapsible section of the merged Scene window.
     bool DrawGlobals(const std::vector<GlobalSlider>* extraSliders = nullptr,
                      std::vector<Primitive*>* allPrims = nullptr,
                      float currentTime = 0.0f,
                      bool* global_changed = nullptr,
                      bool* outBlockWheel = nullptr,
-                     ImGuiWindowFlags extraFlags = 0);
+                     ImGuiWindowFlags extraFlags = 0,
+                     bool embedded = false);
 
     struct LuaGlobal { std::string name; float value = 0.0f; };
     std::vector<LuaGlobal> globals;

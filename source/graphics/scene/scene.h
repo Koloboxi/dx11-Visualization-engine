@@ -117,8 +117,24 @@ public:
 
 	bool outlineThroughObjets = true;
 
-	bool showGrid = true;
+	bool showGrid = false;
 	bool showAxes = true;
+
+	// Light UI theme toggle (top-strip button). Drives both the ImGui style and
+	// the backbuffer clear colour (soft off-white vs. dark grey) in Graphics.
+	bool lightTheme = true;
+
+	// Application shell tabs. A tab strip below the OS caption holds the "Main menu"
+	// tab (always) and, once a workspace has been opened from it, a single
+	// workspace tab (a scene or a SEM pipeline — only one at a time, for now).
+	// activeTab: 0 = main menu, 1 = workspace. workspaceOpen gates the second tab.
+	bool        workspaceOpen  = false;
+	int         activeTab      = 0;
+	std::string workspaceLabel = "Workspace";
+	// When true (SEM-session workspace) the merged "Scene" window shows only the
+	// primitive tree; when false (scene workspace) it also shows the scene-
+	// management, Time Control and Lua Globals collapsible sections.
+	bool sceneTreeOnly = false;
 
 	// Visual cross-section: clip meshes (dim==2) against a single plane.
 	// axis selects the plane by its normal: 0 = YZ (normal X), 1 = XZ (normal Y),
@@ -232,9 +248,11 @@ public:
 	float currentTime = 0.0f;
 	float deltaTime   = 0.0f;
 	float timeSpeed   = 1.0f;
-	bool  timePaused  = false;
+	bool  timePaused  = true;
 	float timeMax     = 0.0f;
 	bool  timeLoop    = false;
+	// Start paused so the scene clock does not advance the moment the program
+	// opens; the user presses Play in the Time Control window to start time.
 	void  ResetTime();
 
 	bool showTrajectories  = false;

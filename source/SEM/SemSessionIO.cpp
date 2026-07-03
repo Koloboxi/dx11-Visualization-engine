@@ -67,7 +67,7 @@ std::string SemSession::NewSessionDir(const std::string& srcPath) {
 }
 
 Primitive* SemSession::ImportSource(Scene& scene, const std::string& path,
-                                    const std::string& workDir) {
+                                    const std::string& workDir, bool reload) {
     if (path.empty()) return nullptr;
     Primitive* src = nullptr;
     try {
@@ -78,7 +78,7 @@ Primitive* SemSession::ImportSource(Scene& scene, const std::string& path,
         src->semWorkDir = workDir;
         scene.stagingEnabled = true;
         scene.SetStaged(src);
-        Bind(scene, src);
+        Bind(scene, src, reload);
         if (dim == 3) {
             ConfigureSurface3D(src);
             src->SetColor(Colors::FRONT_FACE_WHITE);
@@ -103,13 +103,16 @@ Primitive* SemSession::ImportSource(Scene& scene, const std::string& path,
 bool SemSession::ImportOffsets(Scene& scene, const std::string& dir) {
     if (!HasSource()) { Report(scene, false, "Import offsets: no staged source."); return false; }
     if (AsyncRunning()) return false;
-    // dir empty => the SEM core reads from its working dir; pass the chosen
-    // directory through so both the core and the shell loader agree on location.
-    const char* d = dir.empty() ? nullptr : dir.c_str();
-    int rc = (dim == 3) ? SEM_LoadOffsets3D(d) : SEM_LoadOffsets(d);
-    if (!CheckRc(scene, false, dim == 3 ? "SEM_LoadOffsets3D" : "SEM_LoadOffsets", rc,
-                 { "", "No source loaded", "No offset files found" }))
-        return false;
+    // 3D: the offsets are already in the SEM cache (SEM_LoadSession3D restored the
+    // whole session in one call); only the 2D pipeline still reloads the core here.
+    // Either way we then rebuild the scene from the on-disk shells below.
+    if (dim != 3) {
+        const char* d = dir.empty() ? nullptr : dir.c_str();
+        int rc = SEM_LoadOffsets(d);
+        if (!CheckRc(scene, false, "SEM_LoadOffsets", rc,
+                     { "", "No source loaded", "No offset files found" }))
+            return false;
+    }
 
     DropOffsets(scene);
     if (!LoadOffsetShells(scene, false, dir)) return false;
@@ -132,10 +135,14 @@ bool SemSession::ImportOffsets(Scene& scene, const std::string& dir) {
 bool SemSession::ImportMesh(Scene& scene, const std::string& path) {
     if (!HasSource()) { Report(scene, false, "Import mesh: no staged source."); return false; }
     if (AsyncRunning()) return false;
-    int rc = (dim == 3) ? SEM_LoadMesh3D(path.c_str()) : SEM_LoadMesh(path.c_str());
-    if (!CheckRc(scene, false, dim == 3 ? "SEM_LoadMesh3D" : "SEM_LoadMesh", rc,
-                 { "", "No source loaded", "Load failed", "Missing #tets section" }))
-        return false;
+    // 3D mesh is already restored into the SEM cache by SEM_LoadSession3D; only 2D
+    // reloads the core here. The scene mesh is then built from the file below.
+    if (dim != 3) {
+        int rc = SEM_LoadMesh(path.c_str());
+        if (!CheckRc(scene, false, "SEM_LoadMesh", rc,
+                     { "", "No source loaded", "Load failed", "Missing #tets section" }))
+            return false;
+    }
 
     DropMesh(scene);
     m_mesh = scene.AddFromCSV3D(path, "mesh_" + Stem(m_srcPath), AttachParent(),
@@ -160,63 +167,151 @@ bool SemSession::ImportMesh(Scene& scene, const std::string& path) {
 void SemSession::LoadSessionStages(Scene& scene) {
     if (!HasSource() || m_workDir.empty()) return;
 
+    if (dim == 3) { LoadSessionStages3D(scene); return; }
+
+    // ---- 2D pipeline --------------------------------------------------------
     // Offsets: probe the first shell; ImportOffsets reloads the whole set.
     const std::string offShell0 =
-        (fs::path(m_workDir) /
-         (Stem(m_srcPath) + (dim == 3 ? "_offset3d_0.csv3d" : "_offset_0.csv3d"))).string();
+        (fs::path(m_workDir) / (Stem(m_srcPath) + "_offset_0.csv3d")).string();
     if (fs::exists(offShell0))
         ImportOffsets(scene, m_workDir);
 
     // Mesh: a single serialized file. ImportMesh (after ImportOffsets) leaves
     // subdivide+offsets+mesh clean and thermal stale/unsolved.
     const std::string meshPath =
-        (fs::path(m_workDir) /
-         (Stem(m_srcPath) + (dim == 3 ? "_mesh3d.csv3d" : "_mesh.csv3d"))).string();
+        (fs::path(m_workDir) / (Stem(m_srcPath) + "_mesh.csv3d")).string();
     if (fs::exists(meshPath))
         ImportMesh(scene, meshPath);
 
-    // Cache-state sidecar (3D only): exact signed offset distances, clip planes,
-    // subdivision level and thermal-BC origin tags the per-stage geometry files
-    // cannot carry. Restore it LAST so the tags/distances line up with the loaded
-    // shells/mesh (SEM_INTEGRATION.md §4a). Best-effort: a mismatch is reported
-    // but does not abort the reload.
-    if (dim == 3 && fs::exists(offShell0)) {
-        const std::string statePath =
-            (fs::path(m_workDir) / (Stem(m_srcPath) + "_state3d.txt")).string();
-        if (fs::exists(statePath)) {
-            int rc = SEM_LoadState3D(m_workDir.c_str());
-            if (CheckRc(scene, false, "SEM_LoadState3D", rc,
-                    { "", "No source loaded", "State file missing or unparseable",
-                      "State does not match the loaded stages" }))
-                // The core now holds the restored clip planes, but the visual
-                // plane rectangles are not recreated by the load — rebuild them
-                // from the same state file so the planes are shown and editable.
-                LoadClipPlanesFromState(scene);
-        }
-    }
-
     // Thermal: the mesh nodes carry a non-zero T field (the solver rewrites the
-    // file in place) AND the isotherm/isosurface file exists.
+    // file in place) AND the isoline file exists.
     const std::string isoPath =
-        (fs::path(m_workDir) /
-         (Stem(m_srcPath) + (dim == 3 ? "_isosurface3d.csv3d" : "_isoline.csv3d"))).string();
+        (fs::path(m_workDir) / (Stem(m_srcPath) + "_isoline.csv3d")).string();
     if (Alive(scene, m_mesh) && MeshFileHasTField(meshPath) && fs::exists(isoPath)) {
         m_thermalSolved = true;
         ReloadMeshColored(scene);
         DropIsoline(scene);
         const XMFLOAT4 green(0.0f, 1.0f, 0.0f, 1.0f);
-        const std::string namePrefix = (dim == 3 ? "isosurface_" : "isoline_");
-        m_isoline = scene.AddFromCSV3D(isoPath, namePrefix + Stem(m_srcPath),
+        m_isoline = scene.AddFromCSV3D(isoPath, "isoline_" + Stem(m_srcPath),
                                        AttachParent(), &green, Colors::BLUE, Colors::RED);
-        if (dim == 3 && m_isoline) ConfigureSurface3D(m_isoline);
         m_isolinePath = isoPath;
-        // Both the solved field and its isosurface were reloaded from disk, so
-        // neither stage needs recomputing (ImportMesh had marked thermal stale).
         m_dirty[STAGE_THERMAL] = m_dirty[STAGE_ISOSURFACE] = false;
     }
 
     snprintf(status, sizeof(status), "Loaded session: %s",
              BaseName(m_workDir).c_str());
+}
+
+// 3D reload: a single SEM_LoadSession3D restores the whole SEM cache (source copy,
+// offsets, mesh, solved field, iso) and every stage's arguments from the session
+// folder; the host then reads the arguments back into the UI and rebuilds the
+// scene primitives from the on-disk stage files (ImportOffsets/ImportMesh skip the
+// core reload for 3D — see their guards).
+void SemSession::LoadSessionStages3D(Scene& scene) {
+    int rc = SEM_LoadSession3D(m_workDir.c_str());
+    if (!CheckRc(scene, false, "SEM_LoadSession3D", rc,
+                 { "", "Bad directory", "Working dir unusable",
+                   "Manifest missing", "Manifest parse error",
+                   "Version/source mismatch", "Source load failed",
+                   "Clip re-snap failed", "Offsets mismatch", "Mesh load failed" })) {
+        snprintf(status, sizeof(status), "Session load failed.");
+        return;
+    }
+
+    // Pull the restored knobs into the UI so the session is editable from where it
+    // left off, and learn which stages the cache holds.
+    ApplyPipelineArgs3D();
+    SEM_PipelineArgs3D a{};
+    if (SEM_GetPipelineArgs3D(&a) != 0) a.stages_present = 0;
+
+    // Offsets.
+    const std::string offShell0 =
+        (fs::path(m_workDir) / (Stem(m_srcPath) + "_offset3d_0.csv3d")).string();
+    if ((a.stages_present & SEM_STAGE_OFFSETS) && fs::exists(offShell0))
+        ImportOffsets(scene, m_workDir);
+
+    // Mesh.
+    const std::string meshPath =
+        (fs::path(m_workDir) / (Stem(m_srcPath) + "_mesh3d.csv3d")).string();
+    if ((a.stages_present & SEM_STAGE_MESH) && fs::exists(meshPath))
+        ImportMesh(scene, meshPath);
+
+    // Clip-plane rectangles from the restored core state (the core already holds
+    // the planes; this only recreates the editable visuals).
+    LoadClipPlanesFromState(scene);
+
+    // Iso deliverable: the remeshed sheet when the extraction used an offset axis,
+    // else the plain extracted iso. Colour the mesh by the solved field first.
+    const std::string isoPath =
+        (fs::path(m_workDir) / (Stem(m_srcPath) +
+            (a.iso_axis != 0 ? "_remesh3d.csv3d" : "_isosurface3d.csv3d"))).string();
+    if ((a.stages_present & SEM_STAGE_ISO) && Alive(scene, m_mesh) && fs::exists(isoPath)) {
+        if (a.stages_present & SEM_STAGE_THERMAL) {
+            m_thermalSolved = true;
+            ReloadMeshColored(scene);
+            m_dirty[STAGE_THERMAL] = false;
+        }
+        DropIsoline(scene);
+        const XMFLOAT4 green(0.0f, 1.0f, 0.0f, 1.0f);
+        m_isoline = scene.AddFromCSV3D(isoPath, "isosurface_" + Stem(m_srcPath),
+                                       AttachParent(), &green, Colors::BLUE, Colors::RED);
+        if (m_isoline) ConfigureSurface3D(m_isoline);
+        m_isolinePath = isoPath;
+        m_dirty[STAGE_ISOSURFACE] = false;
+    }
+
+    snprintf(status, sizeof(status), "Loaded session: %s",
+             BaseName(m_workDir).c_str());
+}
+
+// Copy the SEM core's restored 3D pipeline arguments (SEM_GetPipelineArgs3D) back
+// into this session's UI fields — the inverse of the forward mapping the async
+// driver applies (see SemSessionAsync.cpp). Geometry is already reloaded; this
+// only makes the knobs match, so a reopened session can be tweaked and recomputed
+// from where it left off. 3D only.
+void SemSession::ApplyPipelineArgs3D() {
+    if (dim != 3 || !HasSource()) return;
+    SEM_PipelineArgs3D a{};
+    if (SEM_GetPipelineArgs3D(&a) != 0) return;
+
+    // Subdivide — inverse of ApplySubdivide's n: <0 off (mode 0), 0 adaptive
+    // (mode 1), >=1 uniform subN (mode 2).
+    subEnabled = true;
+    if (a.subdiv_n < 0)       subMode = 0;
+    else if (a.subdiv_n == 0) subMode = 1;
+    else                    { subMode = 2; subN = a.subdiv_n; }
+
+    // Offsets.
+    offsetMode = (a.offset_mode == SEM_OFFSET_GAPS) ? OFFSET_GAPS : OFFSET_EVEN;
+    firstGap   = (float)a.first_gap;
+    numOffsets = a.num_offsets;
+    grading    = (float)a.grading;
+    if (a.offset_gap_count > 0) {
+        std::vector<double> g(a.offset_gap_count);
+        int cnt = 0;
+        if (SEM_GetOffsetGaps3D(g.data(), (int)g.size(), &cnt) == 0) {
+            const int n = std::min(cnt, (int)g.size());
+            gaps.assign(g.begin(), g.begin() + n);
+        }
+    }
+
+    // Mesh (3D tet). tet_param and tet_max_edge_len both come back in world units,
+    // matching tetParam / tetMaxEdgeLen.
+    tetMethod         = a.tet_method;
+    tetParam          = (float)a.tet_param;
+    tetMaxEdgeLen     = (float)a.tet_max_edge_len;
+
+    // Thermal.
+    maxInward = a.max_inward;
+
+    // Iso. The core stores min-offset as the absolute clearance c*offset; recover c.
+    isoValue       = (float)a.iso_value;
+    isoAxis        = a.iso_axis;
+    isoOffsetValue = (float)a.iso_offset_value;
+    if (a.iso_offset_value > 1e-12 || a.iso_offset_value < -1e-12)
+        isoMinOffsetValue = (float)(a.iso_min_offset_value / a.iso_offset_value);
+    isoFinalTargetMult = (float)a.iso_target_len_mult;
+    isoFinalIters      = a.iso_iterations;
 }
 
 }

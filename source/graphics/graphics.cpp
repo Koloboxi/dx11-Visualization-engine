@@ -31,7 +31,8 @@ bool Graphics::Initialize(HWND hwnd, int width, int height) {
 	io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 	ImGui_ImplWin32_Init(hwnd);
 	ImGui_ImplDX11_Init(this->device.Get(), this->deviceContext.Get());
-	ImGui::StyleColorsDark();
+	if (this->scene.lightTheme) ImGui::StyleColorsLight();
+	else                        ImGui::StyleColorsDark();
 
 	return true;
 }
@@ -69,7 +70,10 @@ void Graphics::OnResize(int newWidth, int newHeight)
 
 void Graphics::RenderFrame()
 {
-	static float bgcolor[] = { 0.117647f, 0.117647f, 0.117647f, 0.117647f };
+	static float bgDark[]  = { 0.117647f, 0.117647f, 0.117647f, 0.117647f };
+	// Soft, warm off-white for the light theme — not a harsh pure white.
+	static float bgLight[] = { 0.925f, 0.918f, 0.898f, 1.0f };
+	const float* bgcolor = this->scene.lightTheme ? bgLight : bgDark;
 	this->deviceContext->ClearRenderTargetView(this->renderTargetView.Get(), bgcolor);
 	this->deviceContext->ClearDepthStencilView(this->depthStencilView.Get(), D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0);
 	this->deviceContext->ClearDepthStencilView(this->depthStencilViewNoMSAA.Get(), D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0);

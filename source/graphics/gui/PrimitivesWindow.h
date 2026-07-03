@@ -98,42 +98,12 @@ inline std::string BrowseForMeshFile(const char* filter, const char* title) {
     return {};
 }
 
-inline void Draw(Scene& scene, LuaUpdaterEditor& lua,
-                 bool& blockMousePick, bool& blockMouseWheel) {
-    static AddPrimState s_add;
-    static int          s_savedSelIdx = 0;
-    static int          s_demoSelIdx  = 0;
-    static std::unordered_set<const SceneNode*> s_expanded;
-    static int          s_lastClickedIdx = -1;
-    static SceneNode*   s_lastClickedNode = nullptr;
-    static SceneNode*   s_renameNode     = nullptr;
-    static bool         s_renameFocus    = false;
-    static char         s_renameBuffer[256] = {};
-
-    auto isRenamable = [](SceneNode* n) { return n && !n->IsController(); };
-    auto beginRename = [&](SceneNode* n) {
-        if (!isRenamable(n)) return;
-        s_renameNode  = n;
-        s_renameFocus = true;
-        const std::string& cur = (n == &scene.root) ? scene.sceneName : n->name;
-        strncpy_s(s_renameBuffer, cur.c_str(), sizeof(s_renameBuffer) - 1);
-    };
-    auto commitRename = [&]() {
-        if (!s_renameNode) return;
-        if (s_renameNode == &scene.root) {
-            scene.sceneName = s_renameBuffer;
-            scene.root.name = s_renameBuffer;
-        } else {
-            s_renameNode->name = s_renameBuffer;
-        }
-        s_renameNode = nullptr;
-    };
-
-    // Scene-management controls (save/clear, demo & saved scene pickers, add/
-    // delete) live in the "Scene" window; the "Primitives" window below begins
-    // straight with the tree. ImGui appends to "Scene" — SceneAreaWindow opens
-    // it again afterwards to draw the controller windows underneath.
-    ImGui::Begin("Scene");
+// Scene-management controls (save/clear, demo & saved scene pickers). Rendered
+// as the body of the "Scene" collapsible section in the merged Scene window —
+// no window Begin/End of its own.
+inline void DrawSceneManagementBody(Scene& scene, LuaUpdaterEditor& lua) {
+    static int s_savedSelIdx = 0;
+    static int s_demoSelIdx  = 0;
 
     if (ImGui::Button("Save"))
         scene.SaveScene(scene.sceneName.empty() ? "scene.json" : scene.sceneName + ".json");
@@ -174,8 +144,38 @@ inline void Draw(Scene& scene, LuaUpdaterEditor& lua,
     } else {
         ImGui::TextDisabled("No saved scenes");
     }
+}
 
-    ImGui::Separator();
+// The add/delete controls and the primitive tree. Rendered as the body of the
+// "Primitives" collapsible section in the merged Scene window (no Begin/End).
+inline void DrawTreeBody(Scene& scene, LuaUpdaterEditor& lua,
+                         bool& blockMousePick, bool& blockMouseWheel) {
+    static AddPrimState s_add;
+    static std::unordered_set<const SceneNode*> s_expanded;
+    static int          s_lastClickedIdx = -1;
+    static SceneNode*   s_lastClickedNode = nullptr;
+    static SceneNode*   s_renameNode     = nullptr;
+    static bool         s_renameFocus    = false;
+    static char         s_renameBuffer[256] = {};
+
+    auto isRenamable = [](SceneNode* n) { return n && !n->IsController(); };
+    auto beginRename = [&](SceneNode* n) {
+        if (!isRenamable(n)) return;
+        s_renameNode  = n;
+        s_renameFocus = true;
+        const std::string& cur = (n == &scene.root) ? scene.sceneName : n->name;
+        strncpy_s(s_renameBuffer, cur.c_str(), sizeof(s_renameBuffer) - 1);
+    };
+    auto commitRename = [&]() {
+        if (!s_renameNode) return;
+        if (s_renameNode == &scene.root) {
+            scene.sceneName = s_renameBuffer;
+            scene.root.name = s_renameBuffer;
+        } else {
+            s_renameNode->name = s_renameBuffer;
+        }
+        s_renameNode = nullptr;
+    };
 
     if (ImGui::Button("+")) ImGui::OpenPopup("AddPrimitive");
     ImGui::SameLine();
@@ -243,12 +243,6 @@ inline void Draw(Scene& scene, LuaUpdaterEditor& lua,
         if (ImGui::Button("Cancel", {80,0})) ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
     }
-
-    if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem | ImGuiHoveredFlags_ChildWindows))
-        blockMousePick = true;
-    ImGui::End();
-
-    ImGui::Begin("Primitives");
 
     if (ImGui::BeginChild("##primlist", {0,0}, false)) {
         if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem))
@@ -341,20 +335,24 @@ inline void Draw(Scene& scene, LuaUpdaterEditor& lua,
             std::string lbl;
             ImU32 textCol;
 
+            // The light theme needs dark (near-black) tree text; the row highlight
+            // bars are translucent, so black stays legible over them too.
+            const bool light = scene.lightTheme;
             if (isRoot) {
                 lbl      = node->name.empty() ? "(unnamed scene)" : node->name;
-                textCol  = IM_COL32(200,220,255,230);
+                textCol  = light ? IM_COL32(15,20,35,255) : IM_COL32(200,220,255,230);
             } else if (isCtrl) {
                 lbl     = "[controller]";
-                textCol = IM_COL32(140,210,140,200);
+                textCol = light ? IM_COL32(20,90,20,255) : IM_COL32(140,210,140,200);
             } else if (isPrim) {
                 std::string dimS = prim->GetDimension()==0?"p":(prim->GetDimension()==1?"l":"t");
                 lbl = prim->name.empty() ? (std::to_string(prim->id) + dimS) : prim->name;
                 if (prim->HasUpdater()) lbl += " *";
-                textCol = prim->selected ? IM_COL32(255,255,255,230) : IM_COL32(200,210,228,200);
+                textCol = light ? IM_COL32(0,0,0,255)
+                                : (prim->selected ? IM_COL32(255,255,255,230) : IM_COL32(200,210,228,200));
             } else {
                 lbl     = node->name.empty() ? "(node)" : node->name;
-                textCol = IM_COL32(180,190,210,180);
+                textCol = light ? IM_COL32(40,45,55,255) : IM_COL32(180,190,210,180);
             }
 
             dl->AddText({textX, rp.y + (rowH - ImGui::GetTextLineHeight()) * .5f}, textCol, lbl.c_str());
@@ -469,7 +467,6 @@ inline void Draw(Scene& scene, LuaUpdaterEditor& lua,
 
     if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem | ImGuiHoveredFlags_ChildWindows))
         blockMousePick = true;
-    ImGui::End();
 }
 
 }

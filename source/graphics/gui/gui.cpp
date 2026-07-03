@@ -1,12 +1,11 @@
 #include "../graphics.h"
 
 #include "DockHost.h"
-#include "TimeControlWindow.h"
-#include "PrimitivesWindow.h"
+#include "TabStripWindow.h"
+#include "SceneWindow.h"
+#include "MainMenuWindow.h"
 #include "SEMWindow.h"
 #include "TransformWindow.h"
-#include "LuaGlobalsWindow.h"
-#include "SceneAreaWindow.h"
 #include "ConsoleWindow.h"
 #include "VectorPick.h"
 
@@ -35,14 +34,27 @@ void Graphics::Gui()
     bool blockMousePick  = false;
     bool blockMouseWheel = false;
 
-    DockHost::Begin(scene, blockMousePick, fpsStr.c_str());
+    // Tab strip below the OS caption: "Main menu" plus (once opened) the single
+    // workspace tab.
+    const float tabH = TabStripWindow::Height();
+    TabStripWindow::Draw(scene);
 
-    TimeControlWindow::Draw(scene, blockMousePick);
-    PrimitivesWindow::Draw(scene, luaEditor, blockMousePick, blockMouseWheel);
+    // Main-menu tab: it covers the 3D viewport, so the mouse must not reach it
+    // and no workspace windows draw.
+    if (scene.activeTab == 0) {
+        MainMenuWindow::Draw(scene, luaEditor, tabH);
+        scene.blockMousePick  = true;
+        scene.blockMouseWheel = true;
+        ImGui::Render();
+        ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+        return;
+    }
+
+    DockHost::Begin(scene, blockMousePick, fpsStr.c_str(), tabH);
+
     SEMWindow::Draw(scene, blockMousePick);
+    SceneWindow::Draw(scene, luaEditor, blockMousePick, blockMouseWheel);
     TransformWindow::Draw(scene, blockMousePick);
-    LuaGlobalsWindow::Draw(scene, luaEditor, blockMousePick, blockMouseWheel);
-    SceneAreaWindow::Draw(scene, luaEditor, blockMousePick);
     ConsoleWindow::Draw(scene, luaEditor, blockMousePick, blockMouseWheel);
 
     if (scene.stagingEnabled && ImGui::IsMouseDoubleClicked(0) && !ImGui::GetIO().WantCaptureMouse)
@@ -53,6 +65,11 @@ void Graphics::Gui()
     bool navCubeHover = NavCube::Draw(
         ImVec2((float)windowWidth, (float)windowHeight), scene.camera);
     if (navCubeHover) blockMousePick = true;
+
+    // Block camera zoom whenever the wheel is over any ImGui window/popup, the
+    // same way blockMousePick guards clicks. The dock host's central node is a
+    // pass-through, so WantCaptureMouse stays false over the bare 3D viewport.
+    if (ImGui::GetIO().WantCaptureMouse) blockMouseWheel = true;
 
     scene.blockMousePick  = blockMousePick;
     scene.blockMouseWheel = blockMouseWheel;

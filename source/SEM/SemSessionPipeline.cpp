@@ -663,8 +663,6 @@ bool SemSession::ApplyOffsets(Scene& scene, bool silent) {
 bool SemSession::ApplyMesh(Scene& scene, bool silent) {
     try {
         double param = (double)meshParam;
-        if (meshParamEdgeUnits && meshParam > 0.0f && meshMethod == SEM_STEINER_GRID)
-            param *= MeshParamFactor();
         SEM_MeshParams params{ meshMethod, param, (double)steinerMargin };
         Timer t; t.Restart();
         int rc = SafeBuildMesh(&params);

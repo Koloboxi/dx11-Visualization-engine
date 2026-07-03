@@ -10,6 +10,14 @@ bool Engine::Initialize(HINSTANCE hInstance, std::string window_title, std::stri
 	if (!this->gfx.Initialize(this->render_window.GetHWND(), width, height)) {
 		return false;
 	}
+	// The window is shown maximized before the graphics device exists, so the
+	// WM_SIZE from maximizing was dropped (OnResize bails without a device) and
+	// the swap chain kept the pre-maximize size. Reconcile it to the real client
+	// size now — otherwise the backbuffer/viewport mismatch offsets mouse picks
+	// by the caption height until the window is manually resized.
+	RECT rc{};
+	GetClientRect(this->render_window.GetHWND(), &rc);
+	this->gfx.OnResize(rc.right - rc.left, rc.bottom - rc.top);
 	return true;
 }
 
@@ -32,7 +40,8 @@ void Engine::Update()
 	while (!keyboard.KeyBufferIsEmpty()) {
 		KeyboardEvent eve = keyboard.ReadKey();
 		unsigned char keycode = eve.GetKeyCode();
-		if (keycode == VK_DELETE && eve.IsPress() && !ImGui::GetIO().WantTextInput) {
+		if (keycode == VK_DELETE && eve.IsPress() && !ImGui::GetIO().WantTextInput &&
+			this->gfx.scene.activeTab == 1) {
 			for (Primitive* p : this->gfx.scene.primitives)
 				if (p->selected) this->gfx.luaEditor.OnPrimitiveRemoved(p);
 			this->gfx.scene.DeleteSelected();

@@ -243,9 +243,13 @@
     <ClInclude Include="source\graphics\gui\DockHost.h" />
     <ClInclude Include="source\graphics\gui\GuiIcons.h" />
     <ClInclude Include="source\graphics\gui\LuaGlobalsWindow.h" />
+    <ClInclude Include="source\graphics\gui\MainMenuWindow.h" />
     <ClInclude Include="source\graphics\gui\PrimitivesWindow.h" />
     <ClInclude Include="source\graphics\gui\SceneAreaWindow.h" />
+    <ClInclude Include="source\graphics\gui\SceneWindow.h" />
+    <ClInclude Include="source\graphics\gui\TabStripWindow.h" />
     <ClInclude Include="source\graphics\gui\TransformWindow.h" />
+    <ClInclude Include="source\graphics\navcube\NavGizmo.h" />
     <ClInclude Include="source\graphics\scene\scene_service.h" />
     <ClInclude Include="source\SEM\SemSession.h" />
     <ClInclude Include="source\SEM\SemSessionDetail.h" />

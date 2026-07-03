@@ -53,13 +53,33 @@ inline ImportChoice& PendingImport() {
     return ic;
 }
 
+// Workspace-tab label for a source: the file name without directory or extension.
+inline std::string WorkspaceLabelFor(const std::string& path) {
+    return std::filesystem::path(path).stem().string();
+}
+
+// Replace the entire workspace with a fresh source: wipe the current scene,
+// drop the SEM session's now-dangling references (ClearScene deleted the old
+// primitives), rename the workspace tab after the imported file, then import.
+// This is the "Import CSV3D..." behaviour: a new import starts from a clean scene.
+inline Primitive* ResetAndImport(Scene& scene, SemSessionNS::SemSession& S,
+                                 const std::string& path,
+                                 const std::string& workDir = std::string(),
+                                 bool reload = false) {
+    if (path.empty()) return nullptr;
+    scene.ClearScene();
+    S.Validate(scene);   // the just-deleted source/stages must be unbound first
+    scene.workspaceLabel = WorkspaceLabelFor(path);
+    return S.ImportSource(scene, path, workDir, reload);
+}
+
 // Begin importing a source: if it already has sessions, defer to the choice
 // modal; otherwise import straight into a fresh session.
 inline void BeginSourceImport(Scene& scene, SemSessionNS::SemSession& S,
                               const std::string& path) {
     if (path.empty()) return;
     auto sessions = SemSessionNS::SemSession::ListSessions(path);
-    if (sessions.empty()) { S.ImportSource(scene, path); return; }
+    if (sessions.empty()) { ResetAndImport(scene, S, path); return; }
     ImportChoice& ic = PendingImport();
     ic.path     = path;
     ic.sessions = std::move(sessions);
@@ -96,10 +116,10 @@ inline void DrawImportSessionModal(Scene& scene, SemSessionNS::SemSession& S) {
     ImGui::Spacing();
     if (ImGui::Button("Load", {120, 0})) {
         if (ic.sel >= 0 && ic.sel < newIdx) {
-            S.ImportSource(scene, ic.path, ic.sessions[ic.sel]);
+            ResetAndImport(scene, S, ic.path, ic.sessions[ic.sel], /*reload=*/true);
             S.LoadSessionStages(scene);
         } else {
-            S.ImportSource(scene, ic.path);  // fresh session
+            ResetAndImport(scene, S, ic.path);  // fresh session
         }
         ImGui::CloseCurrentPopup();
     }
@@ -313,14 +333,14 @@ inline void DrawStandaloneRemeshSection(Scene& scene, SemSessionNS::SemSession& 
         ImGui::SetItemTooltip("Axis whose coordinate is preserved as the height field; the sheet is\n"
                               "projected onto the plane perpendicular to it and re-triangulated.");
 
-        ImGui::DragFloat("Offset (x edge)", &S.soOffset, 0.05f, 0.0f, 0.0f, "%.3f");
-        ImGui::SetItemTooltip("Shift along the surface pseudonormals before re-triangulation, in\n"
-                              "multiples of the surface's mean edge length. Positive shifts inward.");
+        ImGui::DragFloat("Offset (world)", &S.soOffset, 0.05f, 0.0f, 0.0f, "%.3f");
+        ImGui::SetItemTooltip("Shift along the surface pseudonormals before re-triangulation, as a\n"
+                              "distance in world units. Positive shifts inward.");
 
-        ImGui::DragFloat("Min offset (x edge)", &S.soMinOffset, 0.05f, 0.0f, 0.0f, "%.3f");
+        ImGui::DragFloat("Min offset (fraction)", &S.soMinOffset, 0.01f, 0.0f, 1.0f, "%.3f");
         ImGui::SetItemTooltip("Minimum clearance a shifted vertex must keep from the surface before\n"
-                              "it is pruned (same unit as Offset). c = (min)/(offset): 1 = fold cull,\n"
-                              "0 = signed-crossing cull.");
+                              "it is pruned, as a fraction c in [0,1] of Offset (absolute clearance\n"
+                              "= c * Offset). c = 1 = fold cull, 0 = signed-crossing cull.");
 
         ImGui::DragFloat("Final target edge (x sheet edge)", &S.soTargetMult, 0.02f, 0.0f, 0.0f, "%.3f");
         if (S.soTargetMult < 0.0f) S.soTargetMult = 0.0f;
@@ -550,8 +570,7 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         if (S.offsetMode == OFFSET_EVEN) {
             ImGui::DragFloat("First gap", &S.firstGap, 0.05f, -1000.0f, 1000.0f, "%.3f");
             released |= ImGui::IsItemDeactivatedAfterEdit();
-            ImGui::SetItemTooltip("Size of the first gap, in multiples of the source's\n"
-                                  "mean edge length (1 = one mean edge length).\n"
+            ImGui::SetItemTooltip("Size of the first gap, as a distance in world units.\n"
                                   "Sign selects the side (left/right of travel).\n"
                                   "Successive gaps scale by Grading.");
             ImGui::DragInt("Num offsets", &S.numOffsets, 0.2f, 1, 500);
@@ -620,22 +639,6 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
                 ImGui::SetItemTooltip("%s", TetParamHelp(S.tetMethod));
                 ImGui::SameLine();
                 if (ImGui::SmallButton("auto")) { S.tetParam = -1.0f; changed = true; }
-
-                // BAND's knob is the Steiner grid cell size (a length), so it can
-                // be expressed in multiples of the source surface's mean edge length.
-                ImGui::SameLine();
-                const char* ulabel = !S.tetParamEdgeUnits ? "units: model" : "units: x edge";
-                if (ImGui::SmallButton(ulabel)) {
-                    double f = S.TetParamFactor();
-                    if (S.tetParam > 0.0f && f > 0.0) {
-                        if (!S.tetParamEdgeUnits) S.tetParam = (float)(S.tetParam / f);
-                        else                      S.tetParam = (float)(S.tetParam * f);
-                    }
-                    S.tetParamEdgeUnits = !S.tetParamEdgeUnits;
-                }
-                ImGui::SetItemTooltip("Toggle the cell size between model units and multiples of\n"
-                                      "the source surface's mean edge length. The value is\n"
-                                      "converted so meshing is unaffected.");
             } else { // SEM_TET_LAYERED: the knob is a use_sdf flag (0/1).
                 bool useSdf = (S.tetParam > 0.5f);
                 if (ImGui::Checkbox(TetParamLabel(S.tetMethod), &useSdf)) {
@@ -652,36 +655,19 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         ImGui::SameLine();
         if (ImGui::SmallButton("auto")) { S.meshParam = -1.0f; changed = true; }
 
-        // The grid spacing is a length, so it can be expressed in multiples of
-        // the source contour's mean edge length.
-        ImGui::SameLine();
-        const char* ulabel = !S.meshParamEdgeUnits ? "units: model" : "units: x edge";
-        if (ImGui::SmallButton(ulabel)) {
-            double f = S.MeshParamFactor();
-            if (S.meshParam > 0.0f && f > 0.0) {
-                if (!S.meshParamEdgeUnits) S.meshParam = (float)(S.meshParam / f);
-                else                       S.meshParam = (float)(S.meshParam * f);
-            }
-            S.meshParamEdgeUnits = !S.meshParamEdgeUnits;
-        }
-        ImGui::SetItemTooltip("Toggle the spacing between model units and multiples of the\n"
-                              "source contour's mean edge length. The value is converted so\n"
-                              "meshing is unaffected.");
-
         ImGui::DragFloat("Steiner margin", &S.steinerMargin, 0.005f, 0.0f, 1.0f, "%.3f");
         released |= ImGui::IsItemDeactivatedAfterEdit();
         ImGui::SetItemTooltip("Minimum spacing from offset lines, in multiples of the grid\n"
                               "spacing. 0 or less => automatic (0.45).");
         } // end 2D grid mesh UI
 
-        // Max tet edge length filter (3D only), in multiples of the source
-        // surface's mean edge length. Sits just above Apply so the meshing
-        // parameters read top to bottom. <= 0 disables the filter.
+        // Max tet edge length filter (3D only), in world units. Sits just above
+        // Apply so the meshing parameters read top to bottom. <= 0 disables the filter.
         if (is3D) {
-            ImGui::DragFloat("Max edge (x edge, 0=off)", &S.tetMaxEdgeLen, 0.05f, 0.0f, 100.0f, "%.3f");
+            ImGui::DragFloat("Max edge (world, 0=off)", &S.tetMaxEdgeLen, 0.05f, 0.0f, 100.0f, "%.3f");
             released |= ImGui::IsItemDeactivatedAfterEdit();
             ImGui::SetItemTooltip("After meshing, remove any tet with an edge longer than this,\n"
-                                  "measured in multiples of the source surface's mean edge length.\n"
+                                  "measured as a distance in world units.\n"
                                   "Vertices are kept. 0 or less disables the filter.");
             if (S.tetMaxEdgeLen < 0.0f) S.tetMaxEdgeLen = 0.0f;
         }
@@ -775,26 +761,46 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
 
             ImGui::BeginDisabled(S.isoAxis == 0);
             // v_min == v_max => ImGui applies no clamp: the shift is a signed
-            // multiple of the source's mean edge length, with no range limit.
-            ImGui::DragFloat("Iso offset (x edge)", &S.isoOffsetValue, 0.05f, 0.0f, 0.0f, "%.3f");
+            // distance in world units, with no range limit.
+            ImGui::DragFloat("Iso offset (world)", &S.isoOffsetValue, 0.05f, 0.0f, 0.0f, "%.3f");
             if (ImGui::IsItemDeactivatedAfterEdit()) S.MarkStageDirty(STAGE_ISOSURFACE);
             ImGui::SetItemTooltip("Shift of the iso sheet along its pseudonormals before\n"
-                                  "re-triangulation, in multiples of the source surface's mean\n"
-                                  "edge length. Positive shifts inward (toward the source),\n"
+                                  "re-triangulation, as a distance in world units.\n"
+                                  "Positive shifts inward (toward the source),\n"
                                   "negative outward. Ignored when the axis is None.");
 
             // Minimum clearance a shifted vertex must keep from the iso before it is
-            // pruned, in the same edge-length units as the shift. v_min == v_max =>
-            // no ImGui clamp (the meaningful range is [0, |Iso offset|]).
-            ImGui::DragFloat("Iso min offset (x edge)", &S.isoMinOffsetValue, 0.05f, 0.0f, 0.0f, "%.3f");
+            // pruned, as the fraction c in [0,1] of Iso offset (absolute clearance =
+            // c * Iso offset).
+            ImGui::DragFloat("Iso min offset (fraction)", &S.isoMinOffsetValue, 0.01f, 0.0f, 1.0f, "%.3f");
             if (ImGui::IsItemDeactivatedAfterEdit()) S.MarkStageDirty(STAGE_ISOSURFACE);
             ImGui::SetItemTooltip("Minimum clearance a shifted vertex must keep from the iso before\n"
-                                  "it is pruned, in multiples of the source's mean edge length (same\n"
-                                  "unit as the shift). With c = (min offset) / (iso offset):\n"
+                                  "it is pruned, as a fraction c in [0,1] of Iso offset (absolute\n"
+                                  "clearance = c * Iso offset):\n"
                                   "  c = 1 (min == shift): fold cull - drop every concave fold that\n"
                                   "    folded the sheet onto itself.\n"
                                   "  c = 0 (min == 0): signed-crossing cull - keep the folds and drop\n"
                                   "    only vertices that crossed THROUGH the iso to the wrong side.");
+
+            // Final isotropic remesh of the offset-remeshed sheet — part of the extraction
+            // (SEM_ExtractIsosurface3D runs it after the offset-remesh). Editing these marks
+            // the stage dirty; Apply re-runs it, cheaply re-remeshing the cached offset-remesh
+            // base when only these knobs changed since the last extraction.
+            ImGui::DragFloat("Final remesh target (x sheet edge)", &S.isoFinalTargetMult, 0.02f, 0.0f, 0.0f, "%.3f");
+            if (ImGui::IsItemDeactivatedAfterEdit()) S.MarkStageDirty(STAGE_ISOSURFACE);
+            ImGui::SetItemTooltip("Target triangle edge length for the final remesh, in multiples of the\n"
+                                  "offset-remeshed sheet's own average edge length. Long edges are split\n"
+                                  "toward this size and short ones collapsed. 0 uses the median edge length.");
+            if (S.isoFinalTargetMult < 0.0f) S.isoFinalTargetMult = 0.0f;
+
+            ImGui::DragInt("Final remesh iterations", &S.isoFinalIters, 0.1f, 0, 20);
+            if (ImGui::IsItemDeactivatedAfterEdit()) S.MarkStageDirty(STAGE_ISOSURFACE);
+            ImGui::SetItemTooltip("Number of final-remesh collapse / split / relax sweeps over the\n"
+                                  "offset-remeshed sheet. More iterations even out the distribution\n"
+                                  "further at some cost. 0 skips the final remesh (the raw offset-remesh\n"
+                                  "base is shown).");
+            if (S.isoFinalIters < 0)  S.isoFinalIters = 0;
+            if (S.isoFinalIters > 50) S.isoFinalIters = 50;
 
             ImGui::EndDisabled();
 
@@ -883,40 +889,6 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         ImGui::PopID();
     }
 
-    // Final remesh: an optional cleanup pass over the offset-remeshed isosurface that
-    // splits the tall, narrow triangles a height-field re-mesh leaves on a near-vertical
-    // wall. Runs standalone on the cached offset-remesh result (no re-extract), so it is
-    // 3D-only and needs an offset-axis extraction to have produced that result.
-    if (is3D) {
-        ImGui::PushID("isofinal");
-        if (ImGui::CollapsingHeader("Final remesh")) {
-        ImGui::Indent();
-        ImGui::BeginDisabled(!S.HasIsoProjection());
-
-        ImGui::DragFloat("Target edge (x sheet edge)", &S.isoFinalTargetMult, 0.02f, 0.0f, 0.0f, "%.3f");
-        ImGui::SetItemTooltip("Target triangle edge length for the final remesh, in multiples of the\n"
-                              "offset-remeshed sheet's own average edge length. Long edges are split\n"
-                              "toward this size and short ones collapsed. 0 uses the median edge length.");
-        if (S.isoFinalTargetMult < 0.0f) S.isoFinalTargetMult = 0.0f;
-
-        ImGui::DragInt("Iterations", &S.isoFinalIters, 0.1f, 1, 20);
-        ImGui::SetItemTooltip("Number of collapse / split / relax sweeps. More iterations even out the\n"
-                              "distribution further at some cost.");
-        if (S.isoFinalIters < 1)  S.isoFinalIters = 1;
-        if (S.isoFinalIters > 50) S.isoFinalIters = 50;
-
-        if (ImGui::Button("Apply final remesh", {160, 0}))
-            S.ApplyIsoFinalRemeshAsync(scene, false);
-        ImGui::SetItemTooltip("Re-mesh the offset-remeshed isosurface in place: split the long wall\n"
-                              "triangles, collapse the short edges and relax. Operates on the last\n"
-                              "offset-remesh result (does NOT re-extract). Requires an offset-axis\n"
-                              "isosurface extraction first.");
-
-        ImGui::EndDisabled();
-        ImGui::Unindent();
-        }
-        ImGui::PopID();
-    }
 
     } // end pipeline-stage stack (else of the standalone-mode branch)
 

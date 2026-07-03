@@ -91,38 +91,19 @@ void SemSession::LoadClipPlanesFromState(Scene& scene) {
     if (dim != 3) return;
     DropClipPlaneNodes(scene);
 
-    const std::string statePath =
-        (fs::path(m_workDir) / (Stem(m_srcPath) + "_state3d.txt")).string();
-    std::ifstream in(statePath);
-    if (!in) return;
+    // The SEM core already holds the restored clip planes (SEM_LoadSession3D); read
+    // them straight from it rather than re-parsing the session manifest, and rebuild
+    // the editable plane rectangles from those values.
+    int count = 0;
+    if (SEM_GetClipPlanes3D(nullptr, 0, &count) != 0 || count <= 0) return;
+    std::vector<double> v((size_t)count * 4);
+    if (SEM_GetClipPlanes3D(v.data(), count, &count) != 0 || count <= 0) return;
 
-    // Find the "#clip_planes;<N>" marker, then read 4*N numeric values. The DLL
-    // writes each plane on its own line with the four components ';'-separated
-    // (e.g. "nx;ny;nz;d"), so split on ';' as well as whitespace: this restores
-    // the planes whether the writer packs 4 per line or one value per line.
     std::vector<XMFLOAT4> planes;
-    std::string line;
-    const std::string key = "#clip_planes;";
-    while (std::getline(in, line)) {
-        if (line.compare(0, key.size(), key) != 0) continue;
-        int n = 0;
-        try { n = std::stoi(line.substr(key.size())); } catch (...) { return; }
-        std::vector<double> v;
-        v.reserve((size_t)n * 4);
-        std::string vline;
-        while ((int)v.size() < n * 4 && std::getline(in, vline)) {
-            if (!vline.empty() && vline[0] == '#') break;   // next section started
-            std::replace(vline.begin(), vline.end(), ';', ' ');
-            std::istringstream ss(vline);
-            double x;
-            while ((int)v.size() < n * 4 && (ss >> x)) v.push_back(x);
-        }
-        if ((int)v.size() < n * 4) return;   // truncated / unexpected layout
-        for (int i = 0; i < n; ++i)
-            planes.push_back(XMFLOAT4((float)v[i * 4 + 0], (float)v[i * 4 + 1],
-                                      (float)v[i * 4 + 2], (float)v[i * 4 + 3]));
-        break;
-    }
+    planes.reserve(count);
+    for (int i = 0; i < count; ++i)
+        planes.push_back(XMFLOAT4((float)v[i * 4 + 0], (float)v[i * 4 + 1],
+                                  (float)v[i * 4 + 2], (float)v[i * 4 + 3]));
     if (planes.empty()) return;
 
     for (const XMFLOAT4& pl : planes) {
@@ -133,7 +114,7 @@ void SemSession::LoadClipPlanesFromState(Scene& scene) {
         clipPlaneNodes.push_back(node);
     }
 
-    // The core already holds these planes (SEM_LoadState3D ran first), so record
+    // The core already holds these planes (SEM_LoadSession3D ran first), so record
     // them as the applied set — using each node's reconstructed (normalized)
     // plane, exactly as ClipPlanesChanged compares — so AutoApplyClipPlanes does
     // not re-push and dirty the freshly loaded mesh.

@@ -82,6 +82,11 @@
     <ClInclude Include="source\SEM\SemSession.h" />
     <ClInclude Include="source\SEM\SemSessionDetail.h" />
     <ClInclude Include="source\graphics\scene\scene_service.h" />
+    <ClInclude Include="source\graphics\gui\TransformWindow.h" />
+    <ClInclude Include="source\graphics\navcube\NavGizmo.h" />
+    <ClInclude Include="source\graphics\gui\MainMenuWindow.h" />
+    <ClInclude Include="source\graphics\gui\SceneWindow.h" />
+    <ClInclude Include="source\graphics\gui\TabStripWindow.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="source\graphics\imgui\imgui.cpp" />

@@ -160,6 +160,17 @@ inline void ProjectionIcon(ImDrawList* dl, ImVec2 c, float r) {
     dl->AddTriangleFilled({c.x+r*.62f,c.y-r*.86f},{c.x+r*.45f,c.y-r*.56f},{c.x+r*.79f,c.y-r*.56f}, g);
 }
 
+// Sun glyph — the light / dark UI theme toggle.
+inline void ThemeIcon(ImDrawList* dl, ImVec2 c, float r) {
+    ImU32 col = IM_COL32(250,214,96,235);
+    dl->AddCircleFilled(c, r*.5f, col);
+    for (int i = 0; i < 8; ++i) {
+        float a = i * 3.14159265f / 4.f;
+        ImVec2 d = { cosf(a), sinf(a) };
+        dl->AddLine({c.x+d.x*r*.68f, c.y+d.y*r*.68f}, {c.x+d.x*r, c.y+d.y*r}, col, 1.1f);
+    }
+}
+
 template<typename DrawFn>
 inline bool ToggleIconButton(const char* id, bool* toggled, float sz, DrawFn drawFn) {
     ImVec2 p = ImGui::GetCursorScreenPos();

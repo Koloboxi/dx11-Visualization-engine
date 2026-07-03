@@ -4,9 +4,9 @@
 
 namespace TimeControlWindow {
 
-inline void Draw(Scene& scene, bool& blockMousePick) {
-    ImGui::Begin("Time Control");
-
+// Body of the "Time Control" collapsible section in the merged Scene window
+// (no window Begin/End of its own).
+inline void DrawBody(Scene& scene, bool& blockMousePick) {
     ImGui::Text("t = %.3f", scene.currentTime);
     if (scene.timePaused) {
         if (ImGui::Button("Play "))  scene.timePaused = false;
@@ -33,7 +33,6 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
 
     if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem))
         blockMousePick = true;
-    ImGui::End();
 }
 
 }

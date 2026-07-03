@@ -43,7 +43,7 @@ bool RenderWindow::Initialize(
 		return false;
 	}
 
-	ShowWindow(this->handle, SW_SHOW);
+	ShowWindow(this->handle, SW_SHOWMAXIMIZED);
 	DragAcceptFiles(this->handle, TRUE);
 	SetForegroundWindow(this->handle);
 	SetFocus(this->handle);

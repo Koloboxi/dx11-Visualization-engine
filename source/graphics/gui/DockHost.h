@@ -6,10 +6,12 @@
 
 namespace DockHost {
 
-inline void Begin(Scene& scene, bool& blockMousePick, const char* fpsText) {
+// topInset reserves space at the top of the work area (for the tab strip drawn
+// above the dock host / top strip).
+inline void Begin(Scene& scene, bool& blockMousePick, const char* fpsText, float topInset = 0.f) {
     const ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(vp->WorkPos);
-    ImGui::SetNextWindowSize(vp->WorkSize);
+    ImGui::SetNextWindowPos({ vp->WorkPos.x, vp->WorkPos.y + topInset });
+    ImGui::SetNextWindowSize({ vp->WorkSize.x, vp->WorkSize.y - topInset });
     ImGui::SetNextWindowViewport(vp->ID);
 
     ImGuiWindowFlags hostFlags =
