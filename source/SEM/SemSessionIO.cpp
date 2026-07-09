@@ -242,9 +242,10 @@ void SemSession::LoadSessionStages3D(Scene& scene) {
 
     // Iso deliverable: the remeshed sheet when the extraction used an offset axis,
     // else the plain extracted iso. Colour the mesh by the solved field first.
+    const bool isoOffsetRemesh = (a.iso_axis.x != 0.0 || a.iso_axis.y != 0.0 || a.iso_axis.z != 0.0);
     const std::string isoPath =
         (fs::path(m_workDir) / (Stem(m_srcPath) +
-            (a.iso_axis != 0 ? "_remesh3d.csv3d" : "_isosurface3d.csv3d"))).string();
+            (isoOffsetRemesh ? "_remesh3d.csv3d" : "_isosurface3d.csv3d"))).string();
     if ((a.stages_present & SEM_STAGE_ISO) && Alive(scene, m_mesh) && fs::exists(isoPath)) {
         if (a.stages_present & SEM_STAGE_THERMAL) {
             m_thermalSolved = true;
@@ -306,7 +307,7 @@ void SemSession::ApplyPipelineArgs3D() {
 
     // Iso. The core stores min-offset as the absolute clearance c*offset; recover c.
     isoValue       = (float)a.iso_value;
-    isoAxis        = a.iso_axis;
+    isoAxisN       = XMFLOAT3((float)a.iso_axis.x, (float)a.iso_axis.y, (float)a.iso_axis.z);
     isoOffsetValue = (float)a.iso_offset_value;
     if (a.iso_offset_value > 1e-12 || a.iso_offset_value < -1e-12)
         isoMinOffsetValue = (float)(a.iso_min_offset_value / a.iso_offset_value);

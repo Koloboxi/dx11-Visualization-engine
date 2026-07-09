@@ -326,12 +326,14 @@ inline void DrawStandaloneRemeshSection(Scene& scene, SemSessionNS::SemSession& 
         ImGui::TextWrapped("Offset-and-remesh the imported surface directly, applying the "
                            "clip planes above. The offsets / mesh / thermal pipeline is skipped.");
 
-        const char* axisItems = "X\0Y\0Z\0";
-        int axisIdx = S.soAxis - 1;
-        if (axisIdx < 0) axisIdx = 0; if (axisIdx > 2) axisIdx = 2;
-        if (ImGui::Combo("Base-plane axis", &axisIdx, axisItems)) S.soAxis = axisIdx + 1;
-        ImGui::SetItemTooltip("Axis whose coordinate is preserved as the height field; the sheet is\n"
-                              "projected onto the plane perpendicular to it and re-triangulated.");
+        ImGui::DragFloat3("Base-plane normal", &S.soAxisN.x, 0.01f, 0.0f, 0.0f, "%.3f");
+        ImGui::SetItemTooltip("Normal of the projection plane the sheet is re-triangulated over\n"
+                              "(any direction; need not be unit). The sheet must be a single-valued\n"
+                              "height field along it, else the projection is rejected as folded.");
+        ImGui::TextUnformatted("Preset:"); ImGui::SameLine();
+        if (ImGui::SmallButton("X")) S.soAxisN = { 1.0f, 0.0f, 0.0f }; ImGui::SameLine();
+        if (ImGui::SmallButton("Y")) S.soAxisN = { 0.0f, 1.0f, 0.0f }; ImGui::SameLine();
+        if (ImGui::SmallButton("Z")) S.soAxisN = { 0.0f, 0.0f, 1.0f };
 
         ImGui::DragFloat("Offset (world)", &S.soOffset, 0.05f, 0.0f, 0.0f, "%.3f");
         ImGui::SetItemTooltip("Shift along the surface pseudonormals before re-triangulation, as a\n"
@@ -745,21 +747,25 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         if (S.isoValue < 0.0f) S.isoValue = 0.0f;
         if (S.isoValue > 1.0f) S.isoValue = 1.0f;
 
-        // Offset-and-remesh mode (3D only). "None" extracts the open/closed iso
-        // sheet as-is; picking an axis shifts an open sheet back toward the source
-        // and re-triangulates it in the plane perpendicular to that axis.
+        // Offset-and-remesh mode (3D only). A zero normal extracts the open/closed iso
+        // sheet as-is; a non-zero normal shifts an open sheet back toward the source
+        // and re-triangulates it in the plane with that normal.
         if (is3D) {
-            const char* axisItems[] = { "None (plain)", "X", "Y", "Z" };
-            if (ImGui::Combo("Iso offset axis", &S.isoAxis, axisItems, IM_ARRAYSIZE(axisItems)))
-                S.MarkStageDirty(STAGE_ISOSURFACE);
-            ImGui::SetItemTooltip("None: extract the isosurface as-is (clip planes only).\n"
-                                  "X/Y/Z: shift an OPEN iso sheet back toward the source and\n"
-                                  "re-triangulate it in the plane perpendicular to the chosen axis.\n"
+            ImGui::DragFloat3("Iso base-plane normal", &S.isoAxisN.x, 0.01f, 0.0f, 0.0f, "%.3f");
+            if (ImGui::IsItemDeactivatedAfterEdit()) S.MarkStageDirty(STAGE_ISOSURFACE);
+            ImGui::SetItemTooltip("Projection-plane normal for the iso offset-remesh (any direction,\n"
+                                  "need not be unit). Zero = plain extract (clip planes only).\n"
+                                  "Non-zero: shift an OPEN iso sheet back toward the source and\n"
+                                  "re-triangulate it over the plane with this normal.\n"
                                   "Requires offsets and an open isosurface.");
-            if (S.isoAxis < 0) S.isoAxis = 0;
-            if (S.isoAxis > 3) S.isoAxis = 3;
+            ImGui::TextUnformatted("Preset:"); ImGui::SameLine();
+            if (ImGui::SmallButton("None##iso")) { S.isoAxisN = { 0.0f, 0.0f, 0.0f }; S.MarkStageDirty(STAGE_ISOSURFACE); } ImGui::SameLine();
+            if (ImGui::SmallButton("X##iso"))    { S.isoAxisN = { 1.0f, 0.0f, 0.0f }; S.MarkStageDirty(STAGE_ISOSURFACE); } ImGui::SameLine();
+            if (ImGui::SmallButton("Y##iso"))    { S.isoAxisN = { 0.0f, 1.0f, 0.0f }; S.MarkStageDirty(STAGE_ISOSURFACE); } ImGui::SameLine();
+            if (ImGui::SmallButton("Z##iso"))    { S.isoAxisN = { 0.0f, 0.0f, 1.0f }; S.MarkStageDirty(STAGE_ISOSURFACE); }
 
-            ImGui::BeginDisabled(S.isoAxis == 0);
+            const bool isoOffsetRemesh = (S.isoAxisN.x != 0.0f || S.isoAxisN.y != 0.0f || S.isoAxisN.z != 0.0f);
+            ImGui::BeginDisabled(!isoOffsetRemesh);
             // v_min == v_max => ImGui applies no clamp: the shift is a signed
             // distance in world units, with no range limit.
             ImGui::DragFloat("Iso offset (world)", &S.isoOffsetValue, 0.05f, 0.0f, 0.0f, "%.3f");

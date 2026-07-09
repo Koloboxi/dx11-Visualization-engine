@@ -44,14 +44,15 @@ public:
     // stage sections are hidden in the standalone mode (and vice versa).
     enum SessionMode { SESSION_PIPELINE = 0, SESSION_STANDALONE_REMESH = 1 };
     int   sessionMode = SESSION_PIPELINE;
-    // Standalone offset-remesh parameters (SESSION_STANDALONE_REMESH). Axis 1/2/3 =
-    // X/Y/Z base plane; soOffset the pseudonormal shift as a distance in world units
+    // Standalone offset-remesh parameters (SESSION_STANDALONE_REMESH). soAxisN is the
+    // projection-plane normal (any direction; need not be unit — (0,0,1) reproduces the
+    // former Z base plane); soOffset the pseudonormal shift as a distance in world units
     // (positive inward), soMinOffset the clearance cull as a fraction of the
     // offset (c in [0,1]; the absolute clearance handed to SEM is c * soOffset); the
     // final isotropic cleanup runs soIters sweeps toward soTargetMult * the sheet's
     // own average edge length (soTargetMult <= 0 = median; soIters <= 0 skips it).
     // These map to SEM_OffsetRemeshInPlaneSurface3D's arguments.
-    int   soAxis      = 3;
+    XMFLOAT3 soAxisN  = { 0.0f, 0.0f, 1.0f };
     float soOffset    = 0.2f;
     float soMinOffset = 0.99f;
     float soTargetMult = 1.0f;
@@ -85,14 +86,15 @@ public:
     bool  thermalEnabled = true;
     bool  isoEnabled     = true;
     float isoValue   = 0.8f;
-    // isoAxis = 0: plain extraction (clip planes only). 1/2/3 (X/Y/Z): offset-and-
-    // remesh an open iso sheet, shifted along its pseudonormals by isoOffsetValue
-    // as a distance in world units (signed, no range limit):
-    // positive inward toward the source, negative outward. Ignored when isoAxis = 0.
-    int   isoAxis        = 0;
+    // isoAxisN = zero vector: plain extraction (clip planes only). Any non-zero vector
+    // is the projection-plane normal (need not be unit; (0,0,1) is the former Z axis):
+    // offset-and-remesh an open iso sheet, shifted along its pseudonormals by
+    // isoOffsetValue as a distance in world units (signed, no range limit):
+    // positive inward toward the source, negative outward. Ignored when isoAxisN == 0.
+    XMFLOAT3 isoAxisN    = { 0.0f, 0.0f, 0.0f };
     float isoOffsetValue = 0.0f;
     // Minimum clearance a shifted vertex must keep from the iso before it is pruned
-    // (ignored when isoAxis = 0), stored as the fraction c in [0,1] of isoOffsetValue.
+    // (ignored when isoAxisN == 0), stored as the fraction c in [0,1] of isoOffsetValue.
     // The absolute clearance handed to SEM is c * isoOffsetValue, from which the core
     // recomputes c. c = 1 (== |shift|) is fold cull — drop every concave fold that
     // collapsed the sheet onto itself; c = 0 is signed-crossing cull — keep the folds
@@ -345,7 +347,7 @@ public:
     float AsyncProgress() const;
     void RecomputeUpToAsync(Scene& scene, Stage to, bool silent);
     // SESSION_STANDALONE_REMESH driver: offset-and-remesh the imported source surface
-    // directly via the standalone SEM_OffsetRemeshInPlaneSurface3D (soAxis/soOffset/
+    // directly via the standalone SEM_OffsetRemeshInPlaneSurface3D (soAxisN/soOffset/
     // soMinOffset/soTargetMult/soIters), applying the current clip planes, on the worker
     // thread (the SEM call reports progress) like the pipeline. Displays the result in
     // the isosurface slot; does NOT touch the offsets/mesh/thermal caches, but its flat
@@ -434,7 +436,7 @@ private:
         // (SEM_OffsetRemeshInPlaneSurface3D). Set only by ApplyStandaloneOffsetRemeshAsync,
         // never alongside the run* stages above. soXyz/soTris are the input geometry copy.
         bool   runStandalone = false;
-        int                 soAxis = 3;
+        SEM_Vec3            soAxisN = { 0.0, 0.0, 1.0 };
         double              soOffset = 0.0, soMinOffset = 0.0, soTargetMult = 1.0;
         int                 soIters = 3;
         std::vector<double> soXyz;
@@ -451,7 +453,7 @@ private:
         double              tetParam = -1.0;
         double              tetMaxEdgeLen = 0.0;
         double              isoValue = 0.5;
-        int                 isoAxis = 0;
+        SEM_Vec3            isoAxisN = { 0.0, 0.0, 0.0 };
         double              isoOffsetValue = 0.0;
         double              isoMinOffsetValue = 0.0;
         double              isoFinalTargetMult = 1.0;

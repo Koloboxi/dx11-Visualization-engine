@@ -123,7 +123,7 @@ void SemSession::RecomputeUpToAsync(Scene& scene, Stage to, bool silent) {
     m_job.tetParam    = (double)tetParam;
     m_job.tetMaxEdgeLen = (double)tetMaxEdgeLen;
     m_job.isoValue = isoValue;
-    m_job.isoAxis = isoAxis;
+    m_job.isoAxisN = SEM_Vec3{ isoAxisN.x, isoAxisN.y, isoAxisN.z };
     m_job.isoOffsetValue = (double)isoOffsetValue;
     // isoMinOffsetValue is stored as the fraction c in [0,1]; the SEM core wants the
     // absolute clearance (min_offset_value), from which it recomputes c = min/offset.
@@ -164,9 +164,6 @@ void SemSession::ApplyStandaloneOffsetRemeshAsync(Scene& scene, bool silent) {
     if (m_job.running.load()) return;
     if (m_job.worker.joinable()) m_job.worker.join();
 
-    int axis = soAxis;
-    if (axis < 1) axis = 1; if (axis > 3) axis = 3;
-
     // Copy the active source surface (subdivided / clip-snapped) out of the SEM core
     // NOW, on the main thread: the standalone call reads the same cache's clip planes
     // and re-applies them to the result, so its input geometry must be an independent
@@ -178,7 +175,7 @@ void SemSession::ApplyStandaloneOffsetRemeshAsync(Scene& scene, bool silent) {
     }
     m_job.soXyz.assign(src.coords, src.coords + 3 * (size_t)src.num_nodes);
     m_job.soTris.assign(src.tris,  src.tris  + 3 * (size_t)src.num_tris);
-    m_job.soAxis       = axis;
+    m_job.soAxisN      = SEM_Vec3{ soAxisN.x, soAxisN.y, soAxisN.z };
     m_job.soOffset     = (double)soOffset;
     // soMinOffset is stored as the fraction c in [0,1]; SEM_OffsetRemeshInPlaneSurface3D
     // wants the absolute clearance (min_offset_value = c * offset).
@@ -298,7 +295,8 @@ void SemSession::PollAsync(Scene& scene) {
                 m_isolinePath = m_job.isoPath;
                 // An offset axis means the offset-and-remesh step ran, so the
                 // intermediate-stage caches (source iso, projection) are valid.
-                m_isoProjected = (m_job.isoAxis != 0);
+                m_isoProjected = (m_job.isoAxisN.x != 0.0 || m_job.isoAxisN.y != 0.0 ||
+                                  m_job.isoAxisN.z != 0.0);
             }
             if (Alive(scene, m_isoline)) scene.SetNodeVisibleCascade(m_isoline, m_job.isoVisible);
         }
@@ -408,7 +406,7 @@ void SemSession::PipelineWorkerBody() {
         // result back through SEM_GetIsosurface3D. When only the final-remesh knobs changed
         // since the last extract, the core takes its fast path and re-remeshes the cached
         // base without re-extracting.
-        int rc = SafeExtractIsosurface3D(v, m_job.isoAxis, m_job.isoOffsetValue,
+        int rc = SafeExtractIsosurface3D(v, m_job.isoAxisN, m_job.isoOffsetValue,
                                          m_job.isoMinOffsetValue,
                                          m_job.isoFinalTargetMult, m_job.isoFinalIters);
         m_job.isoMs = t.GetMillisecondsElapsed();
@@ -423,7 +421,7 @@ void SemSession::PipelineWorkerBody() {
         // disk round-trip was redundant and, for the offset-and-remesh product, also
         // broken: the host looked for a <stem>_isosurface3d_remesh3d.csv3d the core
         // never writes under that name (it writes surface_remesh3d.csv3d).
-        if (m_job.isoAxis != 0) {
+        if (m_job.isoAxisN.x != 0.0 || m_job.isoAxisN.y != 0.0 || m_job.isoAxisN.z != 0.0) {
             // The offset-and-remesh ran as part of the extract; its remeshed result is
             // cached and read back through SEM_GetIsosurface3D.
             SEM_MeshView rv{};
@@ -453,7 +451,7 @@ void SemSession::PipelineWorkerBody() {
         Timer t; t.Restart();
         SEM_MeshView out{};
         int rc = SafeOffsetRemeshInPlaneSurface3D(
-                     m_job.soAxis, m_job.soOffset,
+                     m_job.soAxisN, m_job.soOffset,
                      m_job.soXyz.data(), (int)(m_job.soXyz.size() / 3),
                      m_job.soTris.data(), (int)(m_job.soTris.size() / 3),
                      m_job.soMinOffset, m_job.soTargetMult, m_job.soIters, &out);

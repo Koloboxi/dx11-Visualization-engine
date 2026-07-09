@@ -16,17 +16,17 @@ using namespace detail;
 void SemSession::SetClipPlanes3D(Scene& scene) {
     if (dim != 3) { Report(scene, false, "Clip planes apply to the 3D pipeline only."); return; }
     if (AsyncRunning()) return;
-    // Read each plane node's current (normal, d) and flatten to the layout
+    // Read each plane node's current (normal, d) into the SEM_Plane3D array
     // SEM_SetClipPlanes3D expects.
-    std::vector<double> flat;
-    flat.reserve(clipPlaneNodes.size() * 4);
+    std::vector<SEM_Plane3D> planes;
+    planes.reserve(clipPlaneNodes.size());
     for (ClipPlaneNode* node : clipPlaneNodes) {
         if (!node) continue;
         XMFLOAT4 p = node->GetPlane();
-        flat.push_back(p.x); flat.push_back(p.y); flat.push_back(p.z); flat.push_back(p.w);
+        planes.push_back(SEM_Plane3D{ { p.x, p.y, p.z }, p.w });
     }
-    const int count = (int)(flat.size() / 4);
-    int rc = SEM_SetClipPlanes3D(flat.empty() ? nullptr : flat.data(), count, clipPlaneTol);
+    const int count = (int)planes.size();
+    int rc = SEM_SetClipPlanes3D(planes.empty() ? nullptr : planes.data(), count, clipPlaneTol);
     if (!CheckRc(scene, false, "SEM_SetClipPlanes3D", rc,
                  { "", "No surface loaded", "Invalid planes" }))
         return;
@@ -43,9 +43,9 @@ void SemSession::SetClipPlanes3D(Scene& scene) {
 
     m_appliedClipPlanes.clear();
     m_appliedClipPlanes.reserve(count);
-    for (int i = 0; i < count; ++i)
-        m_appliedClipPlanes.push_back(XMFLOAT4((float)flat[i * 4 + 0], (float)flat[i * 4 + 1],
-                                               (float)flat[i * 4 + 2], (float)flat[i * 4 + 3]));
+    for (const SEM_Plane3D& pl : planes)
+        m_appliedClipPlanes.push_back(XMFLOAT4((float)pl.n.x, (float)pl.n.y,
+                                               (float)pl.n.z, (float)pl.d));
     snprintf(status, sizeof(status), "Clip planes: %d set.", count);
 }
 
@@ -96,14 +96,14 @@ void SemSession::LoadClipPlanesFromState(Scene& scene) {
     // the editable plane rectangles from those values.
     int count = 0;
     if (SEM_GetClipPlanes3D(nullptr, 0, &count) != 0 || count <= 0) return;
-    std::vector<double> v((size_t)count * 4);
+    std::vector<SEM_Plane3D> v((size_t)count);
     if (SEM_GetClipPlanes3D(v.data(), count, &count) != 0 || count <= 0) return;
 
     std::vector<XMFLOAT4> planes;
     planes.reserve(count);
     for (int i = 0; i < count; ++i)
-        planes.push_back(XMFLOAT4((float)v[i * 4 + 0], (float)v[i * 4 + 1],
-                                  (float)v[i * 4 + 2], (float)v[i * 4 + 3]));
+        planes.push_back(XMFLOAT4((float)v[i].n.x, (float)v[i].n.y,
+                                  (float)v[i].n.z, (float)v[i].d));
     if (planes.empty()) return;
 
     for (const XMFLOAT4& pl : planes) {

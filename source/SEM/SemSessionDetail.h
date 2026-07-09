@@ -57,12 +57,12 @@ int SafeBuildMesh3D(const SEM_MeshParams3D* params);
 int SafeSolveThermal();
 int SafeSolveThermal3D(float max_inward);
 int SafeExtractIsoline(double value);
-int SafeExtractIsosurface3D(double value, int axis, double offset_value, double min_offset_value,
+int SafeExtractIsosurface3D(double value, SEM_Vec3 axis, double offset_value, double min_offset_value,
                             double target_len_mult, int iterations);
 // Standalone offset-and-remesh of an open surface passed in as raw arrays (does NOT
 // touch the loaded pipeline cache); the result comes back through `out` (valid until
 // the next standalone call). See SEM_OffsetRemeshInPlaneSurface3D.
-int SafeOffsetRemeshInPlaneSurface3D(int axis, double offset_value,
+int SafeOffsetRemeshInPlaneSurface3D(SEM_Vec3 axis, double offset_value,
                                      const double* xyz, int num_nodes,
                                      const int* tris, int num_tris,
                                      double min_offset_value,

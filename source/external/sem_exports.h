@@ -32,6 +32,13 @@ SEM_API const char* SEM_GetLastError(void);
 // Progress of the current long-running call, in [0,1].
 SEM_API float SEM_GetProgress(void);
 
+// A point or direction in 3D. Used wherever the API takes a single coordinate
+// triple (a plane normal, a projection-plane normal, ...); memory-compatible with
+// three consecutive doubles (x, y, z) for P/Invoke / ctypes marshalling.
+struct SEM_Vec3 {
+    double x, y, z;
+};
+
 // Read-only view into the cache-owned buffers of a result (mesh / iso). Filled
 // by the SEM_Get* accessors below. Every pointer points straight into the
 // process-global cache and is valid ONLY until the next SEM_* call that mutates
@@ -148,9 +155,17 @@ SEM_API int SEM_LoadSurface3D(const char* path);
 // Subdivide the source surface. Same n semantics as SEM_SubdivideContour.
 SEM_API int SEM_SubdivideSurface3D(int n);
 
-// Set clip half-spaces applied to the 3D pipeline. `planes` is `count` planes of
-// 4 doubles each (nx, ny, nz, d); the kept half-space is nx*x+ny*y+nz*z+d >= 0
-// (normal points into the retained region; need not be unit). Geometry beyond a
+// A clip / cut half-space: the plane { p : dot(n, p) + d == 0 }, with `n` its
+// normal (need not be unit) and `d` the plane offset. Same four numbers as the
+// former flat (nx, ny, nz, d) quadruple, just grouped.
+struct SEM_Plane3D {
+    SEM_Vec3 n;
+    double   d;
+};
+
+// Set clip half-spaces applied to the 3D pipeline. `planes` is an array of `count`
+// SEM_Plane3D; the kept half-space is dot(n, p)+d >= 0 (normal points into the
+// retained region; need not be unit). Geometry beyond a
 // plane is dropped from the tet band (removing stray offset artifacts, realizing
 // symmetry planes whose cut face is naturally zero-flux), and the extracted
 // isosurface is cut flush to each plane. Vertices within `on_plane_rel_tol` of a
@@ -162,7 +177,7 @@ SEM_API int SEM_SubdivideSurface3D(int n);
 // reloaded from its file and re-restricted on every clip change, and the cached
 // offset shells are rebuilt against the new clip. Order-independent w.r.t.
 // SEM_ComputeOffsets3D. count = 0 clears all planes (restoring the pristine source).
-SEM_API int SEM_SetClipPlanes3D(const double* planes, int count, double on_plane_rel_tol);
+SEM_API int SEM_SetClipPlanes3D(const SEM_Plane3D* planes, int count, double on_plane_rel_tol);
 SEM_API int SEM_ClearClipPlanes3D(void);
 
 // Compute graded offset shells. Same semantics as the 2D SEM_ComputeOffsets[At]
@@ -212,16 +227,18 @@ SEM_API int SEM_SolveThermal3D(float max_inward);
 // SEM_GetSourceIsosurface3D, including its vertex normals) and written to
 // <stem>_isosurface3d.csv3d.
 //
-// axis == 0: extract only — no offset-remesh runs (SEM_GetIsosurface3D stays empty).
-// axis 1/2/3 (X/Y/Z): the offset-remesh stage runs as the final step, folded in from the
-// former SEM_OffsetRemeshIsosurface3D. The cached iso Surface is shifted along its
-// angle-weighted pseudonormals by offset_value world units — a signed distance,
-// positive inward against the outward normals, negative outward —
+// axis == zero vector (0,0,0): extract only — no offset-remesh runs (SEM_GetIsosurface3D
+// stays empty).
+// axis == any non-zero vector (the projection-plane normal; need not be unit —
+// (1,0,0)/(0,1,0)/(0,0,1) are the former X/Y/Z): the offset-remesh stage runs as the
+// final step, folded in from the former SEM_OffsetRemeshIsosurface3D. The cached iso
+// Surface is shifted along its angle-weighted pseudonormals by offset_value world units
+// — a signed distance, positive inward against the outward normals, negative outward —
 // concave folds nearer than the min_offset_value clearance are dropped (same cull
 // semantics as the standalone SEM_OffsetRemeshInPlaneSurface3D below), and the
-// survivors are re-meshed over the base plane perpendicular to `axis` as a single
+// survivors are re-meshed over the base plane with normal `axis` as a single
 // boundary-constrained Delaunay of the projected point cloud (a single-valued height
-// field over the axis; a folded projection is rejected) — the offset-remesh base.
+// field along `axis`; a folded projection is rejected) — the offset-remesh base.
 //
 // A final isotropic remesh (folded in from the former SEM_RemeshIsosurface3D) then runs
 // over that base as an optional cleanup: the height-field re-mesh leaves tall, narrow,
@@ -239,7 +256,7 @@ SEM_API int SEM_SolveThermal3D(float max_inward);
 // remesh on the cached base, skipping extraction and offset-remesh. A clip plane change is
 // not tracked here — it rebuilds the whole pipeline upstream, invalidating the cached base.
 // Negative on failure.
-SEM_API int SEM_ExtractIsosurface3D(double value, int axis, double offset_value,
+SEM_API int SEM_ExtractIsosurface3D(double value, SEM_Vec3 axis, double offset_value,
                                     double min_offset_value,
                                     double target_len_mult = 1.0, int iterations = 3);
 
@@ -288,8 +305,8 @@ struct SEM_PipelineArgs3D {
     double tet_param;             // SEM_MeshParams3D.param
     double tet_max_edge_len;      // SEM_MeshParams3D.max_edge_len
     float  max_inward;            // SEM_SolveThermal3D
-    double iso_value;             // SEM_ExtractIsosurface3D
-    int    iso_axis;
+    double   iso_value;           // SEM_ExtractIsosurface3D
+    SEM_Vec3 iso_axis;            // projection-plane normal; (0,0,0) = extract only
     double iso_offset_value;
     double iso_min_offset_value;
     double iso_target_len_mult;
@@ -303,10 +320,10 @@ SEM_API int SEM_GetPipelineArgs3D(SEM_PipelineArgs3D* out);
 // Empty in GRADED mode. Negative if no source is loaded.
 SEM_API int SEM_GetOffsetGaps3D(double* out, int max, int* count);
 
-// Copy the active clip planes into `out` as `count` planes of 4 doubles each
-// (nx, ny, nz, d), room for `max` planes; *count receives the true number
-// regardless of `max`. Negative if no source is loaded.
-SEM_API int SEM_GetClipPlanes3D(double* out, int max, int* count);
+// Copy the active clip planes into `out` as `count` SEM_Plane3D, room for `max`
+// planes; *count receives the true number regardless of `max`. Negative if no
+// source is loaded.
+SEM_API int SEM_GetClipPlanes3D(SEM_Plane3D* out, int max, int* count);
 
 // --- Helpers and read-only accessors ---------------------------------------
 
@@ -323,10 +340,11 @@ SEM_API int SEM_GetClipPlanes3D(double* out, int max, int* count);
 // units, a signed distance (no range limit): positive
 // shifts inward (against the outward normals), negative outward. Vertices that end
 // up closer to the surface than the shift are dropped (concave folds clean up); the
-// survivors are projected onto the base plane perpendicular to `axis` (1/2/3 =
-// X/Y/Z; that coordinate is preserved), re-triangulated as a single
-// boundary-constrained Delaunay (a single-valued height field over the axis; a folded
-// projection is rejected), and lifted back. Requires an open sheet; a closed surface
+// survivors are projected onto the base plane with normal `axis` — an arbitrary
+// projection-plane normal (need not be unit; e.g. (1,0,0)/(0,1,0)/(0,0,1) for the
+// former X/Y/Z axes), re-triangulated as a single boundary-constrained Delaunay
+// (must be a single-valued height field along `axis`; a folded projection is
+// rejected), and lifted back. Requires an open sheet; a closed surface
 // fails. The current clip planes (SEM_SetClipPlanes3D) are applied to the result.
 // Writes surface_remesh3d.csv3d to the working dir and fills `out` (see SEM_MeshView
 // for the lifetime/layout contract).
@@ -346,7 +364,7 @@ SEM_API int SEM_GetClipPlanes3D(double* out, int max, int* count);
 // long-edge split / tangential relaxation), `iterations` sweeps at a target edge length of
 // `target_len_mult` * the sheet's own average edge length (target_len_mult <= 0 uses
 // the median). iterations <= 0 skips this final remesh.
-SEM_API int SEM_OffsetRemeshInPlaneSurface3D(int axis, double offset_value,
+SEM_API int SEM_OffsetRemeshInPlaneSurface3D(SEM_Vec3 axis, double offset_value,
                                       const double* xyz, int num_nodes,
                                       const int* tris, int num_tris,
                                       double min_offset_value,
