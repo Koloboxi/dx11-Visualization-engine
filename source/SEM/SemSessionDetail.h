@@ -43,6 +43,15 @@ float MeanTriEdgeLen(const CSV3DLoader::CSV3DData& d);
 // is uniformly wound. data.nodes is unused (topology only).
 std::vector<char> WindingMinorityTris(const CSV3DLoader::CSV3DData& d);
 
+// Per-triangle "non-manifold" flags. A triangle is flagged when it touches a
+// non-manifold edge (an undirected edge shared by three or more triangles) or a
+// non-manifold vertex (a "bowtie": the incident triangle fan splits into more than
+// one edge-connected group). These are the topology defects vertex welding can
+// create where two sheets of the offset surface pass within the weld tolerance.
+// Returns all false on a clean two-manifold sheet. data.nodes is unused (topology
+// only).
+std::vector<char> NonManifoldTris(const CSV3DLoader::CSV3DData& d);
+
 bool SourceBBox(const std::string& path, XMFLOAT3& lo, XMFLOAT3& hi);
 bool OrderedContourFromCSV3D(const std::string& path, std::vector<XMFLOAT3>& out);
 bool IsOpenContourOnYAxis(const std::string& path);

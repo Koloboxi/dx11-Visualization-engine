@@ -111,6 +111,11 @@ public:
     // inconsistent) winding and the minority-oriented triangles are painted pure
     // red instead of the uniform green. See SetIsoWinding / WindingMinorityTris.
     bool  isoShowWinding = false;
+    // When set, triangles of the displayed sheet that touch a non-manifold edge or
+    // bowtie vertex are painted bright magenta over the uniform green — the topology
+    // defects vertex welding can leave in the offset-remeshed surface. See
+    // SetIsoNonManifold / NonManifoldTris.
+    bool  isoShowNonManifold = false;
     // false = "T field" (gradient over the solved temperature); true = "BC" (only
     // Dirichlet boundary nodes tinted, interior grey).
     bool  bcView     = false;
@@ -288,6 +293,11 @@ public:
     // no re-extraction; otherwise it just stores the flag for the next extraction.
     void SetIsoWinding(Scene& scene, bool on);
 
+    // Toggle the non-manifold highlight (isoShowNonManifold). Recolours the already
+    // displayed sheet in place from the cached display data (no re-extraction) when
+    // one exists; otherwise just stores the flag for the next extraction.
+    void SetIsoNonManifold(Scene& scene, bool on);
+
     // Show/hide vertex normals as short line segments:
     //   source   - the SEM core's pseudonormals of the active source surface
     //              (SEM_GetSourceSurface3D, yellow);
@@ -345,6 +355,13 @@ public:
     bool AsyncRunning() const;
     const char* AsyncStageName() const;
     float AsyncProgress() const;
+    // Finer breakdown of the SEM call in flight: the phase running right now inside
+    // the current stage (SEM_GetProgressStage, e.g. "Carving band tets") and that
+    // phase's own [0,1] fraction (SEM_GetProgressStageFraction). AsyncSubStageName
+    // returns nullptr/"" when the library reports no sub-stage. Meaningful only
+    // while AsyncRunning().
+    const char* AsyncSubStageName() const;
+    float AsyncSubStageProgress() const;
     void RecomputeUpToAsync(Scene& scene, Stage to, bool silent);
     // SESSION_STANDALONE_REMESH driver: offset-and-remesh the imported source surface
     // directly via the standalone SEM_OffsetRemeshInPlaneSurface3D (soAxisN/soOffset/
@@ -472,6 +489,9 @@ private:
         // host expected a <stem>_isosurface3d_remesh3d.csv3d the core never writes
         // under that name).
         CSV3DLoader::CSV3DData isoDisplayData;
+        // Manifold-repair counts of a standalone offset-remesh result (SEM_GetLast-
+        // ManifoldRepair3D). -1 = not queried / not a standalone run.
+        int                 nmEdges = -1, nmBowties = -1, nmVertsAdded = -1, nmTrisRemoved = -1;
         // Measured durations (ms) of each heavy stage; < 0 when not part of this run.
         double              offsetsMs = -1.0, meshMs = -1.0, thermalMs = -1.0, isoMs = -1.0;
 
@@ -546,9 +566,14 @@ private:
     static void StyleLines(Primitive* p, int style);
 
     // Build the displayed isosurface primitive from `data`, honouring
-    // isoShowWinding (per-triangle minority-red colouring) or the plain green
-    // surface, named and surface-configured. Does not touch m_isoline/m_isoData.
+    // isoShowWinding (per-triangle minority-red colouring) and isoShowNonManifold
+    // (bright-magenta defect colouring) or the plain green surface, named and
+    // surface-configured. Does not touch m_isoline/m_isoData.
     Primitive* BuildIsoDisplay(Scene& scene, const CSV3DLoader::CSV3DData& data);
+    // Recolour the already displayed iso sheet in place from m_isoData (no
+    // re-extraction), preserving visibility and dependent overlays. Shared by the
+    // SetIsoWinding / SetIsoNonManifold toggles.
+    void RebuildIsoDisplayInPlace(Scene& scene);
     // Build a line-list primitive of vertex normals for the surface in `data`,
     // parented under `parent` and drawn in `color`. The explicit-normals overload
     // draws the supplied per-vertex normals (e.g. the SEM core's, via ViewNormals);

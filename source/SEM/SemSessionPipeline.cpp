@@ -167,12 +167,15 @@ Primitive* SemSession::BuildIsoDisplay(Scene& scene, const CSV3DLoader::CSV3DDat
     const XMFLOAT4 green = Colors::GREEN;
     Primitive* prim = nullptr;
 
-    if (dim == 3 && isoShowWinding && !data.triangles.empty()) {
-        // Per-triangle winding-consistency colouring: triangles whose orientation
-        // disagrees with the local majority are painted pure red, the rest green.
-        // The triangles are emitted with their real winding (ColoredTriangles no
-        // longer re-orients), so the minority genuinely reads as red.
-        std::vector<char> minority = WindingMinorityTris(data);
+    if (dim == 3 && (isoShowWinding || isoShowNonManifold) && !data.triangles.empty()) {
+        // Per-triangle defect colouring. Non-manifold triangles (edges shared by 3+
+        // faces, or bowtie vertices — the artefacts vertex welding leaves) are painted
+        // bright magenta; minority-winding triangles pure red; the rest green. The
+        // triangles are emitted with their real winding (ColoredTriangles no longer
+        // re-orients), so the minority genuinely reads as red. Non-manifold takes
+        // priority over winding when both highlights are on.
+        std::vector<char> minority = isoShowWinding    ? WindingMinorityTris(data) : std::vector<char>();
+        std::vector<char> nonman   = isoShowNonManifold ? NonManifoldTris(data)     : std::vector<char>();
         const size_t nN = data.nodes.size();
         std::vector<XMFLOAT3> poses;
         std::vector<XMFLOAT4> cols;
@@ -181,7 +184,9 @@ Primitive* SemSession::BuildIsoDisplay(Scene& scene, const CSV3DLoader::CSV3DDat
         for (size_t i = 0; i < data.triangles.size(); ++i) {
             const auto& t = data.triangles[i];
             if (t.x >= nN || t.y >= nN || t.z >= nN) continue;
-            const XMFLOAT4& c = minority[i] ? Colors::RED : green;
+            const XMFLOAT4& c = (!nonman.empty()   && nonman[i])   ? Colors::MAGENTA
+                              : (!minority.empty() && minority[i]) ? Colors::RED
+                                                                   : green;
             poses.push_back(data.nodes[t.x].pos); cols.push_back(c);
             poses.push_back(data.nodes[t.y].pos); cols.push_back(c);
             poses.push_back(data.nodes[t.z].pos); cols.push_back(c);
@@ -240,11 +245,9 @@ Primitive* SemSession::BuildPseudonormalLines(Scene& scene, const CSV3DLoader::C
     return lines;
 }
 
-void SemSession::SetIsoWinding(Scene& scene, bool on) {
-    if (isoShowWinding == on) return;
-    isoShowWinding = on;
-    // Nothing displayed yet (or 2D): the flag simply takes effect at the next
-    // extraction.
+void SemSession::RebuildIsoDisplayInPlace(Scene& scene) {
+    // Nothing displayed yet (or 2D): the caller's flag simply takes effect at the
+    // next extraction.
     if (dim != 3 || !Alive(scene, m_isoline) || m_isoData.triangles.empty()) return;
 
     // Recolour in place from the cached display geometry: rebuild only the iso
@@ -265,6 +268,18 @@ void SemSession::SetIsoWinding(Scene& scene, bool on) {
     }
     if (AnyClipMirror()) RebuildClipMirrors(scene);
     scene.UpdateLight();
+}
+
+void SemSession::SetIsoWinding(Scene& scene, bool on) {
+    if (isoShowWinding == on) return;
+    isoShowWinding = on;
+    RebuildIsoDisplayInPlace(scene);
+}
+
+void SemSession::SetIsoNonManifold(Scene& scene, bool on) {
+    if (isoShowNonManifold == on) return;
+    isoShowNonManifold = on;
+    RebuildIsoDisplayInPlace(scene);
 }
 
 bool SemSession::ShowSourcePseudonormals(Scene& scene, bool show, bool silent) {

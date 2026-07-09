@@ -1,6 +1,8 @@
 #include "SemSessionDetail.h"
 #include <map>
 #include <set>
+#include <unordered_map>
+#include <functional>
 #include <cmath>
 #include <fstream>
 #include <algorithm>
@@ -218,6 +220,72 @@ std::vector<char> WindingMinorityTris(const CSV3DLoader::CSV3DData& d) {
         for (int t : comp) if (label[t] == minLabel) minority[t] = 1;
     }
     return minority;
+}
+
+std::vector<char> NonManifoldTris(const CSV3DLoader::CSV3DData& d) {
+    const size_t nT = d.triangles.size();
+    std::vector<char> bad(nT, 0);
+    if (nT == 0) return bad;
+    const size_t nN = d.nodes.size();
+
+    auto ekey = [](unsigned a, unsigned b) {
+        return a < b ? std::make_pair(a, b) : std::make_pair(b, a);
+    };
+
+    // Non-manifold edges: any undirected edge used by three or more triangles.
+    // Flag every triangle incident to such an edge.
+    std::map<std::pair<unsigned, unsigned>, std::vector<int>> edgeTris;
+    std::vector<std::vector<int>> vertTris(nN);
+    for (size_t t = 0; t < nT; ++t) {
+        const unsigned v[3] = { d.triangles[t].x, d.triangles[t].y, d.triangles[t].z };
+        for (int k = 0; k < 3; ++k) {
+            if (v[k] < nN) vertTris[v[k]].push_back((int)t);
+            unsigned a = v[k], b = v[(k + 1) % 3];
+            if (a == b) continue;
+            edgeTris[ekey(a, b)].push_back((int)t);
+        }
+    }
+    for (const auto& kv : edgeTris)
+        if (kv.second.size() >= 3)
+            for (int t : kv.second) bad[t] = 1;
+
+    // Non-manifold (bowtie) vertices: the incident triangle fan splits into more
+    // than one edge-connected group. Union triangles of the same vertex that share
+    // an edge through it; more than one component means the sheets meet only at the
+    // point. Flag the whole fan.
+    std::vector<int> parent;
+    std::function<int(int)> find = [&](int x) {
+        while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+        return x;
+    };
+    for (unsigned v = 0; v < nN; ++v) {
+        const std::vector<int>& fan = vertTris[v];
+        if (fan.size() < 2) continue;
+        std::unordered_map<int, int> local;   // global tri -> local index
+        local.reserve(fan.size() * 2);
+        for (int t : fan) local.emplace(t, (int)local.size());
+        parent.resize(fan.size());
+        for (size_t i = 0; i < fan.size(); ++i) parent[i] = (int)i;
+        // Edges through v, keyed by the other endpoint; fan triangles sharing one
+        // are unioned.
+        std::unordered_map<unsigned, int> firstTriOnEdge;
+        for (int t : fan) {
+            const unsigned tv[3] = { d.triangles[t].x, d.triangles[t].y, d.triangles[t].z };
+            for (int k = 0; k < 3; ++k) {
+                unsigned a = tv[k], b = tv[(k + 1) % 3];
+                unsigned other = (a == v) ? b : (b == v ? a : (unsigned)-1);
+                if (other == (unsigned)-1) continue;
+                auto it = firstTriOnEdge.find(other);
+                if (it == firstTriOnEdge.end()) { firstTriOnEdge[other] = t; continue; }
+                int ra = find(local[it->second]), rb = find(local[t]);
+                if (ra != rb) parent[ra] = rb;
+            }
+        }
+        int comps = 0;
+        for (size_t i = 0; i < fan.size(); ++i) if (find((int)i) == (int)i) ++comps;
+        if (comps > 1) for (int t : fan) bad[t] = 1;
+    }
+    return bad;
 }
 
 bool SourceBBox(const std::string& path, XMFLOAT3& lo, XMFLOAT3& hi) {

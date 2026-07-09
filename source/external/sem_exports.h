@@ -32,6 +32,15 @@ SEM_API const char* SEM_GetLastError(void);
 // Progress of the current long-running call, in [0,1].
 SEM_API float SEM_GetProgress(void);
 
+// A finer breakdown of the call in flight, to draw a per-phase label and bar
+// under the whole-call bar. SEM_GetProgressStage names the phase running right
+// now (e.g. "Carving band tets", "Extracting isosurface"), empty when idle; the
+// returned pointer is a library-owned static string and stays valid.
+// SEM_GetProgressStageFraction is that phase's own progress in [0,1] (it resets
+// to 0 at each new phase, so it may step backwards as phases advance).
+SEM_API const char* SEM_GetProgressStage(void);
+SEM_API float       SEM_GetProgressStageFraction(void);
+
 // A point or direction in 3D. Used wherever the API takes a single coordinate
 // triple (a plane normal, a projection-plane normal, ...); memory-compatible with
 // three consecutive doubles (x, y, z) for P/Invoke / ctypes marshalling.
@@ -370,6 +379,14 @@ SEM_API int SEM_OffsetRemeshInPlaneSurface3D(SEM_Vec3 axis, double offset_value,
                                       double min_offset_value,
                                       double target_len_mult, int iterations,
                                       SEM_MeshView* out);
+
+// Manifold-repair diagnostics of the last SEM_OffsetRemeshInPlaneSurface3D result.
+// The returned surface is un-welded at every non-manifold edge / bowtie vertex so it
+// is a clean 2-manifold-with-boundary; these counts report what was found and fixed
+// on that final pass (all zero when the offset-remesh was already clean). Any argument
+// may be null. Returns 0 on success, negative if no standalone remesh has run yet.
+SEM_API int SEM_GetLastManifoldRepair3D(int* nonmanifold_edges, int* bowtie_verts,
+                                        int* verts_added, int* tris_removed);
 
 // Average edge length of the loaded source surface.
 SEM_API double SEM_GetSurfaceAvgEdgeLen3D();

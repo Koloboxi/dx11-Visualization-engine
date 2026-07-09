@@ -34,6 +34,20 @@ float SemSession::AsyncProgress() const {
     return overall;
 }
 
+const char* SemSession::AsyncSubStageName() const {
+    if (!m_job.running.load()) return "";
+    const char* s = SEM_GetProgressStage();
+    return s ? s : "";
+}
+
+float SemSession::AsyncSubStageProgress() const {
+    if (!m_job.running.load()) return 0.0f;
+    float f = SEM_GetProgressStageFraction();
+    if (f < 0.0f) f = 0.0f;
+    if (f > 1.0f) f = 1.0f;
+    return f;
+}
+
 void SemSession::RecomputeUpToAsync(Scene& scene, Stage to, bool silent) {
     if (!HasSource()) return;
     if (dim != 3) { RecomputeUpTo(scene, to, silent); return; }
@@ -320,7 +334,16 @@ void SemSession::PollAsync(Scene& scene) {
     // run; rebuild whichever category overlays are shown.
     RefreshClipChanges(scene);
     scene.UpdateLight();
-    snprintf(status, sizeof(status), cancelled ? "Cancelled." : "Done.");
+    if (cancelled) {
+        snprintf(status, sizeof(status), "Cancelled.");
+    } else if (m_job.runStandalone && m_job.nmEdges >= 0 &&
+               (m_job.nmEdges || m_job.nmBowties || m_job.nmTrisRemoved)) {
+        snprintf(status, sizeof(status),
+                 "Done. Repaired non-manifold: %d edges, %d bowties, +%d verts, -%d tris.",
+                 m_job.nmEdges, m_job.nmBowties, m_job.nmVertsAdded, m_job.nmTrisRemoved);
+    } else {
+        snprintf(status, sizeof(status), "Done.");
+    }
 }
 
 void SemSession::CancelAsync() {
@@ -460,6 +483,8 @@ void SemSession::PipelineWorkerBody() {
         if (rc != 0) return Fail("SEM_OffsetRemeshInPlaneSurface3D failed (" + std::to_string(rc) + ")");
         m_job.isoDisplayData = ViewToData(out);           // copy before any further SEM call
         m_job.isoPath = m_job.expIsoRemesh;               // non-empty: an iso to display
+        SEM_GetLastManifoldRepair3D(&m_job.nmEdges, &m_job.nmBowties,
+                                    &m_job.nmVertsAdded, &m_job.nmTrisRemoved);
         ++idx;
     }
 

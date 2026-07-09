@@ -360,6 +360,17 @@ inline void DrawStandaloneRemeshSection(Scene& scene, SemSessionNS::SemSession& 
                               "current clip planes and show the result. Runs on a worker thread with\n"
                               "a progress bar.");
 
+        // Non-manifold highlight: paint triangles at welded/pinched topology defects
+        // bright magenta. Applied instantly to the already-shown surface (no re-run).
+        bool nonman = S.isoShowNonManifold;
+        if (ImGui::Checkbox("Highlight non-manifold", &nonman))
+            S.SetIsoNonManifold(scene, nonman);
+        ImGui::SetItemTooltip("Paint triangles that touch a non-manifold edge (shared by three or\n"
+                              "more faces) or a bowtie vertex bright magenta, keeping the rest green.\n"
+                              "These are the defects vertex welding can leave where two sheets of the\n"
+                              "offset surface pass within the weld tolerance. Nothing turns magenta on\n"
+                              "a clean two-manifold sheet.");
+
         // Flat base-plane projection of the offset-remeshed sheet, fetched from the
         // cache (SEM_GetIsosurfaceProjection3D) — the same in-plane geometry the main
         // pipeline's isosurface section shows. Available once a standalone offset-remesh
@@ -425,6 +436,16 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         snprintf(overlay, sizeof(overlay), "%.0f%%", S.AsyncProgress() * 100.0f);
         ImGui::Text("%s...", S.AsyncStageName());
         ImGui::ProgressBar(S.AsyncProgress(), ImVec2(kItemW, 0.0f), overlay);
+        // Finer breakdown: the phase running now inside this stage and its own bar
+        // (driven by SEM_GetProgressStage / SEM_GetProgressStageFraction).
+        const char* sub = S.AsyncSubStageName();
+        if (sub && sub[0]) {
+            char subOverlay[32];
+            snprintf(subOverlay, sizeof(subOverlay), "%.0f%%",
+                     S.AsyncSubStageProgress() * 100.0f);
+            ImGui::TextDisabled("%s", sub);
+            ImGui::ProgressBar(S.AsyncSubStageProgress(), ImVec2(kItemW, 0.0f), subOverlay);
+        }
         if (S.AsyncCancelRequested()) {
             ImGui::TextDisabled("Cancelling after current stage...");
         } else if (ImGui::Button("Cancel", {kItemW, 0})) {
