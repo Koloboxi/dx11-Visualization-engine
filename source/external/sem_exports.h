@@ -388,6 +388,13 @@ SEM_API int SEM_OffsetRemeshInPlaneSurface3D(SEM_Vec3 axis, double offset_value,
 SEM_API int SEM_GetLastManifoldRepair3D(int* nonmanifold_edges, int* bowtie_verts,
                                         int* verts_added, int* tris_removed);
 
+// Number of interior holes closed on the last SEM_OffsetRemeshInPlaneSurface3D
+// result. Fold culling, clipping and re-triangulation can open holes in the sheet;
+// they are filled (leaving the sheet's outer boundary open) before the manifold
+// repair above. `holes_filled` may be null. Returns 0 on success, negative if no
+// standalone remesh has run yet.
+SEM_API int SEM_GetLastHoleFill3D(int* holes_filled);
+
 // Average edge length of the loaded source surface.
 SEM_API double SEM_GetSurfaceAvgEdgeLen3D();
 

@@ -337,10 +337,13 @@ void SemSession::PollAsync(Scene& scene) {
     if (cancelled) {
         snprintf(status, sizeof(status), "Cancelled.");
     } else if (m_job.runStandalone && m_job.nmEdges >= 0 &&
-               (m_job.nmEdges || m_job.nmBowties || m_job.nmTrisRemoved)) {
+               (m_job.nmEdges || m_job.nmBowties || m_job.nmTrisRemoved ||
+                m_job.nmHolesFilled > 0)) {
         snprintf(status, sizeof(status),
-                 "Done. Repaired non-manifold: %d edges, %d bowties, +%d verts, -%d tris.",
-                 m_job.nmEdges, m_job.nmBowties, m_job.nmVertsAdded, m_job.nmTrisRemoved);
+                 "Done. Repaired non-manifold: %d edges, %d bowties, +%d verts, -%d tris; "
+                 "filled %d hole(s).",
+                 m_job.nmEdges, m_job.nmBowties, m_job.nmVertsAdded, m_job.nmTrisRemoved,
+                 m_job.nmHolesFilled < 0 ? 0 : m_job.nmHolesFilled);
     } else {
         snprintf(status, sizeof(status), "Done.");
     }
@@ -485,6 +488,7 @@ void SemSession::PipelineWorkerBody() {
         m_job.isoPath = m_job.expIsoRemesh;               // non-empty: an iso to display
         SEM_GetLastManifoldRepair3D(&m_job.nmEdges, &m_job.nmBowties,
                                     &m_job.nmVertsAdded, &m_job.nmTrisRemoved);
+        SEM_GetLastHoleFill3D(&m_job.nmHolesFilled);
         ++idx;
     }
 

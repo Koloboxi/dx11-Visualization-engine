@@ -492,6 +492,9 @@ private:
         // Manifold-repair counts of a standalone offset-remesh result (SEM_GetLast-
         // ManifoldRepair3D). -1 = not queried / not a standalone run.
         int                 nmEdges = -1, nmBowties = -1, nmVertsAdded = -1, nmTrisRemoved = -1;
+        // Interior holes closed on that same result (SEM_GetLastHoleFill3D). -1 = not
+        // queried / not a standalone run.
+        int                 nmHolesFilled = -1;
         // Measured durations (ms) of each heavy stage; < 0 when not part of this run.
         double              offsetsMs = -1.0, meshMs = -1.0, thermalMs = -1.0, isoMs = -1.0;
 
