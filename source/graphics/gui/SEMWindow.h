@@ -2,6 +2,7 @@
 #include "../imgui/imgui.h"
 #include "../scene/scene.h"
 #include "../../SEM/SemSession.h"
+#include "../../SEM/SemWorkspace.h"
 #include <cstdio>
 #include <string>
 #include <filesystem>
@@ -9,9 +10,10 @@
 
 namespace SEMWindow {
 
+// The setup this window edits. Several setups can be open at once, each with its
+// own SEM pipeline context; see SemWorkspace.
 inline SemSessionNS::SemSession& Session() {
-    static SemSessionNS::SemSession s;
-    return s;
+    return SemSessionNS::Workspace().Active();
 }
 
 // initialDir: folder the dialog opens in. Empty => the exe-relative Data folder
@@ -58,28 +60,30 @@ inline std::string WorkspaceLabelFor(const std::string& path) {
     return std::filesystem::path(path).stem().string();
 }
 
-// Replace the entire workspace with a fresh source: wipe the current scene,
-// drop the SEM session's now-dangling references (ClearScene deleted the old
-// primitives), rename the workspace tab after the imported file, then import.
-// This is the "Import CSV3D..." behaviour: a new import starts from a clean scene.
-inline Primitive* ResetAndImport(Scene& scene, SemSessionNS::SemSession& S,
-                                 const std::string& path,
-                                 const std::string& workDir = std::string(),
-                                 bool reload = false) {
+// Add a source to the scene as a NEW setup: its own SemSession and its own SEM
+// pipeline context, alongside whatever setups are already open (nothing is wiped —
+// the setups coexist and the SEM window switches between them). The workspace tab
+// is named after the first import only.
+inline Primitive* AddImport(Scene& scene, const std::string& path,
+                            const std::string& workDir = std::string(),
+                            bool reload = false) {
     if (path.empty()) return nullptr;
-    scene.ClearScene();
-    S.Validate(scene);   // the just-deleted source/stages must be unbound first
-    scene.workspaceLabel = WorkspaceLabelFor(path);
+    SemSessionNS::SemWorkspace& W = SemSessionNS::Workspace();
+    // That session folder may already be open as a setup; switch to it rather than
+    // opening a second setup that would serialize over the first one's stages.
+    const int existing = W.IndexOfWorkDir(workDir);
+    if (existing >= 0) { W.SetActive(scene, existing); return W.Active().SourcePrim(); }
+    if (W.Count() == 0) scene.workspaceLabel = WorkspaceLabelFor(path);
+    SemSessionNS::SemSession& S = W.AddSetup();
     return S.ImportSource(scene, path, workDir, reload);
 }
 
 // Begin importing a source: if it already has sessions, defer to the choice
 // modal; otherwise import straight into a fresh session.
-inline void BeginSourceImport(Scene& scene, SemSessionNS::SemSession& S,
-                              const std::string& path) {
+inline void BeginSourceImport(Scene& scene, const std::string& path) {
     if (path.empty()) return;
     auto sessions = SemSessionNS::SemSession::ListSessions(path);
-    if (sessions.empty()) { ResetAndImport(scene, S, path); return; }
+    if (sessions.empty()) { AddImport(scene, path); return; }
     ImportChoice& ic = PendingImport();
     ic.path     = path;
     ic.sessions = std::move(sessions);
@@ -88,7 +92,7 @@ inline void BeginSourceImport(Scene& scene, SemSessionNS::SemSession& S,
 }
 
 // Render the session-choice modal. Call once per frame from the SEM window.
-inline void DrawImportSessionModal(Scene& scene, SemSessionNS::SemSession& S) {
+inline void DrawImportSessionModal(Scene& scene) {
     ImportChoice& ic = PendingImport();
     if (ic.open) { ImGui::OpenPopup("Import session##sem"); ic.open = false; }
     if (!ImGui::BeginPopupModal("Import session##sem", nullptr,
@@ -116,16 +120,58 @@ inline void DrawImportSessionModal(Scene& scene, SemSessionNS::SemSession& S) {
     ImGui::Spacing();
     if (ImGui::Button("Load", {120, 0})) {
         if (ic.sel >= 0 && ic.sel < newIdx) {
-            ResetAndImport(scene, S, ic.path, ic.sessions[ic.sel], /*reload=*/true);
-            S.LoadSessionStages(scene);
+            SemSessionNS::SemWorkspace& W = SemSessionNS::Workspace();
+            // Already open as a setup? Then AddImport only switches to it and its
+            // stages are live — reloading them would throw the live state away.
+            const bool fresh = W.IndexOfWorkDir(ic.sessions[ic.sel]) < 0;
+            AddImport(scene, ic.path, ic.sessions[ic.sel], /*reload=*/true);
+            if (fresh) W.Active().LoadSessionStages(scene);
         } else {
-            ResetAndImport(scene, S, ic.path);  // fresh session
+            AddImport(scene, ic.path);  // fresh session
         }
         ImGui::CloseCurrentPopup();
     }
     ImGui::SameLine();
     if (ImGui::Button("Cancel", {120, 0})) ImGui::CloseCurrentPopup();
     ImGui::EndPopup();
+}
+
+// One tab per open setup, plus its close button. Clicking a tab makes that setup
+// active — a pure switch: each setup keeps its own SEM pipeline context, so no
+// stage is dropped and nothing is recomputed. The tab selection also follows the
+// tree (staging a source switches setup), which is what the SetSelected flag below
+// pushes back into the tab bar.
+inline void DrawSetupTabs(Scene& scene) {
+    using namespace SemSessionNS;
+    SemWorkspace& W = Workspace();
+    if (W.Count() == 0) return;
+
+    static int s_shownActive = -1;
+    const int  active  = W.ActiveIndex();
+    const bool refocus = (active != s_shownActive);
+    s_shownActive = active;
+
+    int closeIdx = -1;
+    if (ImGui::BeginTabBar("##semsetups", ImGuiTabBarFlags_FittingPolicyScroll |
+                                          ImGuiTabBarFlags_TabListPopupButton)) {
+        for (int i = 0; i < W.Count(); ++i) {
+            bool open = true;
+            const ImGuiTabItemFlags flags =
+                (refocus && i == active) ? ImGuiTabItemFlags_SetSelected : 0;
+            const std::string label = W.Label(i) + "###setup" + std::to_string(i);
+            if (ImGui::BeginTabItem(label.c_str(), &open, flags)) {
+                if (i != W.ActiveIndex()) W.SetActive(scene, i);
+                ImGui::EndTabItem();
+            }
+            ImGui::SetItemTooltip("Setup %d of %d. Switching keeps every computed stage of\n"
+                                  "both setups (each has its own SEM cache); the close button\n"
+                                  "drops this setup and removes its geometry from the scene.",
+                                  i + 1, W.Count());
+            if (!open) closeIdx = i;
+        }
+        ImGui::EndTabBar();
+    }
+    if (closeIdx >= 0) { W.CloseSetup(scene, closeIdx); s_shownActive = -1; }
 }
 
 inline const char* MeshParamLabel(int /*m*/) {
@@ -236,8 +282,12 @@ inline void DrawRevolutionSection(Scene& scene, SemSessionNS::SemSession& S) {
 // (SemSession::AutoApplyClipPlanes -> SEM_SetClipPlanes3D).
 inline void DrawClipPlanesSection(Scene& scene, SemSessionNS::SemSession& S) {
     // Push the live plane transforms to the mesher every frame (even when the
-    // section is collapsed) so gizmo edits keep applying.
-    S.AutoApplyClipPlanes(scene);
+    // section is collapsed) so gizmo edits keep applying — but never while ANY
+    // setup is computing. The rectangles stay draggable in the 3D view even then,
+    // and pushing them would both race that worker and, after a Cancel, hit the
+    // library's cancel flag (it is process-wide) and drop this setup's offsets.
+    // The edit is applied as soon as the run ends, since the rectangles moved.
+    if (!SemSessionNS::Workspace().AnyAsyncRunning()) S.AutoApplyClipPlanes(scene);
     // A clip change re-snaps the source in the core; rebuild the displayed source
     // once the user is no longer dragging the gizmo or editing a field, so the
     // gizmo / Transform window are not yanked mid-edit.
@@ -389,30 +439,30 @@ inline void DrawStandaloneRemeshSection(Scene& scene, SemSessionNS::SemSession& 
 
 inline void Draw(Scene& scene, bool& blockMousePick) {
     using namespace SemSessionNS;
-    SemSession& S = Session();
 
-    S.Validate(scene);
-    // Don't re-bind to a newly staged primitive while a background computation
-    // is in flight — that would reset the SEM cache the worker is using.
-    if (!S.AsyncRunning()) S.Bind(scene, scene.stagedPrimitive);
-    // Apply any finished background-pipeline results to the scene (main thread).
-    S.PollAsync(scene);
+    // Drop dead setups, follow the staged primitive, apply finished background
+    // results and select the active setup's SEM context (see SemWorkspace).
+    Workspace().Sync(scene);
 
     ImGui::Begin("SEM");
 
+    // Before binding S: a tab click switches the active setup (and its SEM
+    // context) right here, and the rest of the frame must draw that setup.
+    DrawSetupTabs(scene);
+    SemSession& S = Session();
+
     if (!S.HasSource()) {
         if (S.SourcePrim()) ImGui::TextDisabled("Staged primitive is not a SEM contour.");
-        else                ImGui::TextDisabled("No staged contour.");
+        else                ImGui::TextDisabled("No setup open.");
         ImGui::Spacing();
         if (ImGui::Button("Import CSV3D...", {200, 0}))
-            BeginSourceImport(scene, S, BrowseCsv3dFile());
-        ImGui::SetItemTooltip("Browse for a .csv3d contour, add it to the scene and stage it\n"
-                              "as the source of the SEM pipeline.");
-        DrawImportSessionModal(scene, S);
+            BeginSourceImport(scene, BrowseCsv3dFile());
+        ImGui::SetItemTooltip("Browse for a .csv3d contour or surface, add it to the scene and\n"
+                              "open it as a SEM setup.");
+        DrawImportSessionModal(scene);
         ImGui::Spacing();
         if (scene.stagingEnabled) {
-            ImGui::TextWrapped("Double-click a CSV3D contour in the tree to stage it here.");
-            ImGui::TextWrapped("Double-click empty 3D space to unstage.");
+            ImGui::TextWrapped("Double-click a CSV3D source in the tree to open it here.");
         } else {
             ImGui::TextWrapped("Staging is off. Import a CSV3D contour to re-enable it.");
         }
@@ -427,10 +477,13 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
     const float kItemW = 180.0f;
     ImGui::PushItemWidth(kItemW);
 
-    // While the 3D pipeline runs on its worker thread, show a progress bar
-    // (driven by SEM_GetProgress via the session) and disable every control
-    // so parameters can't change mid-computation.
-    const bool busy = S.AsyncRunning();
+    // While a 3D pipeline runs on its worker thread, show a progress bar (driven
+    // by SEM_GetProgress via the session) and disable every control so parameters
+    // can't change mid-computation. The library reports progress process-globally,
+    // so only one setup may compute at a time: a job in ANY setup disables the
+    // controls here, while the bar tracks whichever setup owns it.
+    const bool busy      = S.AsyncRunning();
+    const bool otherBusy = !busy && Workspace().AnyAsyncRunning();
     if (busy) {
         char overlay[32];
         snprintf(overlay, sizeof(overlay), "%.0f%%", S.AsyncProgress() * 100.0f);
@@ -447,23 +500,34 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
             ImGui::ProgressBar(S.AsyncSubStageProgress(), ImVec2(kItemW, 0.0f), subOverlay);
         }
         if (S.AsyncCancelRequested()) {
-            ImGui::TextDisabled("Cancelling after current stage...");
+            ImGui::TextDisabled("Stopping...");
         } else if (ImGui::Button("Cancel", {kItemW, 0})) {
             S.CancelAsync();
         }
-        ImGui::SetItemTooltip("Stop the 3D pipeline: the stage running now finishes (SEM\n"
-                              "calls can't be interrupted), then every queued stage after\n"
-                              "it is skipped. Stages that already completed are kept.");
+        ImGui::SetItemTooltip("Stop the 3D pipeline now: the stage running is interrupted at\n"
+                              "its next progress checkpoint and rolled back, and every queued\n"
+                              "stage after it is skipped. Stages that already completed are\n"
+                              "kept. A few third-party kernels (Delaunay, the sparse solve,\n"
+                              "the CDT) can only be stopped before they start, so a stop can\n"
+                              "take until one of those finishes.");
+        ImGui::Separator();
+    } else if (otherBusy) {
+        ImGui::TextDisabled("Another setup is computing...");
         ImGui::Separator();
     }
-    ImGui::BeginDisabled(busy);
+    ImGui::BeginDisabled(busy || otherBusy);
 
-    if (ImGui::Button("Import CSV3D...", {kItemW, 0}))
-        BeginSourceImport(scene, S, BrowseCsv3dFile());
-    ImGui::SetItemTooltip("Browse for a .csv3d contour, add it to the scene and stage it\n"
-                          "as the source of the SEM pipeline (replaces the current source).\n"
+    if (ImGui::Button("Add surface...", {kItemW, 0}))
+        BeginSourceImport(scene, BrowseCsv3dFile());
+    ImGui::SetItemTooltip("Browse for a .csv3d contour or surface and open it as an ADDITIONAL\n"
+                          "setup: it joins the scene next to the setups already open, with its\n"
+                          "own SEM cache, and the tabs above switch between them.\n"
                           "If the source has saved sessions you can reload one instead.");
-    DrawImportSessionModal(scene, S);
+    DrawImportSessionModal(scene);
+    // An import above opened a new setup and selected ITS context; the rest of this
+    // frame still draws S, so put S's context back. The new setup takes over on the
+    // next frame's Sync (its source is staged).
+    S.Activate();
     ImGui::Separator();
 
     const bool is3D = S.Dim() == 3;

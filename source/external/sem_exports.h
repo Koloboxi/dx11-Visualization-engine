@@ -10,20 +10,59 @@
 //
 // Two independent pipelines with parallel signatures: 2D (SEM_*) operates on a
 // contour, 3D (SEM_*3D) on a triangle surface. Each runs the same stages —
-// load -> (subdivide) -> offsets -> mesh -> solve thermal -> extract iso. Both
-// share a single process-global cache but not its state; loading a new source
-// clears that pipeline's cache.
+// load -> (subdivide) -> offsets -> mesh -> solve thermal -> extract iso. Within
+// one context the two pipelines have separate state; loading a new source clears
+// that pipeline's cache.
 //
 // Return codes: 0 = success, any negative value = failure (the number is a
 // coarse hint; read SEM_GetLastError for the reason). -10 specifically means
-// the computation succeeded but writing the result to disk failed.
+// the computation succeeded but writing the result to disk failed, and
+// SEM_RC_CANCELLED that the call was stopped by SEM_RequestCancel.
+enum { SEM_RC_CANCELLED = -99 };
+
+// ===========================================================================
+//  Pipeline contexts
+// ===========================================================================
+
+// A context is one complete, independent set of caches — the 2D pipeline, the 3D
+// pipeline, their standalone helper caches and the working directory. Several
+// sources can therefore be loaded and worked on at the same time: give each its
+// own context and switch between them instead of reloading (a reload clears the
+// cache and forces every stage to be recomputed).
+//
+// Every other SEM_* call reads and writes whichever context is active ON THE
+// CALLING THREAD. The active context is thread-local, so a worker thread can run
+// a long call on one setup while another thread inspects a different one; a
+// thread that never calls SEM_SetActiveContext works on the default context 0.
+// Progress reporting (SEM_GetProgress and friends) and SEM_GetLastError stay
+// process-global — they describe the call in flight, not a context.
+//
+// SEM_CreateContext returns the new context's id (always > 0) with empty caches
+// and no working dir. Ids are never reused.
+SEM_API int SEM_CreateContext(void);
+
+// Make `id` the active context of the calling thread. Negative if no such
+// context exists.
+SEM_API int SEM_SetActiveContext(int id);
+SEM_API int SEM_GetActiveContext(void);
+
+// Release a context and everything it caches. Context 0 is the default and
+// cannot be destroyed (-1); an unknown id gives -2. The caller must not destroy a
+// context another thread is still computing in, and any SEM_MeshView pointing
+// into it dangles afterwards.
+SEM_API int SEM_DestroyContext(int id);
+
+// Copy the existing context ids into `out` (room for `max` ints), ascending;
+// *count receives the true number regardless of `max`. Either argument may be
+// null.
+SEM_API int SEM_GetContexts(int* out, int max, int* count);
 
 // ===========================================================================
 //  Common (shared by both pipelines)
 // ===========================================================================
 
-// Set the directory for all serialized output. Empty/unset -> OS temp dir.
-// Files are named <source-stem><suffix>.
+// Set the directory for all serialized output of the active context. Empty/unset
+// -> OS temp dir. Files are named <source-stem><suffix>.
 SEM_API int SEM_SetWorkingDir(const char* path);
 
 // Human-readable reason for the most recent failure.
@@ -41,6 +80,27 @@ SEM_API float SEM_GetProgress(void);
 SEM_API const char* SEM_GetProgressStage(void);
 SEM_API float       SEM_GetProgressStageFraction(void);
 
+// Stop the long-running call in flight. SEM_RequestCancel raises a flag that the
+// computation polls wherever it reports progress, so the call unwinds at the next
+// checkpoint — typically within one sampling slab, carving block, assembly chunk
+// or remesh sweep — and returns SEM_RC_CANCELLED, leaving the cache exactly as the
+// stage found it (no half-built mesh or isosurface). Call it from another thread
+// while the stage runs.
+//
+// A few third-party kernels cannot be re-entered once started and so run to
+// completion before the cancel is seen: the Delaunay tetrahedralization, the
+// sparse factorization and back-substitution of the thermal solve, and the
+// constrained Delaunay of the 2D band / iso re-triangulation. The flag is polled
+// immediately before each of them, so a cancel raised earlier prevents them from
+// starting at all.
+//
+// The flag is process-global, like the progress state, and stays raised until
+// SEM_ClearCancel: raise it once and every queued stage of the run aborts at its
+// first checkpoint. Clear it before starting new work.
+SEM_API void SEM_RequestCancel(void);
+SEM_API void SEM_ClearCancel(void);
+SEM_API int  SEM_IsCancelRequested(void);
+
 // A point or direction in 3D. Used wherever the API takes a single coordinate
 // triple (a plane normal, a projection-plane normal, ...); memory-compatible with
 // three consecutive doubles (x, y, z) for P/Invoke / ctypes marshalling.
@@ -50,7 +110,7 @@ struct SEM_Vec3 {
 
 // Read-only view into the cache-owned buffers of a result (mesh / iso). Filled
 // by the SEM_Get* accessors below. Every pointer points straight into the
-// process-global cache and is valid ONLY until the next SEM_* call that mutates
+// active context's cache and is valid ONLY until the next SEM_* call that mutates
 // that pipeline (load / subdivide / offsets / mesh / solve / extract / clear).
 // Copy out immediately if you need to keep the data. A pointer is null (and its
 // count 0) when the corresponding array is absent: `T` before a thermal solve,

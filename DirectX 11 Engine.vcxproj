@@ -252,6 +252,7 @@
     <ClInclude Include="source\graphics\navcube\NavGizmo.h" />
     <ClInclude Include="source\graphics\scene\scene_service.h" />
     <ClInclude Include="source\SEM\SemSession.h" />
+    <ClInclude Include="source\SEM\SemWorkspace.h" />
     <ClInclude Include="source\SEM\SemSessionDetail.h" />
     <ClInclude Include="source\graphics\gui\SEMWindow.h" />
     <ClInclude Include="source\graphics\gui\TimeControlWindow.h" />
@@ -349,6 +350,7 @@
     <ClCompile Include="source\main.cpp" />
     <ClCompile Include="source\graphics\scene\scene.cpp" />
     <ClCompile Include="source\SEM\SemSession.cpp" />
+    <ClCompile Include="source\SEM\SemWorkspace.cpp" />
     <ClCompile Include="source\SEM\SemSessionDetail.cpp" />
     <ClCompile Include="source\SEM\SemSessionIO.cpp" />
     <ClCompile Include="source\SEM\SemSessionPipeline.cpp" />

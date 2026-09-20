@@ -50,6 +50,19 @@ const Stats& SemSession::SrcStats()  const { return m_srcStats; }
 const Stats& SemSession::OffStats()  const { return m_offStats; }
 const Stats& SemSession::MeshStats() const { return m_meshStats; }
 
+void SemSession::Activate() const {
+    if (m_ctx > 0) SEM_SetActiveContext(m_ctx);
+}
+
+void SemSession::Release() {
+    if (m_ctx > 0) {
+        if (m_srcPrim) m_srcPrim->semContext = 0;
+        SEM_DestroyContext(m_ctx);
+        m_ctx = 0;
+    }
+    Unbind();
+}
+
 void SemSession::Bind(Scene& scene, Primitive* prim, bool reload) {
     if (prim == m_srcPrim) return;
     // The previous source's pseudonormal overlay belonged to its subtree; drop it
@@ -87,6 +100,14 @@ void SemSession::Bind(Scene& scene, Primitive* prim, bool reload) {
     // A fresh source clears the SEM core cache, so every stage must be recomputed.
     m_dirty[0] = m_dirty[1] = m_dirty[2] = m_dirty[3] = m_dirty[4] = true;
     if (!m_srcPath.empty()) {
+        // This setup gets its own SEM context, so the previously bound setups keep
+        // their caches (and the source load below clears only ours).
+        if (m_ctx <= 0) {
+            const int id = SEM_CreateContext();
+            if (id > 0) m_ctx = id;
+        }
+        Activate();
+        if (prim) prim->semContext = m_ctx;
         // Point the SEM core at this source's session folder so OutPath can
         // reconstruct the deterministic paths it writes. The folder is chosen at
         // import (prim->semWorkDir); allocate a fresh session when none was set.
@@ -280,6 +301,7 @@ void SemSession::RebuildSourcePrim(Scene& scene) {
             ch->visible = wasVisible;
     fresh->semSourcePath = m_srcPath;
     fresh->semWorkDir    = m_workDir;
+    fresh->semContext    = m_ctx;
 
     // RemovePrimitive destroys the old source (and its leftover wireframe), clears
     // the staging pointer if it was staged, and resets the gizmo target.

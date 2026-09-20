@@ -43,6 +43,11 @@ public:
 	// (%TEMP%/sem/<stem>_<N>/). Chosen at import; SemSession::Bind reads it and
 	// allocates a fresh one when empty. See SemSession.
 	std::string semWorkDir;
+	// Id of the SEM pipeline context (SEM_CreateContext) this source is the setup
+	// of, or 0 when it has none. Stamped by SemSession::Bind and cleared when the
+	// setup is closed; the tree highlights a primitive that carries one. See
+	// SemWorkspace.
+	int semContext = 0;
 
 	void SetColor(const XMFLOAT4& col);
 	void SetAlpha(const float a);

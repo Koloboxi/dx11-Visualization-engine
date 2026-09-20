@@ -180,6 +180,21 @@ public:
 
     const std::string& WorkDir() const { return m_workDir; }
 
+    // --- SEM pipeline context ---------------------------------------------
+    // Each session owns one SEM context (SEM_CreateContext): an independent copy
+    // of the library's whole cache. That is what lets several setups be open at
+    // once — switching between them only changes which context is active, so no
+    // stage is ever dropped or recomputed. Allocated by Bind on the first real
+    // source; 0 until then.
+    int  Context() const { return m_ctx; }
+    // Make this session's context current on the calling thread. Called before
+    // anything that talks to the SEM library (per frame for the active session,
+    // around PollAsync for every other one, and first thing on the worker thread).
+    void Activate() const;
+    // Give the context back to the library; the session must not be used against
+    // SEM afterwards. Called when the setup is closed.
+    void Release();
+
     // Session folders group pipeline products per source under %TEMP%/sem/, one
     // folder <stem>_<N> per state. Static so the import UI can enumerate/allocate
     // sessions before a source is bound.
@@ -375,6 +390,7 @@ public:
     bool AsyncCancelRequested() const;
 
 private:
+    int         m_ctx = 0;
     std::string m_srcPath;
     std::string m_meshPath;
     std::string m_isolinePath;

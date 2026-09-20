@@ -80,6 +80,7 @@
     <ClInclude Include="source\external\sem_exports.h" />
     <ClInclude Include="source\loaders\Grid2DLoader.h" />
     <ClInclude Include="source\SEM\SemSession.h" />
+    <ClInclude Include="source\SEM\SemWorkspace.h" />
     <ClInclude Include="source\SEM\SemSessionDetail.h" />
     <ClInclude Include="source\graphics\scene\scene_service.h" />
     <ClInclude Include="source\graphics\gui\TransformWindow.h" />
@@ -112,6 +113,7 @@
     <ClCompile Include="source\window\windowContainer.cpp" />
     <ClCompile Include="source\graphics\scene\scene.cpp" />
     <ClCompile Include="source\SEM\SemSession.cpp" />
+    <ClCompile Include="source\SEM\SemWorkspace.cpp" />
     <ClCompile Include="source\SEM\SemSessionDetail.cpp" />
     <ClCompile Include="source\SEM\SemSessionIO.cpp" />
     <ClCompile Include="source\SEM\SemSessionPipeline.cpp" />

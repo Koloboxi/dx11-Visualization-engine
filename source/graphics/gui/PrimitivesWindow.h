@@ -357,8 +357,13 @@ inline void DrawTreeBody(Scene& scene, LuaUpdaterEditor& lua,
 
             dl->AddText({textX, rp.y + (rowH - ImGui::GetTextLineHeight()) * .5f}, textCol, lbl.c_str());
 
+            // Two levels of SEM highlight: amber marks every source that owns a SEM
+            // setup (its own pipeline context, see SemWorkspace), green the staged
+            // one — the setup the SEM window is currently editing.
             if (prim && prim->staging)
                 dl->AddRect(rp, re, IM_COL32(90,205,165,220), 3.f, 0, 1.5f);
+            else if (prim && prim->semContext != 0)
+                dl->AddRect(rp, re, IM_COL32(230,165,60,190), 3.f, 0, 1.5f);
 
             // Visibility "eye" toggle, drawn at the right edge. Shown for
             // primitives and for grouping nodes (e.g. the SEM "offsets" group).

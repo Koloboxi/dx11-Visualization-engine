@@ -119,9 +119,10 @@ inline void OpenSemSession(Scene& scene, const std::string& stem, const std::str
     std::string src = (fs::path(dir) / (stem + ".csv3d")).string();
     if (!fs::exists(src)) src = ResolveSourcePath(stem);
     if (src.empty()) return;  // no in-folder copy and none in Data — cannot reopen
-    auto& S = SEMWindow::Session();
-    S.ImportSource(scene, src, dir, /*reload=*/true);
-    S.LoadSessionStages(scene);
+    SemSessionNS::SemWorkspace& W = SemSessionNS::Workspace();
+    const bool fresh = W.IndexOfWorkDir(dir) < 0;   // already open => just switch
+    SEMWindow::AddImport(scene, src, dir, /*reload=*/true);
+    if (fresh) W.Active().LoadSessionStages(scene);
     scene.workspaceOpen  = true;
     scene.activeTab      = 1;
     scene.sceneTreeOnly  = true;
@@ -220,7 +221,7 @@ inline void Draw(Scene& scene, LuaUpdaterEditor& lua, float topInset) {
                 scene.activeTab      = 1;
                 scene.sceneTreeOnly  = true;
                 scene.workspaceLabel = PrimitivesWindow::FileStem(p);
-                SEMWindow::BeginSourceImport(scene, SEMWindow::Session(), p);
+                SEMWindow::BeginSourceImport(scene, p);
             }
         }
 

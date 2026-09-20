@@ -48,8 +48,11 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         if (p->selected) { sel = p; if (++count > 1) break; }
     if (count != 1 || !sel) return;
 
-    SemSessionNS::SemSession& S = SEMWindow::Session();
-    ClipPlaneNode* plane = S.FindClipPlaneByRect(sel);
+    // A clip-plane rectangle can belong to any open setup, not only the active
+    // one, so look it up across the whole workspace and edit through its owner.
+    SemSessionNS::SemSession* owner = nullptr;
+    ClipPlaneNode* plane = SemSessionNS::Workspace().FindClipPlane(sel, &owner);
+    SemSessionNS::SemSession& S = owner ? *owner : SEMWindow::Session();
 
     ImGui::SetNextWindowSize(ImVec2(260, 0), ImGuiCond_FirstUseEver);
     ImGui::Begin("Transform");

@@ -226,6 +226,7 @@ void SemSession::PollAsync(Scene& scene) {
     if (m_job.worker.joinable()) m_job.worker.join();
     m_job.running.store(false);
     m_job.done.store(false);
+    SEM_ClearCancel();
 
     const bool cancelled = m_job.cancelled.load();
     // A genuine failure aborts; a cancellation still applies whatever stages
@@ -350,7 +351,12 @@ void SemSession::PollAsync(Scene& scene) {
 }
 
 void SemSession::CancelAsync() {
-    if (m_job.running.load()) m_job.cancel.store(true);
+    if (!m_job.running.load()) return;
+    m_job.cancel.store(true);
+    // Interrupt the SEM call in flight, not just the queue behind it: the library
+    // polls this flag wherever it reports progress and unwinds the stage, leaving
+    // its cache as the stage found it (SEM_RequestCancel).
+    SEM_RequestCancel();
 }
 
 bool SemSession::AsyncCancelRequested() const {
@@ -358,18 +364,38 @@ bool SemSession::AsyncCancelRequested() const {
 }
 
 void SemSession::PipelineWorkerBody() {
+    // The active SEM context is per thread, so this worker has to select its
+    // session's own one before the first SEM call. That is also what makes the
+    // setup switch safe while a job runs: the UI thread's switches change only
+    // the UI thread's context.
+    Activate();
+    // A cancel raised during an earlier run must not abort this one at its first
+    // checkpoint; the flag is process-global and lives until cleared.
+    SEM_ClearCancel();
+
     int idx = 0;   // index of the current stage among the planned ones
 
-    // Stop here if cancellation was requested before this stage starts. The SEM
-    // call already in flight cannot be interrupted, so we can only break between
-    // stages: every queued stage is skipped, finished ones keep their results.
-    // Returns true when it stopped.
-    auto stopIfCancelled = [&]() -> bool {
-        if (!m_job.cancel.load()) return false;
+    // Record that the run stopped on the user's request: stages already finished
+    // keep their results, the queued ones are skipped.
+    auto markCancelled = [&]() {
         m_job.cancelled.store(true);
         m_job.ok.store(false);
         m_job.done.store(true);
+    };
+
+    // Stop before a stage starts (cancel arrived between stages).
+    auto stopIfCancelled = [&]() -> bool {
+        if (!m_job.cancel.load()) return false;
+        markCancelled();
         return true;
+    };
+
+    // A stage the library aborted mid-way (SEM_RC_CANCELLED). Its measured time is
+    // dropped so the stage counts as "never ran" — that is what tells PollAsync to
+    // mark it dirty again and keeps it out of the total.
+    auto stageCancelled = [&](double& ms) {
+        ms = -1.0;
+        markCancelled();
     };
 
     // Offset shells — SEM_ComputeOffsets3D / SEM_ComputeOffsetsAt3D.
@@ -382,6 +408,7 @@ void SemSession::PipelineWorkerBody() {
                ? SEM_ComputeOffsetsAt3D(m_job.gaps.data(), (int)m_job.gaps.size())
                : SEM_ComputeOffsets3D(m_job.firstGap, m_job.numOffsets, m_job.grading);
         m_job.offsetsMs = t.GetMillisecondsElapsed();
+        if (rc == SEM_RC_CANCELLED) return stageCancelled(m_job.offsetsMs);
         if (rc != 0) return Fail("SEM_ComputeOffsets3D failed (" + std::to_string(rc) + ")");
         m_job.offsetsPath = m_job.expOffsets;
         ++idx;
@@ -398,6 +425,7 @@ void SemSession::PipelineWorkerBody() {
         m_job.meshMs = t.GetMillisecondsElapsed();
         if (rc == -100) return Fail("TetGen DLL crashed (access violation caught). "
                                     "Try a larger volume or a looser quality bound.");
+        if (rc == SEM_RC_CANCELLED) return stageCancelled(m_job.meshMs);
         if (rc != 0) return Fail("SEM_BuildMesh3D failed (" + std::to_string(rc) + ")");
         m_job.meshPath = m_job.expMesh;
         ++idx;
@@ -412,6 +440,7 @@ void SemSession::PipelineWorkerBody() {
         int rc = SafeSolveThermal3D(m_job.maxInward);
         m_job.thermalMs = t.GetMillisecondsElapsed();
         if (rc == -100) return Fail("Thermal solver crashed (access violation caught).");
+        if (rc == SEM_RC_CANCELLED) return stageCancelled(m_job.thermalMs);
         if (rc != 0) return Fail("SEM_SolveThermal3D failed (" + std::to_string(rc) + ")");
         ++idx;
     }
@@ -437,6 +466,7 @@ void SemSession::PipelineWorkerBody() {
                                          m_job.isoFinalTargetMult, m_job.isoFinalIters);
         m_job.isoMs = t.GetMillisecondsElapsed();
         if (rc == -100) return Fail("Isosurface extraction crashed (access violation caught).");
+        if (rc == SEM_RC_CANCELLED) return stageCancelled(m_job.isoMs);
         if (rc != 0) return Fail("SEM_ExtractIsosurface3D failed (" + std::to_string(rc) + ")");
         m_job.isoPath = m_job.expIso;
 
@@ -483,6 +513,7 @@ void SemSession::PipelineWorkerBody() {
                      m_job.soMinOffset, m_job.soTargetMult, m_job.soIters, &out);
         m_job.isoMs = t.GetMillisecondsElapsed();
         if (rc == -100) return Fail("Standalone offset-remesh crashed (access violation caught).");
+        if (rc == SEM_RC_CANCELLED) return stageCancelled(m_job.isoMs);
         if (rc != 0) return Fail("SEM_OffsetRemeshInPlaneSurface3D failed (" + std::to_string(rc) + ")");
         m_job.isoDisplayData = ViewToData(out);           // copy before any further SEM call
         m_job.isoPath = m_job.expIsoRemesh;               // non-empty: an iso to display
