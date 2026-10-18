@@ -3,6 +3,7 @@
 #include "../scene/scene.h"
 #include "../scene/scene_service.h"
 #include "SEMWindow.h"
+#include "GuiIcons.h"
 #include <DirectXMath.h>
 #include <cmath>
 
@@ -12,6 +13,7 @@
 namespace TransformWindow {
 
 using namespace DirectX;
+
 
 // Euler extraction matching XMQuaternionRotationRollPitchYaw(pitch,yaw,roll):
 // returns (pitch about X, yaw about Y, roll about Z) in radians, so feeding the
@@ -110,6 +112,25 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
             scene.orientationTransformer.Update();
         }
         ImGui::TextDisabled("Degrees; X pitch, Y yaw, Z roll.");
+
+        // The same eye as the scene tree's: a one-shot visibility cascade that
+        // pushes this state onto the whole subtree under the primitive.
+        ImGui::Separator();
+        bool vis = sel->visible;
+        if (ImGui::Checkbox("visible", &vis))
+            scene.SetNodeVisibleCascade(sel, vis);
+        ImGui::SetItemTooltip("Show or hide this primitive, cascading to everything parented\n"
+                              "under it — the same toggle as the eye in the scene tree.");
+        ImGui::SameLine();
+        {
+            const ImVec2 c = ImGui::GetCursorScreenPos();
+            const float  lh = ImGui::GetTextLineHeight();
+            GuiIcons::EyeIcon(ImGui::GetWindowDrawList(),
+                              ImVec2(c.x + lh * 0.55f, c.y + lh * 0.5f), lh * 0.42f, vis,
+                              vis ? IM_COL32(225, 235, 255, 235)
+                                  : IM_COL32(120, 128, 150, 170));
+            ImGui::Dummy(ImVec2(lh * 1.1f, lh));
+        }
 
         // Thick lines (dim==1) pick a named width from the scene's line styles.
         if (sel->GetDimension() == 1 && !scene.lineStyles.empty()) {

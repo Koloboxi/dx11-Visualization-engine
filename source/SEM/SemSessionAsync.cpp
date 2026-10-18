@@ -4,19 +4,35 @@ namespace SemSessionNS {
 
 using namespace detail;
 
-bool SemSession::AsyncRunning() const { return m_job.running.load(); }
+bool SemSession::AsyncRunning() const {
+    if (m_job.running.load()) return true;
+    // A body session has no worker of its own: it runs its two halves in turn, so
+    // it counts as busy while either one runs or while the turn is pending.
+    if (m_bodyPhase != 0) return true;
+    for (const SemSession* h : m_half) if (h && h->m_job.running.load()) return true;
+    return false;
+}
 
 const char* SemSession::AsyncStageName() const {
+    if (const SemSession* h = BodyRunningHalf()) return h->AsyncStageName();
     switch (m_job.stageKind.load()) {
         case 0:  return "Computing offset shells";
         case 1:  return "Building tetrahedral mesh";
         case 2:  return "Solving thermal field";
         case 4:  return "Offset-remeshing surface";
+        case 5:  return "Tapering surface";
+        case 6:  return "Remeshing surface";
         default: return "Extracting isosurface";
     }
 }
 
 float SemSession::AsyncProgress() const {
+    // Two halves, one bar: each owns half of it.
+    if (IsBody()) {
+        const SemSession* h = BodyRunningHalf();
+        const float base = (m_bodyPhase >= 2) ? 0.5f : 0.0f;
+        return h ? base + 0.5f * h->AsyncProgress() : base;
+    }
     if (!m_job.running.load()) return 0.0f;
     int total = m_job.totalStages.load();
     if (total < 1) total = 1;
@@ -35,12 +51,14 @@ float SemSession::AsyncProgress() const {
 }
 
 const char* SemSession::AsyncSubStageName() const {
+    if (const SemSession* h = BodyRunningHalf()) return h->AsyncSubStageName();
     if (!m_job.running.load()) return "";
     const char* s = SEM_GetProgressStage();
     return s ? s : "";
 }
 
 float SemSession::AsyncSubStageProgress() const {
+    if (const SemSession* h = BodyRunningHalf()) return h->AsyncSubStageProgress();
     if (!m_job.running.load()) return 0.0f;
     float f = SEM_GetProgressStageFraction();
     if (f < 0.0f) f = 0.0f;
@@ -50,6 +68,9 @@ float SemSession::AsyncSubStageProgress() const {
 
 void SemSession::RecomputeUpToAsync(Scene& scene, Stage to, bool silent) {
     if (!HasSource()) return;
+    // A body session forwards every stage to both halves (see PollBodyStage), so
+    // the stage UI needs no special case.
+    if (IsBody()) { RecomputeBodyUpToAsync(scene, to, silent); return; }
     if (dim != 3) { RecomputeUpTo(scene, to, silent); return; }
     if (m_job.running.load()) return;
     if (m_job.worker.joinable()) m_job.worker.join();
@@ -199,6 +220,7 @@ void SemSession::ApplyStandaloneOffsetRemeshAsync(Scene& scene, bool silent) {
 
     m_job.runOffsets = m_job.runMesh = m_job.runThermal = m_job.runIso = false;
     m_job.runStandalone     = true;
+    m_resultPath.clear();
     m_job.isoVisible = true;
     m_job.totalStages.store(1);
     m_job.expIsoRemesh = OutPath("_isosurface3d_remesh3d.csv3d");
@@ -218,6 +240,92 @@ void SemSession::ApplyStandaloneOffsetRemeshAsync(Scene& scene, bool silent) {
     m_job.running.store(true);
 
     snprintf(status, sizeof(status), "Offset-remeshing...");
+    m_job.worker = std::thread(&SemSession::PipelineWorkerBody, this);
+}
+
+// Shared front end of the three standalone drivers: copy the active source
+// surface out of the core NOW, on the main thread (the view's pointers only live
+// until the next SEM call), and reset the job. Returns false with a reported
+// reason when this session cannot run one.
+bool SemSession::BeginStandaloneJob(Scene& scene, bool silent, int stageKind) {
+    if (!HasSource()) { Report(scene, silent, "Import a source surface first."); return false; }
+    if (dim != 3)     { Report(scene, silent, "Standalone modes are 3D only."); return false; }
+    if (m_job.running.load()) return false;
+    if (m_job.worker.joinable()) m_job.worker.join();
+
+    SEM_MeshView src{};
+    if (SEM_GetSourceSurface3D(&src) != 0 || src.num_nodes <= 0 || src.num_tris <= 0) {
+        Report(scene, silent, "Source has no triangle surface" + SemDetail());
+        return false;
+    }
+    m_job.soXyz.assign(src.coords, src.coords + 3 * (size_t)src.num_nodes);
+    m_job.soTris.assign(src.tris,  src.tris  + 3 * (size_t)src.num_tris);
+
+    m_job.runOffsets = m_job.runMesh = m_job.runThermal = m_job.runIso = false;
+    m_job.runStandalone = m_job.runTaper = m_job.runRemesh = false;
+    m_resultPath.clear();
+    m_job.isoVisible = true;
+    m_job.totalStages.store(1);
+    m_job.expIsoRemesh = OutPath("_isosurface3d_remesh3d.csv3d");
+    m_job.offsetsPath.clear();
+    m_job.meshPath.clear();
+    m_job.isoPath.clear();
+    m_job.error.clear();
+    m_job.offsetsMs = m_job.meshMs = m_job.thermalMs = m_job.isoMs = -1.0;
+    m_job.nmEdges = m_job.nmBowties = m_job.nmVertsAdded = m_job.nmTrisRemoved = -1;
+    m_job.nmHolesFilled = -1;
+    m_job.stageKind.store(stageKind);
+    m_job.progressStage.store(0);
+    m_job.ok.store(false);
+    m_job.done.store(false);
+    m_job.cancel.store(false);
+    m_job.cancelled.store(false);
+    m_progressShown.store(0.0f);
+    return true;
+}
+
+// The parting plane as the core wants it, oriented so the kept half-space is the
+// side the surface is on. Returns false when there is no plane to read.
+bool SemSession::PartingPlaneForJob(SEM_Plane3D& out) const {
+    if (!m_splitNode || !m_splitNode->rect) return false;
+    const XMFLOAT4 pl = m_splitNode->GetPlane();
+    out = SEM_Plane3D{ { pl.x, pl.y, pl.z }, pl.w };
+    return true;
+}
+
+void SemSession::ApplyStandaloneTaperAsync(Scene& scene, bool silent) {
+    SEM_Plane3D pl{};
+    if (!PartingPlaneForJob(pl)) {
+        Report(scene, silent, "Add a parting plane first.");
+        return;
+    }
+    if (!BeginStandaloneJob(scene, silent, 5)) return;
+    m_job.runTaper       = true;
+    m_job.tpPlane        = pl;
+    m_job.tpTol          = (double)splitPlaneTol;
+    m_job.tpAngle        = (double)taperAngle;
+    m_job.tpRemeshIters  = taperRemeshIters;
+    m_job.running.store(true);
+    snprintf(status, sizeof(status), "Tapering...");
+    m_job.worker = std::thread(&SemSession::PipelineWorkerBody, this);
+}
+
+void SemSession::ApplyStandaloneRemeshAsync(Scene& scene, bool silent) {
+    // No plane is legitimate here — the remesh then freezes every boundary vertex
+    // instead of letting them slide within one. A zero normal is how the worker
+    // reads "no plane".
+    SEM_Plane3D pl{ { 0, 0, 0 }, 0.0 };
+    // A body remeshes its CLOSED surface, which has no boundary to constrain and
+    // which the parting plane would cut in half — so that plane stays out of it.
+    if (!IsBody()) PartingPlaneForJob(pl);
+    if (!BeginStandaloneJob(scene, silent, 6)) return;
+    m_job.runRemesh    = true;
+    m_job.tpPlane      = pl;
+    m_job.tpTol        = (double)splitPlaneTol;
+    m_job.rmTargetMult = (double)rmTargetMult;
+    m_job.rmIters      = rmIters;
+    m_job.running.store(true);
+    snprintf(status, sizeof(status), "Remeshing...");
     m_job.worker = std::thread(&SemSession::PipelineWorkerBody, this);
 }
 
@@ -300,12 +408,18 @@ void SemSession::PollAsync(Scene& scene) {
         m_isoData = m_job.isoDisplayData;
         m_isoline = BuildIsoDisplay(scene, m_isoData);
         if (m_isoline) {
-            if (m_job.runStandalone) {
+            if (m_job.runStandalone || m_job.runTaper || m_job.runRemesh) {
                 // The standalone result is not serialized under a stem, but its flat
                 // projection cache (iso_flat) IS populated, so the projection overlay
                 // is available (unlike a plain pipeline extraction, gate it on).
                 m_isolinePath.clear();
-                m_isoProjected = true;
+                // Only the offset-remesh publishes a flat projection to go with it.
+                m_isoProjected = m_job.runStandalone;
+                // Nothing else serializes a standalone run: write the result next
+                // to the source so there is a file to take away (and to reveal).
+                m_resultPath = SaveStandaloneResult(m_job.runTaper  ? "_taper"
+                                                  : m_job.runRemesh ? "_remesh"
+                                                                    : "_offset_remesh");
             } else {
                 m_isolinePath = m_job.isoPath;
                 // An offset axis means the offset-and-remesh step ran, so the
@@ -345,12 +459,22 @@ void SemSession::PollAsync(Scene& scene) {
                  "filled %d hole(s).",
                  m_job.nmEdges, m_job.nmBowties, m_job.nmVertsAdded, m_job.nmTrisRemoved,
                  m_job.nmHolesFilled < 0 ? 0 : m_job.nmHolesFilled);
+    } else if (!m_resultPath.empty() &&
+               (m_job.runStandalone || m_job.runTaper || m_job.runRemesh)) {
+        snprintf(status, sizeof(status), "Done. Saved %s", BaseName(m_resultPath).c_str());
     } else {
         snprintf(status, sizeof(status), "Done.");
     }
 }
 
 void SemSession::CancelAsync() {
+    if (IsBody()) {
+        // Stop the half that is running and do not start the other one.
+        m_bodyPhase = 0;
+        for (SemSession* h : m_half) if (h && h->AsyncRunning()) h->CancelAsync();
+        snprintf(status, sizeof(status), "Cancelled.");
+        return;
+    }
     if (!m_job.running.load()) return;
     m_job.cancel.store(true);
     // Interrupt the SEM call in flight, not just the queue behind it: the library
@@ -360,6 +484,7 @@ void SemSession::CancelAsync() {
 }
 
 bool SemSession::AsyncCancelRequested() const {
+    if (const SemSession* h = BodyRunningHalf()) return h->AsyncCancelRequested();
     return m_job.running.load() && m_job.cancel.load();
 }
 
@@ -520,6 +645,51 @@ void SemSession::PipelineWorkerBody() {
         SEM_GetLastManifoldRepair3D(&m_job.nmEdges, &m_job.nmBowties,
                                     &m_job.nmVertsAdded, &m_job.nmTrisRemoved);
         SEM_GetLastHoleFill3D(&m_job.nmHolesFilled);
+        ++idx;
+    }
+
+    // Standalone draft taper of the imported surface about its parting plane.
+    if (m_job.runTaper) {
+        if (stopIfCancelled()) return;
+        m_job.stageKind.store(5);
+        m_job.progressStage.store(idx);
+        Timer t; t.Restart();
+        SEM_MeshView out{};
+        int rc = SafeTaperInPlaneSurface3D(m_job.tpPlane, m_job.tpTol, m_job.tpAngle,
+                                           m_job.tpRemeshIters,
+                                           m_job.soXyz.data(), (int)(m_job.soXyz.size() / 3),
+                                           m_job.soTris.data(), (int)(m_job.soTris.size() / 3),
+                                           &out);
+        m_job.isoMs = t.GetMillisecondsElapsed();
+        if (rc == -100) return Fail("Taper crashed (access violation caught).");
+        if (rc == SEM_RC_CANCELLED) return stageCancelled(m_job.isoMs);
+        if (rc != 0) return Fail("SEM_TaperInPlaneSurface3D failed (" + std::to_string(rc) + ")");
+        m_job.isoDisplayData = ViewToData(out);       // copy before any further SEM call
+        m_job.isoPath = m_job.expIsoRemesh;           // non-empty: a result to display
+        ++idx;
+    }
+
+    // Standalone isotropic remesh of the imported surface.
+    if (m_job.runRemesh) {
+        if (stopIfCancelled()) return;
+        m_job.stageKind.store(6);
+        m_job.progressStage.store(idx);
+        Timer t; t.Restart();
+        SEM_MeshView out{};
+        const bool hasPlane = (m_job.tpPlane.n.x != 0.0 || m_job.tpPlane.n.y != 0.0 ||
+                               m_job.tpPlane.n.z != 0.0);
+        int rc = SafeRemeshStandaloneSurface3D(hasPlane ? &m_job.tpPlane : nullptr,
+                                               hasPlane ? 1 : 0, m_job.tpTol,
+                                               m_job.rmTargetMult, m_job.rmIters,
+                                               m_job.soXyz.data(), (int)(m_job.soXyz.size() / 3),
+                                               m_job.soTris.data(), (int)(m_job.soTris.size() / 3),
+                                               &out);
+        m_job.isoMs = t.GetMillisecondsElapsed();
+        if (rc == -100) return Fail("Remesh crashed (access violation caught).");
+        if (rc == SEM_RC_CANCELLED) return stageCancelled(m_job.isoMs);
+        if (rc != 0) return Fail("SEM_RemeshStandaloneSurface3D failed (" + std::to_string(rc) + ")");
+        m_job.isoDisplayData = ViewToData(out);
+        m_job.isoPath = m_job.expIsoRemesh;
         ++idx;
     }
 

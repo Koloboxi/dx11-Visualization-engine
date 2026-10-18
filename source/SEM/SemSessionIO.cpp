@@ -1,6 +1,8 @@
 #include "SemSessionDetail.h"
 #include <filesystem>
 #include <algorithm>
+#include <Windows.h>
+#include <shellapi.h>
 
 namespace fs = std::filesystem;
 
@@ -10,6 +12,42 @@ using namespace detail;
 
 std::string SemSession::OutPath(const char* suffix) const {
     return (fs::path(m_workDir) / (Stem(m_srcPath) + suffix)).string();
+}
+
+// The standalone modes keep their result in memory only (the worker hands the
+// mesh straight to the scene), so this is the one place it reaches disk. It goes
+// next to the SOURCE, not into the %TEMP% session folder, because it is a model
+// the user takes away - and that is the folder the Explorer button opens.
+std::string SemSession::SaveStandaloneResult(const char* tag) {
+    if (m_srcPath.empty() || m_isoData.nodes.empty() || m_isoData.triangles.empty())
+        return std::string();
+
+    const std::string name = Stem(m_srcPath) + tag + ".csv3d";
+    std::error_code ec;
+    fs::path dir = fs::path(m_srcPath).parent_path();
+    if (!dir.empty()) {
+        const std::string out = (dir / name).string();
+        if (CSV3DLoader::SaveSurface(out, m_isoData)) return out;
+    }
+    // A read-only source folder (or a source opened from a network path) must not
+    // lose the result: fall back to the session folder, which we own.
+    if (m_workDir.empty()) return std::string();
+    fs::create_directories(m_workDir, ec);
+    const std::string alt = (fs::path(m_workDir) / name).string();
+    if (CSV3DLoader::SaveSurface(alt, m_isoData)) return alt;
+    return std::string();
+}
+
+bool SemSession::RevealResult() const {
+    if (m_resultPath.empty()) return false;
+    std::error_code ec;
+    if (!fs::exists(m_resultPath, ec)) return false;
+    // Explorer's /select takes a quoted path and focuses the file inside its
+    // folder, which is what "open the result" means here.
+    const std::string arg = "/select,\"" + m_resultPath + "\"";
+    const HINSTANCE h = ShellExecuteA(nullptr, "open", "explorer.exe", arg.c_str(),
+                                      nullptr, SW_SHOWNORMAL);
+    return (INT_PTR)h > 32;
 }
 
 std::string SemSession::SessionRoot() {

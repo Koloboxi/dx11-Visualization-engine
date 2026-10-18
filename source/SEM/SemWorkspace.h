@@ -32,6 +32,9 @@ public:
     const SemSession* At(int i) const;
 
     SemSession* SessionFor(const Primitive* p) const;
+    // True when `p` is one of the half primitives of an open body setup. Those are
+    // never setups of their own, so staging one must not create one.
+    bool        IsHalfPrim(const Primitive* p) const;
     int         IndexOf(const Primitive* p) const;
     // The setup already serializing into `dir`, or -1. Two setups must not share a
     // session folder: they would overwrite each other's stage files and manifest.

@@ -402,7 +402,7 @@ void SemSession::BuildClipOnPlane(Scene& scene) {
         any |= BuildOnPlaneOverlay(scene, grp, ViewToData(v), planes, tol, lift,
                                    kOnPlaneSrcColor, "src");
 
-    if (sessionMode == SESSION_STANDALONE_REMESH) {
+    if (sessionMode == SESSION_OFFSET_REMESH) {
         // Standalone offset-remesh: its result lives only in the host copy (m_isoData);
         // the pipeline iso caches (SEM_GetSourceIsosurface3D / SEM_GetIsosurface3D) are
         // empty in this mode. Draw the result's on-plane geometry in the final-iso colour.

@@ -454,6 +454,34 @@ int SafeExtractIsosurface3D(double value, SEM_Vec3 axis, double offset_value, do
                                            target_len_mult, iterations); }
     __except (EXCEPTION_EXECUTE_HANDLER) { return -100; }
 }
+int SafeTaperInPlaneSurface3D(SEM_Plane3D parting, double on_plane_rel_tol,
+                              double taper_angle_deg, int remesh_iters,
+                              const double* xyz, int num_nodes,
+                              const int* tris, int num_tris,
+                              SEM_MeshView* out) {
+    __try {
+        return SEM_TaperInPlaneSurface3D(parting, on_plane_rel_tol, taper_angle_deg,
+                                         remesh_iters, xyz, num_nodes, tris, num_tris, out);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -100;
+    }
+}
+
+int SafeRemeshStandaloneSurface3D(const SEM_Plane3D* planes, int count,
+                                  double on_plane_rel_tol,
+                                  double target_len_mult, int iterations,
+                                  const double* xyz, int num_nodes,
+                                  const int* tris, int num_tris,
+                                  SEM_MeshView* out) {
+    __try {
+        return SEM_RemeshStandaloneSurface3D(planes, count, on_plane_rel_tol,
+                                             target_len_mult, iterations,
+                                             xyz, num_nodes, tris, num_tris, out);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -100;
+    }
+}
+
 int SafeOffsetRemeshInPlaneSurface3D(SEM_Vec3 axis, double offset_value,
                                      const double* xyz, int num_nodes,
                                      const int* tris, int num_tris,

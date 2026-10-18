@@ -38,13 +38,26 @@ public:
     int   dim        = 2;
 
     // Session mode (3D only): SESSION_PIPELINE runs the full load -> offsets -> mesh ->
-    // thermal -> isosurface chain; SESSION_STANDALONE_REMESH skips all of that and only
+    // thermal -> isosurface chain; SESSION_OFFSET_REMESH skips all of that and only
     // offset-and-remeshes the imported surface directly via the standalone
     // SEM_OffsetRemeshInPlaneSurface3D, with clip planes still editable. The pipeline
     // stage sections are hidden in the standalone mode (and vice versa).
-    enum SessionMode { SESSION_PIPELINE = 0, SESSION_STANDALONE_REMESH = 1 };
+    // SESSION_BODY is picked automatically when the imported surface is closed: the
+    // SEM core makes that a body context (SEM_CTX_BODY), and this session then
+    // drives the body stages — parting plane, split, taper — plus the ordinary
+    // pipeline run on BOTH halves at once. See the body section further down.
+    // The three standalone modes all work on the imported open surface directly
+    // and leave the pipeline cache alone; they differ only in what they do to it.
+    //   SESSION_OFFSET_REMESH - shift along the pseudonormals, then re-mesh over a
+    //                           base plane (SEM_OffsetRemeshInPlaneSurface3D).
+    //   SESSION_TAPER         - add draft about a parting plane the surface's
+    //                           boundary lies in (SEM_TaperInPlaneSurface3D).
+    //   SESSION_REMESH        - plain isotropic remesh, shape preserved
+    //                           (SEM_RemeshStandaloneSurface3D).
+    enum SessionMode { SESSION_PIPELINE = 0, SESSION_OFFSET_REMESH = 1,
+                       SESSION_BODY = 2, SESSION_TAPER = 3, SESSION_REMESH = 4 };
     int   sessionMode = SESSION_PIPELINE;
-    // Standalone offset-remesh parameters (SESSION_STANDALONE_REMESH). soAxisN is the
+    // Standalone offset-remesh parameters (SESSION_OFFSET_REMESH). soAxisN is the
     // projection-plane normal (any direction; need not be unit — (0,0,1) reproduces the
     // former Z base plane); soOffset the pseudonormal shift as a distance in world units
     // (positive inward), soMinOffset the clearance cull as a fraction of the
@@ -53,7 +66,7 @@ public:
     // own average edge length (soTargetMult <= 0 = median; soIters <= 0 skips it).
     // These map to SEM_OffsetRemeshInPlaneSurface3D's arguments.
     XMFLOAT3 soAxisN  = { 0.0f, 0.0f, 1.0f };
-    float soOffset    = 0.2f;
+    float soOffset    = 0.001f;
     float soMinOffset = 0.99f;
     float soTargetMult = 1.0f;
     int   soIters     = 3;
@@ -150,6 +163,93 @@ public:
     // SEM_SetRevolution axis selector: 1 = X, 2 = Y, 3 = Z.
     static constexpr int kRevolutionAxisY = 2;
 
+    SemSession() = default;
+    ~SemSession();
+    SemSession(const SemSession&)            = delete;
+    SemSession& operator=(const SemSession&) = delete;
+
+    // ======================================================================
+    // Body session (SESSION_BODY): the imported surface is closed, so the SEM
+    // core made its context a body context. This ONE session drives three
+    // things and never appears as more than one setup in the workspace:
+    //   - the body itself (its volume, the parting plane, the split);
+    //   - the two open halves the split produced, each the source of its own
+    //     SEM context, shown as children of the closed source primitive (which
+    //     is just hidden, not removed, once the split succeeds);
+    //   - the ordinary pipeline stages, whose parameters are shared and whose
+    //     Apply runs BOTH halves — one after the other, because the library's
+    //     progress and cancel state is process-global (see PollBodyStage).
+    // ======================================================================
+    float splitPlaneTol = 0.01f;    // on_plane_rel_tol handed to the split
+    float taperAngle    = 7.0f;     // degrees from the draw direction
+    // Isotropic remesh sweeps the core runs over each tapered surface right after
+    // the push, with the parting plane as a constraint. The push stretches the
+    // triangles it moves, so this is what leaves the draft cone evenly meshed;
+    // 0 skips it and keeps the taper's own triangulation.
+    int   taperRemeshIters = 2;
+    // SESSION_REMESH knobs: target edge length as a multiple of the surface's own
+    // average (<= 0 uses the median), and the sweep count.
+    float rmTargetMult  = 1.0f;
+    int   rmIters       = 3;
+
+    // The parting plane is shared by the body split and the two standalone modes
+    // that need one, so the same add/select/remove controls serve all of them.
+    bool UsesPartingPlane() const {
+        return IsBody() || sessionMode == SESSION_TAPER || sessionMode == SESSION_REMESH;
+    }
+
+    // A body session additionally picks WHICH of its two jobs the window drives:
+    // the split-and-stages chain, or a plain remesh of the closed surface. It is
+    // a sub-mode rather than a sessionMode value, because the session stays a
+    // body either way (its halves, its context kind and its polling depend on it).
+    enum BodyMode { BODYMODE_SPLIT = 0, BODYMODE_REMESH = 1 };
+    int bodyMode = BODYMODE_SPLIT;
+
+    bool IsBody()    const { return sessionMode == SESSION_BODY; }
+    bool BodyRemeshMode() const { return IsBody() && bodyMode == BODYMODE_REMESH; }
+    bool BodySplit() const { return m_bodySplit; }
+    // Enclosed volume of the closed source, or < 0 when unavailable.
+    double BodyVolume() const;
+
+    ClipPlaneNode* SplitPlaneNode() const { return m_splitNode; }
+    ClipPlaneNode* AddSplitPlane(Scene& scene);
+    void           RemoveSplitPlane(Scene& scene);
+
+    // side >= 0 is the half in the plane's positive half-space.
+    Primitive*  HalfPrim(int side) const;
+    SemSession* HalfSession(int side) const;
+
+    // Push the plane to the core and split. Hides the closed source, builds a
+    // primitive per half under it (each in its own colour) and binds a hidden
+    // session to each half's context. Re-splitting replaces both.
+    bool ApplySplit(Scene& scene, bool silent);
+
+    // Taper both halves to `taperAngle`. The core always tapers the pristine cut,
+    // so calling this again with another angle rebuilds the halves rather than
+    // stacking a second draft on them; the halves' pipeline stages are dropped
+    // because their source geometry changed.
+    bool ApplyTaper(Scene& scene, bool silent);
+    bool TaperReport(int side, int& verts_moved, int& facets_violating,
+                     double& min_draft_deg, double& contour_growth) const;
+    // The per-facet draft check run right now against `angle_deg`, changing
+    // nothing — so the same number can be read before a taper and after it.
+    bool MeasureDraftNow(int side, double angle_deg,
+                         int& facets_violating, double& min_draft_deg) const;
+
+    // Overlay of the geometry of both halves that lies exactly on the parting
+    // plane — the cut outline and any face the plane snapped flat.
+    void ShowSplitOnPlane(Scene& scene, bool show);
+    bool SplitOnPlaneShown() const { return m_splitOnPlaneShown; }
+
+    // One pipeline stage on both halves, driven from this session. Phase 0 = idle,
+    // 1 = the positive half is running, 2 = the negative one. PollBodyStage (called
+    // once per frame by the workspace) applies each half's results and starts the
+    // second one when the first finishes.
+    void RecomputeBodyUpToAsync(Scene& scene, Stage to, bool silent);
+    void PollBodyStage(Scene& scene);
+    int  BodyPhase() const { return m_bodyPhase; }
+    const SemSession* BodyRunningHalf() const;
+
     const std::string& SourcePath() const;
     Primitive*  SourcePrim()  const;
     SceneNode*  OffsetsNode() const;
@@ -211,6 +311,17 @@ public:
     void Bind(Scene& scene, Primitive* prim, bool reload = false);
     void Unbind();
     void Validate(Scene& scene);
+
+    // Bind this session to a SEM context someone else created and already loaded —
+    // a body half (SEM_SplitBody3D). No SEM_LoadSurface3D is issued, so that
+    // context's cache survives. `prim` is the half's scene primitive; its
+    // semSourcePath is deliberately left empty so the workspace never mistakes a
+    // half for a top-level setup.
+    void BindExisting(Scene& scene, int ctx, Primitive* prim,
+                      const std::string& srcPath, const std::string& workDir);
+    // A half whose source geometry was replaced (by a taper): drop everything built
+    // from the old geometry, mark every stage stale and point at the new primitive.
+    void RebindHalf(Scene& scene, Primitive* prim);
 
     void MarkStageDirty(Stage st);
     void RecomputeUpTo(Scene& scene, Stage to, bool silent);
@@ -378,13 +489,35 @@ public:
     const char* AsyncSubStageName() const;
     float AsyncSubStageProgress() const;
     void RecomputeUpToAsync(Scene& scene, Stage to, bool silent);
-    // SESSION_STANDALONE_REMESH driver: offset-and-remesh the imported source surface
+    // SESSION_OFFSET_REMESH driver: offset-and-remesh the imported source surface
     // directly via the standalone SEM_OffsetRemeshInPlaneSurface3D (soAxisN/soOffset/
     // soMinOffset/soTargetMult/soIters), applying the current clip planes, on the worker
     // thread (the SEM call reports progress) like the pipeline. Displays the result in
     // the isosurface slot; does NOT touch the offsets/mesh/thermal caches, but its flat
     // projection becomes available (HasIsoProjection). 3D only. See PollAsync.
     void ApplyStandaloneOffsetRemeshAsync(Scene& scene, bool silent);
+    // SESSION_TAPER / SESSION_REMESH drivers, same shape as the one above: the
+    // imported surface is copied out of the core on the main thread and handed to
+    // the worker as raw arrays, and the result is displayed in the isosurface
+    // slot. Both need the parting plane; the remesh uses it only as a constraint
+    // unless it also has to cut. 3D only.
+    void ApplyStandaloneTaperAsync(Scene& scene, bool silent);
+    void ApplyStandaloneRemeshAsync(Scene& scene, bool silent);
+    // What the last SESSION_TAPER run did, same fields as the body taper's
+    // report. False before one has run.
+    bool StandaloneTaperReport(int& verts_moved, int& facets_violating,
+                               double& min_draft_deg, double& contour_growth) const;
+    // Where the last standalone result was written: "<source folder>/<stem>_<mode>
+    // .csv3d", or the session folder when the source folder refuses the write.
+    // Nothing else serializes a standalone run, so that file IS the product.
+    // Empty until one finishes; cleared when the next one starts.
+    const std::string& ResultPath() const { return m_resultPath; }
+    // Open Explorer on the result folder with the file selected. False when there
+    // is no result, or it has since been deleted.
+    bool RevealResult() const;
+    // Write the standalone result currently in m_isoData next to the source as
+    // "<stem><tag>.csv3d". Returns the path written, empty when it could not be.
+    std::string SaveStandaloneResult(const char* tag);
     void PollAsync(Scene& scene);
     void CancelAsync();
     bool AsyncCancelRequested() const;
@@ -394,6 +527,7 @@ private:
     std::string m_srcPath;
     std::string m_meshPath;
     std::string m_isolinePath;
+    std::string m_resultPath;
     std::string m_workDir;
     Primitive*  m_srcPrim = nullptr;
     SceneNode*  m_offsets = nullptr;
@@ -446,6 +580,40 @@ private:
     // Per-stage staleness, indexed by Stage. Bind resets all to true.
     bool        m_dirty[5] = { true, true, true, true, true };
 
+    // ---- Body session state (SESSION_BODY only) ---------------------------
+    // Set on the two hidden sessions a body owns. A half is NOT a setup: its
+    // primitive must never carry semSourcePath/semContext and must never be
+    // staged, or the workspace would adopt it as a top-level setup and reload its
+    // source into a fresh context, wiping the cache it just computed into.
+    bool           m_isHalf    = false;
+    bool           m_bodySplit = false;
+    ClipPlaneNode* m_splitNode  = nullptr;   // the parting plane's visual rectangle
+    SceneNode*     m_splitGroup = nullptr;
+    Primitive*     m_halfPrim[2] = { nullptr, nullptr };   // 0 = positive side
+    SemSession*    m_half[2]     = { nullptr, nullptr };   // owned; destroyed with us
+    CSV3DLoader::CSV3DData m_halfData[2];
+    bool           m_splitOnPlaneShown = false;
+    SceneNode*     m_splitOnPlaneGroup = nullptr;
+    int            m_bodyPhase  = 0;
+    Stage          m_bodyStage  = STAGE_OFFSETS;
+    bool           m_bodySilent = false;
+
+    void DropHalves(Scene& scene);
+    void BuildHalfPrim(Scene& scene, int side);
+    // Give one half's context the parting plane as its clip plane, oriented so the
+    // kept half-space is that half's own side. Both halves therefore carry the
+    // same plane with opposite cut directions, and every stage they run (offset
+    // shells, the tet band, the isosurface) is cut flush at the parting plane
+    // instead of bulging across into the other half. Re-applied after a taper,
+    // because republishing a half reloads its source and clears its clip planes.
+    void PushSplitClipPlane(int side);
+    void StartBodyHalf(Scene& scene, int side);
+    // Copy the shared stage knobs (and the staleness flags the UI set here) into
+    // both halves before a run.
+    void PushStageParams();
+    void BuildSplitOnPlane(Scene& scene);
+    void DropSplitOnPlane(Scene& scene);
+
     // ---- Asynchronous 3D pipeline state -----------------------------------
     // The atomics are the only members the worker and UI thread touch
     // concurrently; the plan/parameter snapshot is written before the thread
@@ -465,10 +633,18 @@ private:
         // thermal solve and the isosurface extraction are separate progress-
         // reporting stages (runThermal solves, runIso extracts).
         bool   runOffsets = false, runMesh = false, runThermal = false, runIso = false;
-        // SESSION_STANDALONE_REMESH: offset-and-remesh a surface passed in as raw arrays
+        // SESSION_OFFSET_REMESH: offset-and-remesh a surface passed in as raw arrays
         // (SEM_OffsetRemeshInPlaneSurface3D). Set only by ApplyStandaloneOffsetRemeshAsync,
         // never alongside the run* stages above. soXyz/soTris are the input geometry copy.
         bool   runStandalone = false;
+        // The other two standalone modes; never set alongside each other.
+        bool   runTaper  = false;
+        bool   runRemesh = false;
+        SEM_Plane3D         tpPlane = { { 0, 0, 1 }, 0.0 };
+        double              tpTol = 0.01, tpAngle = 7.0;
+        int                 tpRemeshIters = 2;
+        double              rmTargetMult = 1.0;
+        int                 rmIters = 3;
         SEM_Vec3            soAxisN = { 0.0, 0.0, 1.0 };
         double              soOffset = 0.0, soMinOffset = 0.0, soTargetMult = 1.0;
         int                 soIters = 3;
@@ -521,6 +697,10 @@ private:
 
     void PipelineWorkerBody();
     void Fail(const std::string& msg);
+    // Shared setup for the three standalone drivers, and the parting plane read
+    // off its visual rectangle in the form the core takes.
+    bool BeginStandaloneJob(Scene& scene, bool silent, int stageKind);
+    bool PartingPlaneForJob(SEM_Plane3D& out) const;
 
     // Full path the SEM core writes for a pipeline product: working dir + source
     // stem + a fixed suffix.

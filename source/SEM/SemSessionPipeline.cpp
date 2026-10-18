@@ -76,6 +76,9 @@ void SemSession::RecomputeUpTo(Scene& scene, Stage to, bool silent) {
 }
 
 SceneNode* SemSession::StagePrim(Stage st) const {
+    // A body session's stage products hang off its halves; report the positive
+    // one's, which is what the stage sections show.
+    if (IsBody() && m_half[0]) return m_half[0]->StagePrim(st);
     // The thermal solve has no primitive of its own — its product is the recoloured
     // band mesh, so it shares the mesh node. The isosurface is the iso sheet.
     return st == STAGE_OFFSETS    ? m_offsets
@@ -86,6 +89,13 @@ SceneNode* SemSession::StagePrim(Stage st) const {
 }
 
 void SemSession::ResetStage(Scene& scene, Stage st) {
+    if (IsBody()) {
+        for (SemSession* h : m_half)
+            if (h) { h->Activate(); h->ResetStage(scene, st); }
+        Activate();
+        for (int i = (int)st; i <= STAGE_ISOSURFACE; ++i) m_dirty[i] = true;
+        return;
+    }
     if (st <= STAGE_OFFSETS)         { DropOffsets(scene); DropMesh(scene);
                                        m_dirty[STAGE_OFFSETS] = m_dirty[STAGE_MESH] =
                                        m_dirty[STAGE_THERMAL] = m_dirty[STAGE_ISOSURFACE] = true; }

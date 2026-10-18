@@ -357,6 +357,7 @@
     <ClCompile Include="source\SEM\SemSessionAsync.cpp" />
     <ClCompile Include="source\SEM\SemSessionRevolution.cpp" />
     <ClCompile Include="source\SEM\SemSessionClipPlanes.cpp" />
+    <ClCompile Include="source\SEM\SemSessionBody.cpp" />
     <ClCompile Include="source\graphics\scene\loaders\scene_newton.cpp" />
     <ClCompile Include="source\graphics\scene\loaders\scene_ph.cpp" />
     <ClCompile Include="source\graphics\scene\loaders\scene_gr.cpp" />

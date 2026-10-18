@@ -68,6 +68,15 @@ ClipPlaneNode* SemWorkspace::FindClipPlane(Primitive* rect, SemSession** owner) 
     return nullptr;
 }
 
+bool SemWorkspace::IsHalfPrim(const Primitive* p) const {
+    if (!p) return false;
+    for (const auto& s : m_sessions) {
+        if (!s->IsBody()) continue;
+        if (s->HalfPrim(+1) == p || s->HalfPrim(-1) == p) return true;
+    }
+    return false;
+}
+
 Primitive* SemWorkspace::ActiveSourcePrim() const {
     const SemSession* s = At(m_active);
     return s ? s->SourcePrim() : nullptr;
@@ -151,7 +160,7 @@ void SemWorkspace::Sync(Scene& scene) {
     // deliberately does NOT unbind: the active setup survives, which is the whole
     // point of keeping the caches apart.
     Primitive* staged = scene.stagedPrimitive;
-    if (staged && !staged->semSourcePath.empty()) {
+    if (staged && !staged->semSourcePath.empty() && !IsHalfPrim(staged)) {
         int idx = IndexOf(staged);
         if (idx < 0 && !AnyAsyncRunning()) idx = Adopt(scene, staged);
         if (idx >= 0) m_active = idx;
@@ -162,6 +171,9 @@ void SemWorkspace::Sync(Scene& scene) {
     for (auto& s : m_sessions) {
         s->Activate();
         s->PollAsync(scene);
+        // A body setup has no worker of its own; this polls its two halves and
+        // hands the turn from the first to the second.
+        s->PollBodyStage(scene);
     }
     Active().Activate();
 }

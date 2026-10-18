@@ -8,8 +8,12 @@ using namespace detail;
 
 const std::string& SemSession::SourcePath() const { return m_srcPath; }
 Primitive*  SemSession::SourcePrim()  const { return m_srcPrim; }
-SceneNode*  SemSession::OffsetsNode() const { return m_offsets; }
-Primitive*  SemSession::MeshPrim()    const { return m_mesh; }
+SceneNode*  SemSession::OffsetsNode() const {
+    return (IsBody() && m_half[0]) ? m_half[0]->m_offsets : m_offsets;
+}
+Primitive*  SemSession::MeshPrim()    const {
+    return (IsBody() && m_half[0]) ? m_half[0]->m_mesh : m_mesh;
+}
 Primitive*  SemSession::IsolinePrim() const { return m_isoline; }
 Primitive*  SemSession::IsoSourcePrim()     const { return m_isoSource; }
 Primitive*  SemSession::IsoProjectionPrim() const { return m_isoProj; }
@@ -33,7 +37,9 @@ void SemSession::StyleLines(Primitive* p, int style) {
 
 bool        SemSession::HasSource()   const { return m_srcPrim != nullptr && !m_srcPath.empty(); }
 int         SemSession::Dim()         const { return dim; }
-bool        SemSession::ThermalSolved() const { return m_thermalSolved; }
+bool        SemSession::ThermalSolved() const {
+    return (IsBody() && m_half[0]) ? m_half[0]->m_thermalSolved : m_thermalSolved;
+}
 bool        SemSession::HasIsolinePath() const { return !m_isolinePath.empty(); }
 bool        SemSession::HasIsoProjection() const { return m_isoProjected; }
 
@@ -47,14 +53,29 @@ double SemSession::TotalTimeMs() const {
 }
 
 const Stats& SemSession::SrcStats()  const { return m_srcStats; }
-const Stats& SemSession::OffStats()  const { return m_offStats; }
-const Stats& SemSession::MeshStats() const { return m_meshStats; }
+const Stats& SemSession::OffStats()  const {
+    return (IsBody() && m_half[0]) ? m_half[0]->m_offStats : m_offStats;
+}
+const Stats& SemSession::MeshStats() const {
+    return (IsBody() && m_half[0]) ? m_half[0]->m_meshStats : m_meshStats;
+}
 
 void SemSession::Activate() const {
     if (m_ctx > 0) SEM_SetActiveContext(m_ctx);
 }
 
 void SemSession::Release() {
+    // A body session owns its halves' sessions, and each of those owns a SEM
+    // context; give those back before our own.
+    for (int i = 0; i < 2; ++i) {
+        if (!m_half[i]) continue;
+        m_half[i]->Release();
+        delete m_half[i];
+        m_half[i] = nullptr;
+    }
+    m_halfPrim[0] = m_halfPrim[1] = nullptr;
+    m_bodySplit = false;
+    m_bodyPhase = 0;
     if (m_ctx > 0) {
         if (m_srcPrim) m_srcPrim->semContext = 0;
         SEM_DestroyContext(m_ctx);
@@ -97,6 +118,8 @@ void SemSession::Bind(Scene& scene, Primitive* prim, bool reload) {
     for (int c = 0; c < CLIPCHG_COUNT; ++c) { m_clipChangeGroup[c] = nullptr; m_clipChangesShown[c] = false; }
     m_srcRebuildPending = false;
     m_offsetsMs = m_meshMs = m_thermalMs = m_isoMs = -1.0;
+    DropHalves(scene);
+    RemoveSplitPlane(scene);
     // A fresh source clears the SEM core cache, so every stage must be recomputed.
     m_dirty[0] = m_dirty[1] = m_dirty[2] = m_dirty[3] = m_dirty[4] = true;
     if (!m_srcPath.empty()) {
@@ -134,6 +157,10 @@ void SemSession::Bind(Scene& scene, Primitive* prim, bool reload) {
                                                : "SEM_LoadCSV3D failed (")
                                     + std::to_string(rc) + ")" + SemDetail());
         }
+        // A closed surface became a body context in the core: this session then
+        // drives the parting plane, the split and both halves at once.
+        sessionMode = (dim == 3 && SEM_GetContextKind() == SEM_CTX_BODY)
+                    ? SESSION_BODY : SESSION_PIPELINE;
     }
     m_srcStats = ComputeStats(m_srcPath);
     if (HasSource()) snprintf(status, sizeof(status), "Staged: %s", BaseName(m_srcPath).c_str());
@@ -148,7 +175,7 @@ void SemSession::Unbind() {
     m_isoLoops = nullptr;
     m_isoData = CSV3DLoader::CSV3DData();
     m_srcRevSurf = nullptr; m_isoRevSurf = nullptr;
-    m_meshPath.clear(); m_isolinePath.clear();
+    m_meshPath.clear(); m_isolinePath.clear(); m_resultPath.clear();
     m_thermalSolved = false;
     // The plane nodes (and their grouping node) were children of the (now-gone)
     // source subtree; just drop our dangling references — the scene already
@@ -182,6 +209,15 @@ void SemSession::Validate(Scene& scene) {
         else ++it;
     }
     if (m_clipGroup && !Alive(scene, m_clipGroup)) m_clipGroup = nullptr;
+    if (m_splitNode && !Alive(scene, m_splitNode)) m_splitNode = nullptr;
+    if (m_splitGroup && !Alive(scene, m_splitGroup)) m_splitGroup = nullptr;
+    if (m_splitOnPlaneGroup && !Alive(scene, m_splitOnPlaneGroup)) {
+        m_splitOnPlaneGroup = nullptr; m_splitOnPlaneShown = false;
+    }
+    for (int i = 0; i < 2; ++i) {
+        if (m_halfPrim[i] && !Alive(scene, m_halfPrim[i])) m_halfPrim[i] = nullptr;
+        if (m_half[i]) m_half[i]->Validate(scene);
+    }
     if (m_onPlaneGroup && !Alive(scene, m_onPlaneGroup)) { m_onPlaneGroup = nullptr; m_clipOnPlaneShown = false; }
     for (int c = 0; c < CLIPCHG_COUNT; ++c)
         if (m_clipChangeGroup[c] && !Alive(scene, m_clipChangeGroup[c])) {
@@ -195,6 +231,8 @@ void SemSession::MarkStageDirty(Stage st) {
 
 void SemSession::SetSurf3dAlpha(Scene& scene, float a) {
     surf3dAlpha = a;
+    for (SemSession* h : m_half) if (h) h->SetSurf3dAlpha(scene, a);
+    for (Primitive* p : m_halfPrim) if (Alive(scene, p)) p->SetAlpha(a);
     for (Primitive* p : { m_srcPrim, m_mesh, m_isoline, m_isoSource, m_isoProj })
         if (Alive(scene, p)) p->SetAlpha(a);
     // The offsets are a group of shell primitives; apply alpha to each.
@@ -299,15 +337,19 @@ void SemSession::RebuildSourcePrim(Scene& scene) {
     for (SceneNode* ch : fresh->children)
         if (ch && ch->IsPrimitive() && ch->name.find("(edges)") != std::string::npos)
             ch->visible = wasVisible;
-    fresh->semSourcePath = m_srcPath;
-    fresh->semWorkDir    = m_workDir;
-    fresh->semContext    = m_ctx;
+    // A body half is not a setup: leaving these empty is what keeps the workspace
+    // from adopting it as one (see m_isHalf).
+    if (!m_isHalf) {
+        fresh->semSourcePath = m_srcPath;
+        fresh->semWorkDir    = m_workDir;
+        fresh->semContext    = m_ctx;
+    }
 
     // RemovePrimitive destroys the old source (and its leftover wireframe), clears
     // the staging pointer if it was staged, and resets the gizmo target.
     scene.RemovePrimitive(old);
     m_srcPrim = fresh;
-    scene.SetStaged(fresh);
+    if (!m_isHalf) scene.SetStaged(fresh);
 
     // Restore the gizmo selection: kept primitives keep their `selected` flag, so
     // re-target whatever is still flagged (the destroyed source/edges drop out).

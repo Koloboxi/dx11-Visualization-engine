@@ -148,4 +148,26 @@ inline bool Load(const std::string& path, CSV3DData& out) {
     return !out.nodes.empty();
 }
 
+// Write a triangle surface back out in the same format: a "#nodes" section (with
+// the "node_id;x;y;z;T" header row the loader skips) followed by "#triangles".
+// Only those two sections are written - faces, edges and tets are dropped, which
+// is all a surface needs to be re-imported.
+inline bool SaveSurface(const std::string& path, const CSV3DData& d) {
+    if (d.nodes.empty() || d.triangles.empty()) return false;
+    std::ofstream f(path);
+    if (!f) return false;
+    f.precision(9);
+    f << "#nodes\n";
+    f << "node_id;x;y;z;T\n";
+    for (size_t i = 0; i < d.nodes.size(); ++i) {
+        const Node& n = d.nodes[i];
+        f << i << ';' << n.pos.x << ';' << n.pos.y << ';' << n.pos.z << ';' << n.T
+          << "\n";
+    }
+    f << "#triangles\n";
+    for (const XMUINT3& t : d.triangles)
+        f << t.x << ';' << t.y << ';' << t.z << "\n";
+    return (bool)f;
+}
+
 } // namespace CSV3DLoader

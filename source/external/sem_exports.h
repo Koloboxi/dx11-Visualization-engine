@@ -37,6 +37,22 @@ enum { SEM_RC_CANCELLED = -99 };
 // Progress reporting (SEM_GetProgress and friends) and SEM_GetLastError stay
 // process-global — they describe the call in flight, not a context.
 //
+// A context also has a KIND, which decides which calls it answers. A context
+// starts out as an ordinary pipeline context; loading a CLOSED surface into it
+// (SEM_LoadSurface3D) promotes it to a body context, and loading an open one
+// demotes it back. The body calls (SEM_*Body3D) work only in a body context and
+// fail elsewhere; the pipeline calls keep working in both kinds, so a closed
+// source can still be offset and meshed as before.
+enum SEM_ContextKind {
+    SEM_CTX_PIPELINE = 0,   // load -> offsets -> mesh -> thermal -> isosurface
+    SEM_CTX_BODY     = 1    // closed body: volume, parting plane, split into halves
+};
+
+// Kind of the context active on this thread, and of any context by id (negative
+// if there is no such context).
+SEM_API int SEM_GetContextKind(void);
+SEM_API int SEM_GetContextKindOf(int id);
+
 // SEM_CreateContext returns the new context's id (always > 0) with empty caches
 // and no working dir. Ids are never reused.
 SEM_API int SEM_CreateContext(void);
@@ -62,8 +78,11 @@ SEM_API int SEM_GetContexts(int* out, int max, int* count);
 // ===========================================================================
 
 // Set the directory for all serialized output of the active context. Empty/unset
-// -> OS temp dir. Files are named <source-stem><suffix>.
-SEM_API int SEM_SetWorkingDir(const char* path);
+// -> OS temp dir. Files are named <source-stem><suffix>. SEM_GetWorkingDir reads
+// it back (empty string when unset); the returned pointer belongs to the library
+// and is valid until the next SEM_SetWorkingDir on this context.
+SEM_API int         SEM_SetWorkingDir(const char* path);
+SEM_API const char* SEM_GetWorkingDir(void);
 
 // Human-readable reason for the most recent failure.
 SEM_API const char* SEM_GetLastError(void);
@@ -462,6 +481,12 @@ SEM_API double SEM_GetSurfaceAvgEdgeLen3D();
 // loaded surface is closed (watertight), else -1.0 (with SEM_GetLastError set).
 SEM_API double SEM_GetSourceVolume3D();
 
+// Path of the 3D source the active context loaded — which for a context the
+// library itself populated (a body half, see SEM_SplitBody3D) is the only way for
+// the caller to learn it. Empty when no source is loaded; the pointer belongs to
+// the library and is valid until the next load.
+SEM_API const char* SEM_GetSourcePath3D(void);
+
 // Read-only view of the current source surface — the active source as
 // SEM_ComputeOffsets3D/SEM_BuildMesh3D see it: subdivided (SEM_SubdivideSurface3D)
 // and clip-snapped (SEM_SetClipPlanes3D) in place. Fills coords/tris AND `normals`
@@ -523,3 +548,161 @@ struct SEM_ClipChangeView {
 // lifetime contract. The standalone SEM_OffsetRemeshInPlaneSurface3D is not logged
 // (it does not touch the pipeline cache).
 SEM_API int SEM_GetClipChanges3D(const SEM_ClipChangeView** out, int* count);
+
+
+// ===========================================================================
+//  Body contexts: a closed surface split by a parting plane
+// ===========================================================================
+
+// These answer only in a body context (SEM_CTX_BODY), which SEM_LoadSurface3D
+// creates when the loaded surface is closed. The body keeps the closed source and
+// its enclosed volume; a parting plane splits it into two open halves, and each
+// half becomes the source of its own ordinary pipeline context, so both can be
+// offset/meshed independently while the body context holds them together.
+
+// The enclosed volume cached on import (divergence theorem). Negative with
+// SEM_GetLastError set when the active context is not a body or the volume is
+// unavailable. Same number as SEM_GetSourceVolume3D, under the body's own name.
+SEM_API double SEM_GetBodyVolume3D(void);
+
+// Set the parting plane that splits the body. Same convention and the same
+// `on_plane_rel_tol` meaning as SEM_SetClipPlanes3D: vertices within that
+// fraction of the source's mean edge length are snapped exactly onto the plane
+// before the cut, so a nearly-planar ring of the body is cut through its own
+// vertices instead of being sliced past them. The normal need not be unit. Moving
+// the plane invalidates a previous split and taper.
+SEM_API int SEM_SetBodySplitPlane3D(SEM_Plane3D plane, double on_plane_rel_tol);
+SEM_API int SEM_GetBodySplitPlane3D(SEM_Plane3D* out_plane, double* out_rel_tol);
+
+// Split the body along the parting plane into two open halves and load each one
+// as the source of its own pipeline context (created here, one per half, reusing
+// the previous pair on a re-split). Each half is serialized next to the body's
+// session as <stem>_half_pos.csv3d / <stem>_half_neg.csv3d and gets a half_pos /
+// half_neg sub-folder as its own session, so both are reloadable on their own. The
+// cut runs through the same edge intersections on both sides, so the two halves
+// start out sharing their parting polyline exactly. Negative if no plane is set or
+// the plane misses the body.
+SEM_API int SEM_SplitBody3D(void);
+
+// The ids of the two dependent contexts the split created ("pos" is the half in
+// the plane's positive half-space). They are ordinary pipeline contexts and
+// outlive this body context, so the caller owns them from here on and is the one
+// to SEM_DestroyContext them. Negative before a split.
+SEM_API int SEM_GetBodyHalfContexts3D(int* ctx_pos, int* ctx_neg);
+
+// Read one half's current geometry (after the taper, if one was applied).
+// side >= 0 selects the positive half, side < 0 the negative one. See
+// SEM_MeshView for the lifetime/layout contract.
+SEM_API int SEM_GetBodyHalf3D(int side, SEM_MeshView* out);
+
+// Add draft ("taper") to both halves so that no wall is steeper than
+// `taper_angle_deg` from the draw direction, which for each half is the parting
+// plane normal pointing away from it. Material is only ADDED: vertices are pushed
+// outward IN the parting plane by
+//
+//     delta(P) = max over Q above P of [ (h_Q - h_P)*tan(angle) - |q_P - q_Q| ]
+//
+// where h is the height above the parting plane and q the in-plane projection, so
+// the draft cone is anchored on whichever point above binds the maximum — the
+// tangent point is found, not chosen. Therefore the top of each wall never moves
+// and the half keeps its height, while the half's cut outline GROWS outward (read
+// how far as contour_growth below).
+//
+// Note that the two halves grow by different amounts, so after a taper they no
+// longer share a parting contour; reconciling them to a common one is a separate
+// operation and is NOT done here.
+//
+// `remesh_iters` > 0 runs that many isotropic remesh sweeps over each tapered
+// half afterwards (SEM_RemeshStandaloneSurface3D's operator, with the parting
+// plane as a constraint so the grown outline keeps sliding within it). That is
+// what evens out the triangles the push stretched — the draft cone is otherwise
+// sampled at the wall's existing vertex rows. The per-facet fields of the taper
+// report are re-measured on the remeshed half, so they describe what the call
+// actually leaves behind; 0 skips the pass.
+//
+// The call is idempotent in its argument: it always tapers the pristine cut, so
+// calling it again with another angle replaces the draft rather than stacking a
+// second one. Both dependent contexts are reloaded from the new geometry
+// afterwards, which clears any pipeline stages they had built. Honours
+// SEM_RequestCancel (returns SEM_RC_CANCELLED).
+SEM_API int SEM_ApplyBodyTaper3D(double taper_angle_deg, int remesh_iters);
+
+// What the last taper did to one half, and how well it came out:
+//   verts_moved      - vertices displaced;
+//   facets_violating - facets whose draft is still below the target. This is the
+//                      independent per-facet check asin(n . w) >= angle, so it
+//                      also catches interior vertical walls and undercuts, which
+//                      the parting-contour criterion above does not look at;
+//   min_draft_deg    - the worst facet's draft, in degrees (90 = facet square to
+//                      the draw direction, 0 = wall parallel to it, negative =
+//                      undercut);
+//   contour_growth   - how far this half's parting outline grew outward, as a
+//                      perpendicular wall offset. A vertex where two walls meet
+//                      travels further than that (it is mitred so both walls end
+//                      up offset by the full amount), which is what makes the
+//                      outline keep its corners instead of rounding them off.
+// Any argument may be null. Negative before a split.
+SEM_API int SEM_GetBodyTaperReport3D(int side, int* verts_moved, int* facets_violating,
+                                     double* min_draft_deg, double* contour_growth);
+
+// The angle the last SEM_ApplyBodyTaper3D ran with; 0 when none has.
+SEM_API double SEM_GetBodyTaperAngle3D(void);
+
+// Run the per-facet draft check on one half against `taper_angle_deg` without
+// changing anything — the acceptance test, usable before a taper to see what
+// violates and after one to confirm it no longer does.
+SEM_API int SEM_MeasureBodyDraft3D(int side, double taper_angle_deg,
+                                   int* facets_violating, double* min_draft_deg);
+
+
+// ===========================================================================
+//  Standalone surface helpers: taper and isotropic remesh
+// ===========================================================================
+
+// Both take a surface as raw arrays (same layout as the Mesh fields: `xyz` is
+// 3 * num_nodes doubles, `tris` 3 * num_tris zero-based indices) and leave the
+// pipeline cache alone, like SEM_OffsetRemeshInPlaneSurface3D. Each keeps its
+// result in its own buffer, so the returned view stays valid until the next call
+// to the SAME function. Both honour SEM_RequestCancel.
+
+// Add draft to an open sheet about `parting` — the plane its boundary (or part of
+// it) lies in, which is also the draw direction. The kept side is the positive
+// half-space dot(n, p) + d >= 0, so point the normal at the side the surface is
+// on: vertices within `on_plane_rel_tol` of the plane (as a fraction of the mean
+// edge length) are snapped onto it first, and anything still poking through to
+// the far side is cut away before the taper runs.
+//
+// The taper itself is the same operation SEM_ApplyBodyTaper3D runs on a body
+// half: material is only added, vertices are pushed outward IN the plane, the top
+// of each wall stays put and the sheet's outline grows outward, and
+// `remesh_iters` sweeps of isotropic remesh (0 = none) clean up the stretched
+// triangles afterwards. Read what it did with SEM_GetLastTaperReport3D.
+SEM_API int SEM_TaperInPlaneSurface3D(SEM_Plane3D parting, double on_plane_rel_tol,
+                                      double taper_angle_deg, int remesh_iters,
+                                      const double* xyz, int num_nodes,
+                                      const int* tris, int num_tris,
+                                      SEM_MeshView* out);
+
+// What the last SEM_TaperInPlaneSurface3D did; the fields mean exactly what
+// SEM_GetBodyTaperReport3D's do. Any argument may be null. Negative if no
+// standalone taper has run.
+SEM_API int SEM_GetLastTaperReport3D(int* verts_moved, int* facets_violating,
+                                     double* min_draft_deg, double* contour_growth);
+
+// Isotropic remesh of a surface handed in directly: short-edge collapse,
+// long-edge split and tangential relaxation, `iterations` sweeps at a target edge
+// length of target_len_mult * the sheet's own average edge length
+// (target_len_mult <= 0 uses the median; iterations <= 0 is a no-op). Relaxation
+// projects back onto the input surface, so the SHAPE is preserved and only the
+// triangulation changes.
+//
+// `planes` (may be empty) are kept as constraints: a boundary vertex lying in one
+// of them slides within that plane instead of being frozen, which is what keeps
+// a cut outline from turning into a band of slivers. The first plane also cuts,
+// exactly as in SEM_TaperInPlaneSurface3D; the rest only constrain.
+SEM_API int SEM_RemeshStandaloneSurface3D(const SEM_Plane3D* planes, int count,
+                                          double on_plane_rel_tol,
+                                          double target_len_mult, int iterations,
+                                          const double* xyz, int num_nodes,
+                                          const int* tris, int num_tris,
+                                          SEM_MeshView* out);
