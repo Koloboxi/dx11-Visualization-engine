@@ -22,13 +22,16 @@ const char* SemSession::AsyncStageName() const {
         case 4:  return "Offset-remeshing surface";
         case 5:  return "Tapering surface";
         case 6:  return "Remeshing surface";
+        case 7:  return "Tapering both halves";
+        case 8:  return "Gluing the preform";
         default: return "Extracting isosurface";
     }
 }
 
 float SemSession::AsyncProgress() const {
-    // Two halves, one bar: each owns half of it.
-    if (IsBody()) {
+    // Two halves, one bar: each owns half of it. A body-taper job is the body's
+    // OWN stage, so it reports through the ordinary path below instead.
+    if (IsBody() && !m_job.running.load()) {
         const SemSession* h = BodyRunningHalf();
         const float base = (m_bodyPhase >= 2) ? 0.5f : 0.0f;
         return h ? base + 0.5f * h->AsyncProgress() : base;
@@ -140,6 +143,8 @@ void SemSession::RecomputeUpToAsync(Scene& scene, Stage to, bool silent) {
     m_job.runThermal  = runTherm;
     m_job.runIso      = runIso;
     m_job.runStandalone     = false;   // only ApplyStandaloneOffsetRemeshAsync sets this
+    m_job.runBodyTaper      = false;   // only ApplyTaper sets this
+    m_job.runBodyPreform    = false;   // only ApplyPreform sets this
     // Only the stage whose Apply was pressed (== `to`) is shown; the prerequisite
     // stages this run had to compute to reach it are produced hidden (the user
     // reveals them with the tree eye). The thermal solve's product is the mesh,
@@ -220,6 +225,8 @@ void SemSession::ApplyStandaloneOffsetRemeshAsync(Scene& scene, bool silent) {
 
     m_job.runOffsets = m_job.runMesh = m_job.runThermal = m_job.runIso = false;
     m_job.runStandalone     = true;
+    m_job.runBodyTaper      = false;
+    m_job.runBodyPreform    = false;
     m_resultPath.clear();
     m_job.isoVisible = true;
     m_job.totalStages.store(1);
@@ -263,6 +270,8 @@ bool SemSession::BeginStandaloneJob(Scene& scene, bool silent, int stageKind) {
 
     m_job.runOffsets = m_job.runMesh = m_job.runThermal = m_job.runIso = false;
     m_job.runStandalone = m_job.runTaper = m_job.runRemesh = false;
+    m_job.runBodyTaper = false;
+    m_job.runBodyPreform = false;
     m_resultPath.clear();
     m_job.isoVisible = true;
     m_job.totalStages.store(1);
@@ -441,6 +450,24 @@ void SemSession::PollAsync(Scene& scene) {
         if (m_job.runIso     && m_job.isoPath.empty())     m_dirty[STAGE_ISOSURFACE] = true;
     }
 
+    // A finished body taper rebuilds both half primitives and writes its own
+    // status line, so it runs before the generic one below.
+    if (m_job.runBodyTaper && !cancelled) {
+        FinishBodyTaper(scene);
+        m_job.runBodyTaper = false;
+        RefreshClipChanges(scene);
+        scene.UpdateLight();
+        return;
+    }
+    m_job.runBodyTaper = false;
+    // Likewise the preform, which adds its own primitive and status line.
+    if (m_job.runBodyPreform) {
+        m_job.runBodyPreform = false;
+        if (cancelled) snprintf(status, sizeof(status), "Cancelled.");
+        else           FinishBodyPreform(scene);
+        return;
+    }
+
     if (AnyClipMirror()) RebuildClipMirrors(scene);
     // The on-plane overlay also covers the source/final isosurfaces, so rebuild it
     // once a pipeline run has (re)extracted them.
@@ -468,7 +495,7 @@ void SemSession::PollAsync(Scene& scene) {
 }
 
 void SemSession::CancelAsync() {
-    if (IsBody()) {
+    if (IsBody() && !m_job.running.load()) {
         // Stop the half that is running and do not start the other one.
         m_bodyPhase = 0;
         for (SemSession* h : m_half) if (h && h->AsyncRunning()) h->CancelAsync();
@@ -690,6 +717,37 @@ void SemSession::PipelineWorkerBody() {
         if (rc != 0) return Fail("SEM_RemeshStandaloneSurface3D failed (" + std::to_string(rc) + ")");
         m_job.isoDisplayData = ViewToData(out);
         m_job.isoPath = m_job.expIsoRemesh;
+        ++idx;
+    }
+
+    // The body's own stage: the core tapers both halves (and runs their remesh
+    // sweeps) inside one call, reporting progress across the whole of it.
+    if (m_job.runBodyTaper) {
+        if (stopIfCancelled()) return;
+        m_job.stageKind.store(7);
+        m_job.progressStage.store(idx);
+        Timer t; t.Restart();
+        const int rc = SafeApplyBodyTaper3D(m_job.tpAngle, m_job.tpRemeshIters);
+        m_job.taperMs = t.GetMillisecondsElapsed();
+        if (rc == -100) return Fail("Body taper crashed (access violation caught).");
+        if (rc == SEM_RC_CANCELLED) return stageCancelled(m_job.taperMs);
+        if (rc != 0) return Fail("SEM_ApplyBodyTaper3D failed (" + std::to_string(rc) + ")");
+        ++idx;
+    }
+
+    // The body gluing its halves into the preform: one core call, which reads the
+    // halves' iso surfaces out of their own contexts itself.
+    if (m_job.runBodyPreform) {
+        if (stopIfCancelled()) return;
+        m_job.stageKind.store(8);
+        m_job.progressStage.store(idx);
+        Timer t; t.Restart();
+        const int rc = SafeBuildBodyPreform3D(m_job.pfSource, m_job.pfAngle, m_job.pfTarget,
+                                              m_job.pfShift, m_job.pfStep);
+        m_job.preformMs = t.GetMillisecondsElapsed();
+        if (rc == -100) return Fail("Preform crashed (access violation caught).");
+        if (rc == SEM_RC_CANCELLED) return stageCancelled(m_job.preformMs);
+        if (rc != 0) return Fail("SEM_BuildBodyPreform3D failed (" + std::to_string(rc) + ")");
         ++idx;
     }
 

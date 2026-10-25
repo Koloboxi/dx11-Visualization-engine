@@ -13,6 +13,12 @@ const XMFLOAT4 kHalfPosFront(0.42f, 0.66f, 0.90f, 1.0f);   // cool: positive sid
 const XMFLOAT4 kHalfPosBack (0.22f, 0.36f, 0.56f, 1.0f);
 const XMFLOAT4 kHalfNegFront(0.93f, 0.72f, 0.38f, 1.0f);   // warm: negative side
 const XMFLOAT4 kHalfNegBack (0.60f, 0.42f, 0.16f, 1.0f);
+// A skirt is drawn in a lighter shade of its half's colour.
+const XMFLOAT4 kHalfPosSkirt(0.74f, 0.85f, 0.96f, 1.0f);
+const XMFLOAT4 kHalfNegSkirt(0.98f, 0.88f, 0.70f, 1.0f);
+// The glued preform is neither half, so it gets a third tint of its own.
+const XMFLOAT4 kPreformFront(0.56f, 0.80f, 0.50f, 1.0f);
+const XMFLOAT4 kPreformBack (0.30f, 0.48f, 0.26f, 1.0f);
 
 const char* kSplitOnPlanePrefix = "split_on_plane_";
 
@@ -106,6 +112,7 @@ void SemSession::RemoveSplitPlane(Scene& scene) {
 
 void SemSession::DropHalves(Scene& scene) {
     DropSplitOnPlane(scene);
+    DropPreform(scene);
     for (int i = 0; i < 2; ++i) {
         if (m_half[i]) {
             m_half[i]->Release();       // destroys that half's SEM context
@@ -120,24 +127,65 @@ void SemSession::DropHalves(Scene& scene) {
     m_bodyPhase = 0;
 }
 
-void SemSession::BuildHalfPrim(Scene& scene, int side) {
+Primitive* SemSession::AddHalfSurface(Scene& scene, CSV3DLoader::CSV3DData data,
+                                      const std::string& name, SceneNode* parent,
+                                      int side, const XMFLOAT4& plane, bool skirt) {
     const XMFLOAT4& front = (side == 0) ? kHalfPosFront : kHalfNegFront;
     const XMFLOAT4& back  = (side == 0) ? kHalfPosBack  : kHalfNegBack;
-    Primitive* p = scene.AddFromCSV3DData(m_halfData[side],
-                                          std::string(HalfTag(side)) + "_" + Stem(m_srcPath),
-                                          AttachParent(), nullptr,
-                                          Colors::BLUE, Colors::RED);
-    if (!p) return;
+    const XMFLOAT4& tint  = (side == 0) ? kHalfPosSkirt : kHalfNegSkirt;
+    bool shaded = false;
+    if (skirt && !data.nodes.empty()) {
+        // T = 1 on the far side of the parting plane (the skirt), 0 on the half.
+        XMFLOAT3 lo = data.nodes[0].pos, hi = lo;
+        for (const auto& n : data.nodes) {
+            lo.x = (std::min)(lo.x, n.pos.x); hi.x = (std::max)(hi.x, n.pos.x);
+            lo.y = (std::min)(lo.y, n.pos.y); hi.y = (std::max)(hi.y, n.pos.y);
+            lo.z = (std::min)(lo.z, n.pos.z); hi.z = (std::max)(hi.z, n.pos.z);
+        }
+        const float dx = hi.x - lo.x, dy = hi.y - lo.y, dz = hi.z - lo.z;
+        const float tol = 1e-5f * std::sqrt(dx * dx + dy * dy + dz * dz);
+        const float s   = (side == 0) ? 1.0f : -1.0f;
+        for (auto& n : data.nodes) {
+            const float h = s * (plane.x * n.pos.x + plane.y * n.pos.y + plane.z * n.pos.z + plane.w);
+            n.T = (h < -tol) ? 1.0f : 0.0f;
+            shaded = shaded || (n.T > 0.5f);
+        }
+    }
+    Primitive* p = shaded
+        ? scene.AddFromCSV3DData(data, name, parent, nullptr, front, tint)
+        : scene.AddFromCSV3DData(data, name, parent, nullptr, Colors::BLUE, Colors::RED);
+    if (!p) return nullptr;
     ConfigureSurface3D(p);
     p->SetColor(front);
-    p->SetUseVertexColor(false);
+    p->SetUseVertexColor(shaded);
     p->SetTwoSided(true, back);
-    m_halfPrim[side] = p;
+    return p;
+}
+
+void SemSession::BuildHalfPrim(Scene& scene, int side) {
+    const XMFLOAT4 plane = m_splitNode ? m_splitNode->GetPlane() : XMFLOAT4(0.0f, 0.0f, 1.0f, 0.0f);
+    m_halfPrim[side] = AddHalfSurface(scene, m_halfData[side],
+                                      std::string(HalfTag(side)) + "_" + Stem(m_srcPath),
+                                      AttachParent(), side, plane, m_skirtActive);
+    if (SemSession* hs = m_half[side]) {
+        hs->m_halfStyled = true;
+        hs->m_halfSide   = side;
+        hs->m_halfPlane  = plane;
+        hs->m_halfSkirt  = m_skirtActive;
+    }
 }
 
 void SemSession::PushSplitClipPlane(int side) {
     SemSession* hs = m_half[side];
     if (!hs || !m_splitNode) return;
+    // An extended half runs its stages on half + skirt: clipping it at the parting
+    // plane would cut the skirt straight off again.
+    if (m_skirtActive) {
+        hs->Activate();
+        SEM_ClearClipPlanes3D();
+        Activate();
+        return;
+    }
     const XMFLOAT4 pl = m_splitNode->GetPlane();        // unit normal, kept side = +n
     const float    s  = (side == 0) ? 1.0f : -1.0f;     // half 1 keeps the other side
     const SEM_Plane3D cp{ { s * pl.x, s * pl.y, s * pl.z }, s * pl.w };
@@ -201,6 +249,10 @@ bool SemSession::ApplySplit(Scene& scene, bool silent) {
         BuildHalfPrim(scene, s);
         m_half[s] = new SemSession();
         m_half[s]->BindExisting(scene, ctx[s], m_halfPrim[s], srcPath, workDir);
+        m_half[s]->m_halfStyled = true;
+        m_half[s]->m_halfSide   = s;
+        m_half[s]->m_halfPlane  = m_splitNode->GetPlane();
+        m_half[s]->m_halfSkirt  = m_skirtActive;
         PushSplitClipPlane(s);
     }
 
@@ -222,48 +274,225 @@ bool SemSession::ApplyTaper(Scene& scene, bool silent) {
     }
     if (AsyncRunning()) return false;
 
-    Activate();
-    const int rc = SEM_ApplyBodyTaper3D((double)taperAngle, taperRemeshIters);
-    if (rc == SEM_RC_CANCELLED) {
-        snprintf(status, sizeof(status), "Taper cancelled.");
-        return false;
-    }
-    if (!CheckRc(scene, silent, "SEM_ApplyBodyTaper3D", rc,
-                 { "", "Not a body context", "Not split yet",
-                   "Positive half failed", "Negative half failed",
-                   "Could not publish a half" }))
-        return false;
+    // The taper is the body's own heavy stage - the push over both halves plus
+    // their remesh sweeps - so it runs on the worker and reports progress there,
+    // like every other 3D stage. PollAsync picks the result up.
+    if (m_job.worker.joinable()) m_job.worker.join();
+    m_job.runOffsets = m_job.runMesh = m_job.runThermal = m_job.runIso = false;
+    m_job.runStandalone = m_job.runTaper = m_job.runRemesh = false;
+    m_job.runBodyTaper  = true;
+    m_job.runBodyPreform = false;
+    m_job.tpAngle       = (double)taperAngle;
+    m_job.tpRemeshIters = taperRemeshIters;
+    m_job.offsetsPath.clear();
+    m_job.meshPath.clear();
+    m_job.isoPath.clear();
+    m_job.error.clear();
+    m_job.offsetsMs = m_job.meshMs = m_job.thermalMs = m_job.isoMs = -1.0;
+    m_job.taperMs = -1.0;
+    m_job.totalStages.store(1);
+    m_job.stageKind.store(7);
+    m_job.progressStage.store(0);
+    m_job.ok.store(false);
+    m_job.done.store(false);
+    m_job.cancel.store(false);
+    m_job.cancelled.store(false);
+    m_progressShown.store(0.0f);
+    m_job.running.store(true);
+    snprintf(status, sizeof(status), "Tapering both halves...");
+    m_job.worker = std::thread(&SemSession::PipelineWorkerBody, this);
+    return true;
+}
 
+void SemSession::FinishBodyTaper(Scene& scene) {
+    Activate();
     // The core re-tapered from the pristine cut and reloaded both half contexts,
     // so every stage those halves had built is gone. Replace their primitives with
-    // the new geometry and reset their stage state.
+    // the new geometry and reset their stage state. It also dropped the preform,
+    // which was glued from the old halves.
+    DropPreform(scene);
+    RefreshHalfPrims(scene);
+
+    int moved = 0, bad = 0;
+    double worst = 0.0, growth = 0.0;
+    TaperReport(+1, moved, bad, worst, growth);
+    snprintf(status, sizeof(status),
+             "Taper %.2f deg in %.0f ms: moved %d, %d facets short, min draft %.2f deg, "
+             "outline +%.4f.",
+             taperAngle, m_job.taperMs, moved, bad, worst, growth);
+}
+
+void SemSession::RefreshHalfPrims(Scene& scene) {
     DropSplitOnPlane(scene);
     for (int s = 0; s < 2; ++s) {
+        // Read what the half's context holds - half + skirt when the skirt is on -
+        // so the primitive shows exactly the surface its stages will run on.
+        SemSession* hs = m_half[s];
+        if (!hs) continue;
+        hs->Activate();
         SEM_MeshView v{};
-        if (SEM_GetBodyHalf3D((s == 0) ? +1 : -1, &v) != 0 || v.num_nodes <= 0) continue;
-        m_halfData[s] = ViewToData(v);
+        const bool got = (SEM_GetSourceSurface3D(&v) == 0 && v.num_nodes > 0);
+        if (got) m_halfData[s] = ViewToData(v);
+        Activate();
+        if (!got) continue;
 
         const bool wasVisible = m_halfPrim[s] ? m_halfPrim[s]->visible : true;
-        if (m_half[s]) m_half[s]->RebindHalf(scene, nullptr);
+        hs->RebindHalf(scene, nullptr);
         if (m_halfPrim[s] && Alive(scene, m_halfPrim[s])) scene.RemovePrimitive(m_halfPrim[s]);
         m_halfPrim[s] = nullptr;
         BuildHalfPrim(scene, s);
         if (m_halfPrim[s]) m_halfPrim[s]->visible = wasVisible;
-        if (m_half[s]) m_half[s]->RebindHalf(scene, m_halfPrim[s]);
+        hs->RebindHalf(scene, m_halfPrim[s]);
         // Republishing reloaded the half's source, which cleared its clip planes.
         PushSplitClipPlane(s);
     }
     for (int i = 0; i <= STAGE_ISOSURFACE; ++i) m_dirty[i] = true;
     if (m_splitOnPlaneShown) BuildSplitOnPlane(scene);
     scene.UpdateLight();
+}
 
-    int moved = 0, bad = 0;
-    double worst = 0.0, growth = 0.0;
-    TaperReport(+1, moved, bad, worst, growth);
-    snprintf(status, sizeof(status),
-             "Taper %.2f deg: moved %d, %d facets short, min draft %.2f deg, outline +%.4f.",
-             taperAngle, moved, bad, worst, growth);
+bool SemSession::ApplySkirt(Scene& scene, bool silent) {
+    if (!IsBody()) return false;
+    if (AsyncRunning()) return false;
+    Activate();
+    const double depth = !skirtEnabled ? 0.0 : (skirtDepth > 0.0f ? (double)skirtDepth : -1.0);
+    if (!CheckRc(scene, silent, "SEM_SetBodySkirt3D", SEM_SetBodySkirt3D(depth),
+                 { "", "Not a body context", "Could not extend or publish the halves" }))
+        return false;
+    m_skirtActive = (depth != 0.0);
+    if (!m_bodySplit) {
+        snprintf(status, sizeof(status), m_skirtActive ? "Skirt set; it is built on the split."
+                                                       : "Skirt off.");
+        return true;
+    }
+    RefreshHalfPrims(scene);
+    double d = 0.0, rp = 0.0, rn = 0.0;
+    SkirtState(d, rp, rn);
+    if (m_skirtActive)
+        snprintf(status, sizeof(status), "Skirt: + half down %.4g, - half down %.4g.", rp, rn);
+    else
+        snprintf(status, sizeof(status), "Skirt off: the halves are clipped at the plane again.");
     return true;
+}
+
+bool SemSession::SkirtState(double& depth, double& reached_pos, double& reached_neg) const {
+    depth = reached_pos = reached_neg = 0.0;
+    if (!IsBody()) return false;
+    Activate();
+    return SEM_GetBodySkirt3D(&depth, &reached_pos, &reached_neg) == 0;
+}
+
+bool SemSession::HalvesHaveIsosurfaces() const {
+    for (const SemSession* h : m_half)
+        if (!h || !h->IsolinePrim()) return false;
+    return true;
+}
+
+bool SemSession::ApplyPreform(Scene& scene, bool silent) {
+    if (!IsBody() || !m_bodySplit) {
+        Report(scene, silent, "The preform needs a split body.");
+        return false;
+    }
+    if (AsyncRunning()) return false;
+    if (preformSource == PREFORM_FROM_ISOSURFACES && !HalvesHaveIsosurfaces()) {
+        Report(scene, silent, "Extract the isosurface on both halves first.");
+        return false;
+    }
+    double target = 0.0;
+    if (preformSizing == PREFORM_MATCH_BODY) {
+        target = BodyVolume();
+        if (target <= 0.0) {
+            Report(scene, silent, "The body has no enclosed volume to match.");
+            return false;
+        }
+    } else if (preformSizing == PREFORM_MATCH_VOLUME) {
+        target = preformVolume;
+        if (target <= 0.0) {
+            Report(scene, silent, "Enter a positive target volume.");
+            return false;
+        }
+    }
+
+    if (m_job.worker.joinable()) m_job.worker.join();
+    m_job.runOffsets = m_job.runMesh = m_job.runThermal = m_job.runIso = false;
+    m_job.runStandalone = m_job.runTaper = m_job.runRemesh = false;
+    m_job.runBodyTaper   = false;
+    m_job.runBodyPreform = true;
+    m_job.pfSource = (preformSource == PREFORM_FROM_ISOSURFACES) ? SEM_PREFORM_FROM_ISOSURFACES
+                                                                 : SEM_PREFORM_FROM_HALVES;
+    m_job.pfAngle  = (double)taperAngle;
+    m_job.pfTarget = target;
+    m_job.pfShift  = (preformSizing == PREFORM_FIXED_SHIFT) ? (double)preformShift : 0.0;
+    m_job.pfStep   = (double)preformGridStep;
+    m_job.offsetsPath.clear();
+    m_job.meshPath.clear();
+    m_job.isoPath.clear();
+    m_job.error.clear();
+    m_job.offsetsMs = m_job.meshMs = m_job.thermalMs = m_job.isoMs = -1.0;
+    m_job.preformMs = -1.0;
+    m_job.totalStages.store(1);
+    m_job.stageKind.store(8);
+    m_job.progressStage.store(0);
+    m_job.ok.store(false);
+    m_job.done.store(false);
+    m_job.cancel.store(false);
+    m_job.cancelled.store(false);
+    m_progressShown.store(0.0f);
+    m_job.running.store(true);
+    snprintf(status, sizeof(status), "Gluing the halves into a preform...");
+    m_job.worker = std::thread(&SemSession::PipelineWorkerBody, this);
+    return true;
+}
+
+void SemSession::DropPreform(Scene& scene) {
+    if (m_preformPrim && Alive(scene, m_preformPrim)) scene.RemovePrimitive(m_preformPrim);
+    m_preformPrim = nullptr;
+    m_preformData = CSV3DLoader::CSV3DData();
+}
+
+void SemSession::FinishBodyPreform(Scene& scene) {
+    Activate();
+    SEM_MeshView v{};
+    if (SEM_GetBodyPreform3D(&v) != 0 || v.num_nodes <= 0) {
+        Report(scene, false, "Preform: the core returned no surface" + SemDetail());
+        return;
+    }
+    const bool wasVisible = m_preformPrim ? m_preformPrim->visible : true;
+    DropPreform(scene);
+    m_preformData = ViewToData(v);
+    Primitive* p = scene.AddFromCSV3DData(m_preformData, "preform_" + Stem(m_srcPath),
+                                          AttachParent(), nullptr,
+                                          Colors::BLUE, Colors::RED);
+    if (!p) return;
+    ConfigureSurface3D(p);
+    p->SetColor(kPreformFront);
+    p->SetUseVertexColor(false);
+    p->SetTwoSided(true, kPreformBack);
+    p->visible = wasVisible;
+    m_preformPrim = p;
+    // The preform sits right on top of the halves it was glued from, so a fresh
+    // one is shown on its own; the halves stay a checkbox away.
+    for (Primitive* hp : m_halfPrim)
+        if (hp && Alive(scene, hp)) scene.SetNodeVisibleCascade(hp, false);
+    m_preformPath = SaveNextToSource("_preform", m_preformData);
+    scene.UpdateLight();
+
+    double shift = 0.0, volume = 0.0, step = 0.0, added = 0.0, worst = 0.0;
+    PreformReport(shift, volume, step, added, worst);
+    snprintf(status, sizeof(status),
+             "Preform in %.0f ms: volume %.6g, shift %.4g per half, min draft %.2f deg%s%s.",
+             m_job.preformMs, volume, shift, worst,
+             m_preformPath.empty() ? "" : ", saved ",
+             m_preformPath.empty() ? "" : BaseName(m_preformPath).c_str());
+}
+
+bool SemSession::PreformReport(double& shift, double& volume, double& grid_step,
+                               double& draft_volume, double& min_draft_deg) const {
+    shift = volume = grid_step = draft_volume = min_draft_deg = 0.0;
+    if (!IsBody() || !m_bodySplit) return false;
+    Activate();
+    return SEM_GetBodyPreformReport3D(&shift, &volume, &grid_step,
+                                      &draft_volume, &min_draft_deg) == 0;
 }
 
 bool SemSession::TaperReport(int side, int& verts_moved, int& facets_violating,

@@ -625,6 +625,10 @@ SEM_API int SEM_GetBodyHalf3D(int side, SEM_MeshView* out);
 // second one. Both dependent contexts are reloaded from the new geometry
 // afterwards, which clears any pipeline stages they had built. Honours
 // SEM_RequestCancel (returns SEM_RC_CANCELLED).
+//
+// SEM_GetProgress runs 0..1 across the WHOLE call - both halves and, when asked
+// for, their remesh sweeps - and SEM_GetProgressStage names the phase inside it
+// ("Offsetting draft walls", "Isotropic remesh sweeps", ...).
 SEM_API int SEM_ApplyBodyTaper3D(double taper_angle_deg, int remesh_iters);
 
 // What the last taper did to one half, and how well it came out:
@@ -648,11 +652,87 @@ SEM_API int SEM_GetBodyTaperReport3D(int side, int* verts_moved, int* facets_vio
 // The angle the last SEM_ApplyBodyTaper3D ran with; 0 when none has.
 SEM_API double SEM_GetBodyTaperAngle3D(void);
 
+// Extend both halves past the parting plane by a "skirt": each half's boundary is
+// swept away from it, widening outward at the angle of the last taper (straight
+// down before any taper), so the halves' draft walls carry on below the plane.
+// The dependent contexts are then loaded with half + skirt instead of the bare
+// half, so their offsets, mesh, thermal solve and isosurface run on the extended
+// surface - near the parting line the field is then an interior one, and the
+// isosurface follows the drafted wall there instead of meeting the plane square on.
+// Such halves must NOT be clipped at the parting plane (that would cut the skirt
+// off again); cut or glue the results afterwards (SEM_BuildBodyPreform3D).
+//
+// depth > 0: every skirt goes that far below the plane; depth < 0: each half's
+// skirt goes down to the OTHER half's height ("to the far side of the other half");
+// depth == 0: no skirt. The setting is kept by the body and re-applied on every
+// split and taper. Applying it to a split body reloads both dependent contexts,
+// which clears their pipeline stages. Where the outline is concave tighter than the
+// skirt's reach the rings are relaxed instead of looping over themselves; a loop that
+// cannot be relaxed (a hole closing up) stops early - see the reached depths below.
+SEM_API int SEM_SetBodySkirt3D(double depth);
+
+// The skirt setting, and how deep each half's skirt actually reached (the least
+// over its boundary loops; 0 before a split or with the skirt off).
+SEM_API int SEM_GetBodySkirt3D(double* depth, double* reached_pos, double* reached_neg);
+
+// One half as its dependent context holds it: half + skirt (just the half with the
+// skirt off). side >= 0 selects the positive half. See SEM_MeshView.
+SEM_API int SEM_GetBodyHalfExtended3D(int side, SEM_MeshView* out);
+
 // Run the per-facet draft check on one half against `taper_angle_deg` without
 // changing anything — the acceptance test, usable before a taper to see what
 // violates and after one to confirm it no longer does.
 SEM_API int SEM_MeasureBodyDraft3D(int side, double taper_angle_deg,
                                    int* facets_violating, double* min_draft_deg);
+
+// Where SEM_BuildBodyPreform3D takes the two halves from: the body's own halves
+// (as split, or as last tapered), or the latest iso surface each half's pipeline
+// context extracted (the remeshed one when its offset-remesh ran).
+enum SEM_PreformSource { SEM_PREFORM_FROM_HALVES = 0, SEM_PREFORM_FROM_ISOSURFACES = 1 };
+
+// Glue the two halves back into ONE closed, drafted body - the preform - by
+// intersecting them, each extended past the parting plane by its own draft walls,
+// after moving them toward each other by `shift` (each; negative = apart).
+//
+// Each half is read as a height field over the parting plane and replaced by its
+// draft-cone dilation (the same cone-max as the taper, at `draft_angle_deg`): that
+// leaves a drafted half alone, fills it in wherever it falls short of the draft
+// (e.g. an iso surface meeting an adiabatic clip plane square on), and outside its
+// footprint continues every wall at exactly the draft angle. The result is the
+// region between the two extended halves, so its parting line is where their
+// walls meet and the two halves share it no matter how their own outlines differ.
+//
+// target_volume > 0: the shift is solved for so the preform encloses that volume
+// (the enclosed volume falls strictly as the shift grows); `shift` is ignored.
+// target_volume <= 0: `shift` is used as given (0 = halves where they are).
+// draft_angle_deg <= 0 uses the angle of the last SEM_ApplyBodyTaper3D.
+// grid_step is the in-plane sampling step (<= 0: a quarter of the halves' mean
+// edge sum, i.e. about half an edge); the surface is rebuilt on that grid, so
+// detail finer than it is smoothed away. Capped at a few million grid nodes.
+//
+// Written to <stem>_preform.csv3d in the body's working dir. Honours
+// SEM_RequestCancel (returns SEM_RC_CANCELLED). Moving the plane, re-splitting or
+// re-tapering discards the preform.
+SEM_API int SEM_BuildBodyPreform3D(int source, double draft_angle_deg,
+                                   double target_volume, double shift, double grid_step);
+
+// The last preform. See SEM_MeshView for the lifetime/layout contract.
+SEM_API int SEM_GetBodyPreform3D(SEM_MeshView* out);
+
+// What the last preform came out as:
+//   shift         - the shift actually applied (solved or given);
+//   volume        - its enclosed volume, measured on the output mesh;
+//   grid_step     - the in-plane sampling step used;
+//   draft_volume  - volume the draft cones added on the halves' own sides of the
+//                   parting plane: ~0 when both halves already had the draft,
+//                   the whole wall wedge when their walls were vertical;
+//   min_draft_deg - the least drafted facet of the output. Smooth inputs reach
+//                   the target; a sharp corner of an input (a cone apex) leaves
+//                   the few facets around it somewhat under it, because no grid
+//                   triangulation follows a point-like crease.
+// Any argument may be null.
+SEM_API int SEM_GetBodyPreformReport3D(double* shift, double* volume, double* grid_step,
+                                       double* draft_volume, double* min_draft_deg);
 
 
 // ===========================================================================

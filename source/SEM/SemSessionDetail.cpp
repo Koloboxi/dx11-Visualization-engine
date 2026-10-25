@@ -454,6 +454,15 @@ int SafeExtractIsosurface3D(double value, SEM_Vec3 axis, double offset_value, do
                                            target_len_mult, iterations); }
     __except (EXCEPTION_EXECUTE_HANDLER) { return -100; }
 }
+int SafeApplyBodyTaper3D(double taper_angle_deg, int remesh_iters) {
+    __try { return SEM_ApplyBodyTaper3D(taper_angle_deg, remesh_iters); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return -100; }
+}
+int SafeBuildBodyPreform3D(int source, double draft_angle_deg, double target_volume,
+                           double shift, double grid_step) {
+    __try { return SEM_BuildBodyPreform3D(source, draft_angle_deg, target_volume, shift, grid_step); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return -100; }
+}
 int SafeTaperInPlaneSurface3D(SEM_Plane3D parting, double on_plane_rel_tol,
                               double taper_angle_deg, int remesh_iters,
                               const double* xyz, int num_nodes,

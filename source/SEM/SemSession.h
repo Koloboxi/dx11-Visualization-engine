@@ -187,6 +187,23 @@ public:
     // triangles it moves, so this is what leaves the draft cone evenly meshed;
     // 0 skips it and keeps the taper's own triangulation.
     int   taperRemeshIters = 2;
+
+    // The skirt: both halves extended past the parting plane by their own draft
+    // walls (SEM_SetBodySkirt3D). skirtDepth <= 0 extends each down to the other
+    // half's height.
+    bool  skirtEnabled = false;
+    float skirtDepth   = 0.0f;
+
+    // The preform (stage after the isosurface): the two halves glued back into one
+    // closed drafted body, at the taper angle above. Which halves, and what fixes
+    // how far they are moved together:
+    enum PreformSource  { PREFORM_FROM_HALVES = 0, PREFORM_FROM_ISOSURFACES = 1 };
+    enum PreformSizing  { PREFORM_MATCH_BODY = 0, PREFORM_MATCH_VOLUME = 1, PREFORM_FIXED_SHIFT = 2 };
+    int    preformSource   = PREFORM_FROM_ISOSURFACES;
+    int    preformSizing   = PREFORM_MATCH_BODY;
+    double preformVolume   = 0.0;       // PREFORM_MATCH_VOLUME target
+    float  preformShift    = 0.0f;      // PREFORM_FIXED_SHIFT, per half (negative = apart)
+    float  preformGridStep = 0.0f;      // in-plane sampling step; <= 0 = automatic
     // SESSION_REMESH knobs: target edge length as a multiple of the surface's own
     // average (<= 0 uses the median), and the sweep count.
     float rmTargetMult  = 1.0f;
@@ -235,6 +252,29 @@ public:
     // nothing — so the same number can be read before a taper and after it.
     bool MeasureDraftNow(int side, double angle_deg,
                          int& facets_violating, double& min_draft_deg) const;
+
+    // Push the skirt setting to the core. On a split body that reloads both halves
+    // as half + skirt (clearing their stages) and rebuilds their primitives, the
+    // skirt drawn in a lighter tint of the half's colour. With a skirt the parting
+    // plane is no longer the halves' clip plane: their stages run on the extended
+    // surfaces, and the preform cuts the results back together.
+    bool ApplySkirt(Scene& scene, bool silent);
+    bool SkirtActive() const { return m_skirtActive; }
+    // The core's setting and how deep each half's skirt reached.
+    bool SkirtState(double& depth, double& reached_pos, double& reached_neg) const;
+
+    // Glue the two halves into the preform (SEM_BuildBodyPreform3D) on the worker.
+    // The result is shown as its own primitive under the body and written next to
+    // the source as <stem>_preform.csv3d.
+    bool ApplyPreform(Scene& scene, bool silent);
+    // True when both halves have an extracted isosurface to glue.
+    bool HalvesHaveIsosurfaces() const;
+    // What the last preform came out as (SEM_GetBodyPreformReport3D). False when
+    // there is none.
+    bool PreformReport(double& shift, double& volume, double& grid_step,
+                       double& draft_volume, double& min_draft_deg) const;
+    Primitive*         PreformPrim() const { return m_preformPrim; }
+    const std::string& PreformPath() const { return m_preformPath; }
 
     // Overlay of the geometry of both halves that lies exactly on the parting
     // plane — the cut outline and any face the plane snapped flat.
@@ -515,9 +555,13 @@ public:
     // Open Explorer on the result folder with the file selected. False when there
     // is no result, or it has since been deleted.
     bool RevealResult() const;
+    // The same for any file.
+    static bool RevealFile(const std::string& path);
     // Write the standalone result currently in m_isoData next to the source as
     // "<stem><tag>.csv3d". Returns the path written, empty when it could not be.
     std::string SaveStandaloneResult(const char* tag);
+    // The same for any surface: next to the source, else the session folder.
+    std::string SaveNextToSource(const char* tag, const CSV3DLoader::CSV3DData& data);
     void PollAsync(Scene& scene);
     void CancelAsync();
     bool AsyncCancelRequested() const;
@@ -587,6 +631,14 @@ private:
     // source into a fresh context, wiping the cache it just computed into.
     bool           m_isHalf    = false;
     bool           m_bodySplit = false;
+    bool           m_skirtActive = false;  // the core extends the halves
+    // A half's own look, kept so that rebuilding its primitive (after a subdivide)
+    // gives back the same tint: which side it is, the parting plane (normal toward
+    // the positive side), and whether its skirt is tinted apart.
+    bool           m_halfStyled = false;
+    int            m_halfSide   = 0;
+    XMFLOAT4       m_halfPlane  = XMFLOAT4(0.0f, 0.0f, 1.0f, 0.0f);
+    bool           m_halfSkirt  = false;
     ClipPlaneNode* m_splitNode  = nullptr;   // the parting plane's visual rectangle
     SceneNode*     m_splitGroup = nullptr;
     Primitive*     m_halfPrim[2] = { nullptr, nullptr };   // 0 = positive side
@@ -600,6 +652,14 @@ private:
 
     void DropHalves(Scene& scene);
     void BuildHalfPrim(Scene& scene, int side);
+    // A half's surface primitive in that half's colour. With `skirt`, the nodes on
+    // the far side of the parting plane are tinted lighter, so the extension reads
+    // apart from the half itself.
+    Primitive* AddHalfSurface(Scene& scene, CSV3DLoader::CSV3DData data, const std::string& name,
+                              SceneNode* parent, int side, const XMFLOAT4& plane, bool skirt);
+    // Re-read both halves from their contexts (what their pipelines actually run
+    // on) and rebuild their primitives and stage state.
+    void RefreshHalfPrims(Scene& scene);
     // Give one half's context the parting plane as its clip plane, oriented so the
     // kept half-space is that half's own side. Both halves therefore carry the
     // same plane with opposite cut directions, and every stage they run (offset
@@ -613,6 +673,16 @@ private:
     void PushStageParams();
     void BuildSplitOnPlane(Scene& scene);
     void DropSplitOnPlane(Scene& scene);
+    // Rebuild both half primitives from the freshly tapered geometry. Called from
+    // PollAsync once the body-taper worker is done, never from the worker itself:
+    // it touches the Scene.
+    void FinishBodyTaper(Scene& scene);
+    // Show the preform the worker just built (main thread, after the join).
+    void FinishBodyPreform(Scene& scene);
+    void DropPreform(Scene& scene);
+    Primitive*             m_preformPrim = nullptr;
+    CSV3DLoader::CSV3DData m_preformData;
+    std::string            m_preformPath;
 
     // ---- Asynchronous 3D pipeline state -----------------------------------
     // The atomics are the only members the worker and UI thread touch
@@ -625,7 +695,7 @@ private:
         std::atomic<bool>  ok{ false };
         std::atomic<bool>  cancel{ false };        // UI requested stop; skip queued stages
         std::atomic<bool>  cancelled{ false };     // worker stopped early on that request
-        std::atomic<int>   stageKind{ 0 };         // label: 0 offsets, 1 mesh, 2 thermal, 3 isosurface
+        std::atomic<int>   stageKind{ 0 };         // label: 0 offsets, 1 mesh, 2 thermal, 3 isosurface, ... 8 preform
         std::atomic<int>   progressStage{ 0 };     // index of current stage among the planned ones
         std::atomic<int>   totalStages{ 1 };       // number of progress-weighted stages planned
 
@@ -640,6 +710,16 @@ private:
         // The other two standalone modes; never set alongside each other.
         bool   runTaper  = false;
         bool   runRemesh = false;
+        // A body session's own stage: SEM_ApplyBodyTaper3D over both halves (and
+        // their post-taper remesh sweeps). It runs on this worker rather than on
+        // the halves', because the core drives both halves inside one call.
+        bool   runBodyTaper = false;
+        double taperMs = -1.0;
+        // The body's other own stage: SEM_BuildBodyPreform3D, gluing the halves.
+        bool   runBodyPreform = false;
+        int    pfSource = 0;
+        double pfAngle = 7.0, pfTarget = 0.0, pfShift = 0.0, pfStep = 0.0;
+        double preformMs = -1.0;
         SEM_Plane3D         tpPlane = { { 0, 0, 1 }, 0.0 };
         double              tpTol = 0.01, tpAngle = 7.0;
         int                 tpRemeshIters = 2;

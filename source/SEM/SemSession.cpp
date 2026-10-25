@@ -321,7 +321,10 @@ void SemSession::RebuildSourcePrim(Scene& scene) {
             keep.push_back(ch);
     for (SceneNode* ch : keep) old->RemoveChild(ch);
 
-    Primitive* fresh = scene.AddFromCSV3DData(data, old->name, parent, nullptr, Colors::BLUE, Colors::RED);
+    // A body half keeps its own tint (and skirt shading) across the rebuild.
+    Primitive* fresh = (m_isHalf && m_halfStyled)
+        ? AddHalfSurface(scene, data, old->name, parent, m_halfSide, m_halfPlane, m_halfSkirt)
+        : scene.AddFromCSV3DData(data, old->name, parent, nullptr, Colors::BLUE, Colors::RED);
     if (!fresh) {                                  // rebuild failed: undo the detach
         for (SceneNode* ch : keep) old->AddChild(ch);
         return;
@@ -329,10 +332,12 @@ void SemSession::RebuildSourcePrim(Scene& scene) {
     for (SceneNode* ch : keep) fresh->AddChild(ch);
 
     // Match the source surface's render configuration (see ImportSource).
-    ConfigureSurface3D(fresh);
-    fresh->SetColor(Colors::FRONT_FACE_WHITE);
-    fresh->SetUseVertexColor(false);
-    fresh->SetTwoSided(true, Colors::BACK_FACE_RED);
+    if (!(m_isHalf && m_halfStyled)) {
+        ConfigureSurface3D(fresh);
+        fresh->SetColor(Colors::FRONT_FACE_WHITE);
+        fresh->SetUseVertexColor(false);
+        fresh->SetTwoSided(true, Colors::BACK_FACE_RED);
+    }
     fresh->visible = wasVisible;
     for (SceneNode* ch : fresh->children)
         if (ch && ch->IsPrimitive() && ch->name.find("(edges)") != std::string::npos)

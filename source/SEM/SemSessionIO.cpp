@@ -19,7 +19,11 @@ std::string SemSession::OutPath(const char* suffix) const {
 // next to the SOURCE, not into the %TEMP% session folder, because it is a model
 // the user takes away - and that is the folder the Explorer button opens.
 std::string SemSession::SaveStandaloneResult(const char* tag) {
-    if (m_srcPath.empty() || m_isoData.nodes.empty() || m_isoData.triangles.empty())
+    return SaveNextToSource(tag, m_isoData);
+}
+
+std::string SemSession::SaveNextToSource(const char* tag, const CSV3DLoader::CSV3DData& data) {
+    if (m_srcPath.empty() || data.nodes.empty() || data.triangles.empty())
         return std::string();
 
     const std::string name = Stem(m_srcPath) + tag + ".csv3d";
@@ -27,24 +31,28 @@ std::string SemSession::SaveStandaloneResult(const char* tag) {
     fs::path dir = fs::path(m_srcPath).parent_path();
     if (!dir.empty()) {
         const std::string out = (dir / name).string();
-        if (CSV3DLoader::SaveSurface(out, m_isoData)) return out;
+        if (CSV3DLoader::SaveSurface(out, data)) return out;
     }
     // A read-only source folder (or a source opened from a network path) must not
     // lose the result: fall back to the session folder, which we own.
     if (m_workDir.empty()) return std::string();
     fs::create_directories(m_workDir, ec);
     const std::string alt = (fs::path(m_workDir) / name).string();
-    if (CSV3DLoader::SaveSurface(alt, m_isoData)) return alt;
+    if (CSV3DLoader::SaveSurface(alt, data)) return alt;
     return std::string();
 }
 
 bool SemSession::RevealResult() const {
-    if (m_resultPath.empty()) return false;
+    return RevealFile(m_resultPath);
+}
+
+bool SemSession::RevealFile(const std::string& path) {
+    if (path.empty()) return false;
     std::error_code ec;
-    if (!fs::exists(m_resultPath, ec)) return false;
+    if (!fs::exists(path, ec)) return false;
     // Explorer's /select takes a quoted path and focuses the file inside its
     // folder, which is what "open the result" means here.
-    const std::string arg = "/select,\"" + m_resultPath + "\"";
+    const std::string arg = "/select,\"" + path + "\"";
     const HINSTANCE h = ShellExecuteA(nullptr, "open", "explorer.exe", arg.c_str(),
                                       nullptr, SW_SHOWNORMAL);
     return (INT_PTR)h > 32;
