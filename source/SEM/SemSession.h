@@ -142,6 +142,10 @@ public:
     // Max inward penetration (0..1) for the outermost-offset T=0 BCs. < 0 keeps
     // every outermost node.
     float maxInward  = 0.04f;
+    // Offset layers the thermal solve uses (SEM_SetActiveLayers3D): the band mesh
+    // past the first activeLayers offsets is dropped and T = 0 is set where the
+    // rest meets it. 0 = the whole band.
+    int   activeLayers = 0;
 
     bool  subAuto     = false;
     bool  offAuto     = false;
@@ -196,12 +200,14 @@ public:
     int   taperRemeshIters = 2;
 
     // The skirt: both halves extended past the parting plane by their own draft
-    // walls, built by the same Apply as the taper (SEM_ApplyBodyTaperSkirt3D).
+    // walls. On by default: the split already extends them (straight down, there is
+    // no draft yet) and the taper rebuilds the skirt at its angle in the same Apply
+    // (SEM_ApplyBodyTaperSkirt3D).
     // skirtDepth <= 0 extends each down to the other half's height. skirtGrowth
     // thins it out away from the parting line: 0 keeps evenly spaced rings with a
     // vertex per outline vertex, larger values space the rings ever wider and drop
     // ring vertices to match (the outline's corners always stay).
-    bool  skirtEnabled = false;
+    bool  skirtEnabled = true;
     float skirtDepth   = 0.0f;
     float skirtGrowth  = 0.3f;
 
@@ -275,12 +281,16 @@ public:
     bool MeasureDraftNow(int side, double angle_deg,
                          int& facets_violating, double& min_draft_deg) const;
 
-    // Whether the halves the core holds carry a skirt (set by the last taper). With
+    // Whether the halves the core holds carry a skirt (set by the last split or
+    // taper). With
     // one the parting plane is no longer the halves' clip plane: their stages run on
     // the extended surfaces, and the preform cuts the results back together.
     bool SkirtActive() const { return m_skirtActive; }
     // The core's setting and how deep each half's skirt reached.
     bool SkirtState(double& depth, double& reached_pos, double& reached_neg) const;
+    // The skirt setting above as the core takes it: 0 = none, < 0 = down to the
+    // other half's height.
+    double SkirtDepthArg() const;
 
     // Glue the two halves into the preform (SEM_BuildBodyPreform3D) on the worker.
     // The result is shown as its own primitive under the body and written next to
@@ -384,6 +394,12 @@ public:
 
     void MarkStageDirty(Stage st);
     void RecomputeUpTo(Scene& scene, Stage to, bool silent);
+
+    // Offset layers the band spans (0 without offsets; a body asks its halves),
+    // and what the "layers in use" slider runs on release: the thermal stage again,
+    // which the core poses on the kept layers with the stiffness matrix it holds.
+    int  OffsetLayerCount();
+    void ApplyActiveLayers(Scene& scene);
 
     SceneNode* StagePrim(Stage st) const;
     void ResetStage(Scene& scene, Stage st);
@@ -655,6 +671,7 @@ private:
     bool           m_isHalf    = false;
     bool           m_bodySplit = false;
     bool           m_skirtActive = false;  // the core extends the halves
+    int            m_layerCount  = 0;      // last OffsetLayerCount, while a worker runs
     // A half's own look, kept so that rebuilding its primitive (after a subdivide)
     // gives back the same tint: which side it is, the parting plane (normal toward
     // the positive side), and whether its skirt is tinted apart.
@@ -775,6 +792,7 @@ private:
         double              isoFinalTargetMult = 1.0;
         int                 isoFinalIters = 3;
         float               maxInward = 1.0f;
+        int                 activeLayers = 0;
 
         // Deterministic output paths the SEM core writes (computed at launch).
         // expIsoRemesh is the offset-and-remesh product (offset axis only).

@@ -175,6 +175,7 @@ void SemSession::RecomputeUpToAsync(Scene& scene, Stage to, bool silent) {
     m_job.isoFinalTargetMult = (double)isoFinalTargetMult;
     m_job.isoFinalIters      = isoFinalIters;
     m_job.maxInward = maxInward;
+    m_job.activeLayers = activeLayers;
 
     // Deterministic output paths the SEM core writes during each compute call.
     m_job.expOffsets = OutPath("_offsets3d.csv3d");
@@ -596,6 +597,7 @@ void SemSession::PipelineWorkerBody() {
         m_job.stageKind.store(2);
         m_job.progressStage.store(idx);
         Timer t; t.Restart();
+        SEM_SetActiveLayers3D(m_job.activeLayers, 0);
         int rc = SafeSolveThermal3D(m_job.maxInward);
         m_job.thermalMs = t.GetMillisecondsElapsed();
         if (rc == -100) return Fail("Thermal solver crashed (access violation caught).");
@@ -776,6 +778,26 @@ void SemSession::Fail(const std::string& msg) {
     m_job.error = msg + SemDetail();
     m_job.ok.store(false);
     m_job.done.store(true);
+}
+
+int SemSession::OffsetLayerCount() {
+    // The readout asks the core, which a running worker may be rewriting.
+    if (AsyncRunning()) return m_layerCount;
+    SemSession* s = IsBody() ? m_half[0] : this;
+    if (!s || !s->HasSource()) return m_layerCount = 0;
+    s->Activate();
+    const int n = SEM_GetOffsetLayerCount3D();
+    Activate();
+    m_layerCount = (n > 0) ? n : 0;
+    return m_layerCount;
+}
+
+void SemSession::ApplyActiveLayers(Scene& scene) {
+    // The setting rides along with every thermal solve; with a mesh in place it is
+    // applied right away by solving again on the kept layers.
+    MarkStageDirty(STAGE_THERMAL);
+    if (AsyncRunning() || !MeshPrim()) return;
+    RecomputeUpToAsync(scene, STAGE_THERMAL, false);
 }
 
 }

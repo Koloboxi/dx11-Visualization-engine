@@ -315,6 +315,27 @@ SEM_API int SEM_BuildMesh3D(const SEM_MeshParams3D* params);
 // penetrate further. max_inward < 0 disables the filter (keep all T=0 nodes).
 SEM_API int SEM_SolveThermal3D(float max_inward);
 
+// Number of offset layers the band spans - the offset shells past the source -
+// which bounds SEM_SetActiveLayers3D. Negative without offsets.
+SEM_API int SEM_GetOffsetLayerCount3D(void);
+
+// Use only the first `layers` offset layers of the band mesh, dropping its nodes
+// that lie deeper: the thermal problem is then posed on the kept tets alone (those
+// whose nodes all lie within these layers) with T = 0 where the kept part meets the
+// dropped one, as if the band had been meshed only that deep. max_inward filters
+// that new far boundary the way it filters the outermost offset. layers <= 0, or
+// the layer count or more, uses the whole band. The stiffness matrix assembled by
+// the first solve on a mesh is kept and reused (only the fixed nodes and the
+// dropped tets' share change), so a re-solve skips the assembly. resolve != 0 with
+// a solved field re-solves it at once with the last max_inward (rc as
+// SEM_SolveThermal3D); otherwise the setting applies to the next solve. Dropped
+// nodes get T = 0, so isosurfaces come from the kept part only, and SEM_GetMesh3D
+// returns just that part. Persisted in the session.
+SEM_API int SEM_SetActiveLayers3D(int layers, int resolve);
+
+// The SEM_SetActiveLayers3D setting (0 = whole band). Negative without a source.
+SEM_API int SEM_GetActiveLayers3D(void);
+
 // Extract the iso surface at the given level set of the normalized field
 // (value in [0,1]), then optionally offset-and-remesh it in one call. Clip planes are
 // applied. The extracted iso is kept as a Surface (read it back with
@@ -500,8 +521,10 @@ SEM_API const char* SEM_GetSourcePath3D(void);
 // for the lifetime/layout contract. Negative if no source is loaded.
 SEM_API int SEM_GetSourceSurface3D(SEM_MeshView* out);
 
-// Band tet mesh (coords/tets, plus T after a solve). Negative if the mesh has not
-// been built/loaded yet. See SEM_MeshView for the lifetime/layout contract.
+// Band tet mesh (coords/tets, plus T after a solve). With fewer offset layers in
+// use (SEM_SetActiveLayers3D) only the kept tets and their nodes, renumbered.
+// Negative if the mesh has not been built/loaded yet. See SEM_MeshView for the
+// lifetime/layout contract.
 SEM_API int SEM_GetMesh3D(SEM_MeshView* out);
 
 // The source isosurface consumed by the offset-remesh: the extracted iso
@@ -750,20 +773,26 @@ SEM_API int SEM_MeasureBodyDraft3D(int side, double taper_angle_deg,
 // context extracted (the remeshed one when its offset-remesh ran).
 enum SEM_PreformSource { SEM_PREFORM_FROM_HALVES = 0, SEM_PREFORM_FROM_ISOSURFACES = 1 };
 
-// Glue the two halves back into ONE closed, drafted body - the preform - by
-// intersecting them, each extended past the parting plane by its own draft walls,
-// after moving them toward each other by `shift` (each; negative = apart).
+// Glue the two halves back into ONE closed, drafted body - the preform - whose
+// parting line lies flat in the parting plane.
 //
 // Each half is read as a height field over the parting plane and replaced by its
 // draft-cone dilation (the same cone-max as the taper, at `draft_angle_deg`): that
 // leaves a drafted half alone, fills it in wherever it falls short of the draft
 // (e.g. an iso surface meeting an adiabatic clip plane square on), and outside its
-// footprint continues every wall at exactly the draft angle. The result is the
-// region between the two extended halves, so its parting line is where their
-// walls meet and the two halves share it no matter how their own outlines differ.
+// footprint continues every wall at exactly the draft angle. Each is then moved
+// toward the other by `shift` (each; negative = apart). Wherever a half crosses
+// the parting plane on its way out to a parting line (the outer one, or one
+// around a hole) it is held on the plane, so every parting line lies flat in it
+// and both halves share it no matter how their own outlines differ; where one
+// half's walls reach the plane further in than the other's, that half lies flat
+// on the plane out to the parting line (a flat land). Where a half crosses the
+// plane inside the material - a pocket whose floor is below the plane, a recess
+// reaching above it - its shape is kept.
 //
 // target_volume > 0: the shift is solved for so the preform encloses that volume
-// (the enclosed volume falls strictly as the shift grows); `shift` is ignored.
+// (by bisection: it falls as the shift grows, with a step where a shift opens a
+// pocket out to a parting line); `shift` is ignored.
 // target_volume <= 0: `shift` is used as given (0 = halves where they are).
 // draft_angle_deg <= 0 uses the angle of the last SEM_ApplyBodyTaper3D.
 // grid_step is the in-plane sampling step (<= 0: a quarter of the halves' mean

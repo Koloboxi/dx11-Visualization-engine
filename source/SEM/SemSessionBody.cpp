@@ -175,6 +175,10 @@ void SemSession::BuildHalfPrim(Scene& scene, int side) {
     }
 }
 
+double SemSession::SkirtDepthArg() const {
+    return !skirtEnabled ? 0.0 : (skirtDepth > 0.0f ? (double)skirtDepth : -1.0);
+}
+
 void SemSession::PushSplitClipPlane(int side) {
     SemSession* hs = m_half[side];
     if (!hs || !m_splitNode) return;
@@ -218,6 +222,13 @@ bool SemSession::ApplySplit(Scene& scene, bool silent) {
                  SEM_SetBodySplitPlane3D(sp, (double)splitPlaneTol),
                  { "", "Not a body context", "Zero normal", "Bad tolerance" }))
         return false;
+    // Skirted halves are the default mode: set the skirt before the split so the
+    // halves come out extended and their stages run unclipped from the start.
+    const double skDepth = SkirtDepthArg();
+    if (!CheckRc(scene, silent, "SEM_SetBodySkirt3D", SEM_SetBodySkirt3D(skDepth),
+                 { "", "Not a body context", "Could not publish a half" }))
+        return false;
+    m_skirtActive = (skDepth != 0.0);
     if (!CheckRc(scene, silent, "SEM_SplitBody3D", SEM_SplitBody3D(),
                  { "", "Not a body context", "No parting plane", "No source",
                    "The plane misses the body", "Could not publish a half" }))
@@ -285,7 +296,7 @@ bool SemSession::ApplyTaper(Scene& scene, bool silent) {
     m_job.tpAngle       = (double)taperAngle;
     m_job.tpRemeshIters = taperRemeshIters;
     // The skirt goes in with the taper: 0 = none, < 0 = down to the other half.
-    m_job.skDepth  = !skirtEnabled ? 0.0 : (skirtDepth > 0.0f ? (double)skirtDepth : -1.0);
+    m_job.skDepth  = SkirtDepthArg();
     m_job.skGrowth = (double)skirtGrowth;
     m_job.offsetsPath.clear();
     m_job.meshPath.clear();
@@ -564,6 +575,7 @@ void SemSession::PushStageParams() {
         h->tetMaxEdgeLen = tetMaxEdgeLen; h->tetMaxEdgeAuto = tetMaxEdgeAuto;
         h->meshEnabled = meshEnabled;
         h->thermalEnabled = thermalEnabled; h->maxInward = maxInward; h->bcView = bcView;
+        h->activeLayers = activeLayers;
         h->isoEnabled = isoEnabled; h->isoValue = isoValue; h->isoAxisN = isoAxisN;
         h->isoOffsetValue = isoOffsetValue; h->isoMinOffsetValue = isoMinOffsetValue;
         h->isoFinalTargetMult = isoFinalTargetMult; h->isoFinalIters = isoFinalIters;

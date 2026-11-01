@@ -354,6 +354,7 @@ void SemSession::ApplyPipelineArgs3D() {
 
     // Thermal.
     maxInward = a.max_inward;
+    activeLayers = (std::max)(0, SEM_GetActiveLayers3D());
 
     // Iso. The core stores min-offset as the absolute clearance c*offset; recover c.
     isoValue       = (float)a.iso_value;

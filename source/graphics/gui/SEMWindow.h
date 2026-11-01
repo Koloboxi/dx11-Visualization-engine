@@ -712,13 +712,16 @@ inline void DrawBodyTaperSection(Scene& scene, SemSessionNS::SemSession& S) {
                               "taper's own triangulation. The per-facet numbers below are\n"
                               "re-measured after the sweeps.");
 
-        // The skirt is built by the same Apply, from the freshly tapered halves.
+        // The skirt is the default mode and the split already builds it, so its
+        // controls stay live before the split too.
+        ImGui::EndDisabled();
         ImGui::Checkbox("Extend past the parting plane (skirt)", &S.skirtEnabled);
         ImGui::SetItemTooltip("Carry each half's walls on below the parting plane at the draft\n"
                               "angle. The halves' stages then run on half + skirt, with no clip\n"
                               "at the plane: near the parting line the thermal field is an\n"
                               "interior one and the isosurface keeps the wall's slope instead of\n"
-                              "meeting the plane square on.");
+                              "meeting the plane square on. On by default: Split builds it\n"
+                              "straight down, Apply taper rebuilds it at the draft angle.");
         ImGui::BeginDisabled(!S.skirtEnabled);
         ImGui::DragFloat("Skirt depth", &S.skirtDepth, 0.01f, 0.0f, 0.0f, "%.4f");
         if (S.skirtDepth < 0.0f) S.skirtDepth = 0.0f;
@@ -735,6 +738,7 @@ inline void DrawBodyTaperSection(Scene& scene, SemSessionNS::SemSession& S) {
                               "vertices about a gap apart along it (the outline's corners always),\n"
                               "so the far skirt, which only carries the draft on, costs few points.");
         ImGui::EndDisabled();
+        ImGui::BeginDisabled(!S.BodySplit());
 
         if (ImGui::Button("Apply taper", {200, 0})) S.ApplyTaper(scene, false);
         ImGui::SetItemTooltip("Taper both halves, then extend them by the skirt when it is on -\n"
@@ -742,7 +746,7 @@ inline void DrawBodyTaperSection(Scene& scene, SemSessionNS::SemSession& S) {
                               "applying another angle rebuilds the halves instead of stacking\n"
                               "a second draft on them. Their pipeline stages are dropped,\n"
                               "because their source geometry changed.");
-        if (S.SkirtActive() != S.skirtEnabled)
+        if (S.BodySplit() && S.SkirtActive() != S.skirtEnabled)
             ImGui::TextDisabled(S.skirtEnabled ? "Skirt not built yet - Apply taper."
                                                : "Skirt still on - Apply taper to drop it.");
 
@@ -784,8 +788,8 @@ inline void DrawBodyTaperSection(Scene& scene, SemSessionNS::SemSession& S) {
 // Body session, last stage: glue the two halves back into one closed body.
 // Each half is extended past the parting plane by its own draft walls (cone
 // dilation at the taper angle, which also drafts whatever the half was missing),
-// the two are intersected, and the shift that moves them together is solved so
-// the result encloses the chosen volume.
+// moved toward the other and cut off at the plane, and the shift is solved so the
+// result encloses the chosen volume. The parting line lies flat in the plane.
 inline void DrawBodyPreformSection(Scene& scene, SemSessionNS::SemSession& S) {
     using namespace SemSessionNS;
     ImGui::PushID("bodypreform");
@@ -833,9 +837,11 @@ inline void DrawBodyPreformSection(Scene& scene, SemSessionNS::SemSession& S) {
         ImGui::BeginDisabled(S.preformSource == SemSession::PREFORM_FROM_ISOSURFACES && !haveIso);
         if (ImGui::Button("Apply preform", {200, 0})) S.ApplyPreform(scene, false);
         ImGui::EndDisabled();
-        ImGui::SetItemTooltip("Glue both halves into one closed, drafted surface. Their own\n"
-                              "outlines need not match: the parting line is where their\n"
-                              "extended walls meet.");
+        ImGui::SetItemTooltip("Glue both halves into one closed, drafted surface with a flat\n"
+                              "parting line in the parting plane. Their own outlines need not\n"
+                              "match: where one half's walls reach the plane further in than\n"
+                              "the other's, that half lies flat on the plane out to the\n"
+                              "parting line (a flat land).");
 
         if (Primitive* pp = S.PreformPrim()) {
             bool vis = pp->visible;
@@ -1307,6 +1313,23 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
                                   "and still be kept as a T=0 node. Deeper nodes are dropped.");
             if (S.maxInward < 0.0f) S.maxInward = 0.0f;
             if (S.maxInward > 1.0f) S.maxInward = 1.0f;
+
+            const int nl = S.OffsetLayerCount();
+            if (nl > 1) {
+                int shown = (S.activeLayers <= 0 || S.activeLayers > nl) ? nl : S.activeLayers;
+                ImGui::BeginDisabled(S.AsyncRunning());
+                if (ImGui::SliderInt("Offset layers in use", &shown, 1, nl))
+                    S.activeLayers = (shown >= nl) ? 0 : shown;
+                if (ImGui::IsItemDeactivatedAfterEdit()) S.ApplyActiveLayers(scene);
+                ImGui::EndDisabled();
+                ImGui::SetItemTooltip("Solve the thermal field on the first N offset layers only: the band\n"
+                                      "mesh deeper than the N-th offset is dropped and T = 0 is set where\n"
+                                      "the kept part meets it, as if the band had been meshed that deep.\n"
+                                      "Re-solves on release; the stiffness matrix of the mesh is reused,\n"
+                                      "only the fixed nodes change. Fewer layers: a thinner band, the\n"
+                                      "field falls off faster and an isosurface at a given value sits\n"
+                                      "closer to the source. Max inward filters the new T = 0 nodes too.");
+            }
         }
         ImGui::DragFloat(is3D ? "Isosurface value (0..1)" : "Isoline value (0..1)",
                          &S.isoValue, 0.005f, 0.0f, 1.0f, "%.3f");
