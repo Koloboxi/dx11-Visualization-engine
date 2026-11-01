@@ -90,11 +90,18 @@ public:
     bool  meshEnabled   = true;
 
     // tetMethod: SEM_TET_BAND or SEM_TET_LAYERED. tetParam (<0 => per-method auto):
-    // BAND => Steiner grid cell size (a length in world units); LAYERED => use_sdf flag (0/1).
+    // BAND => Steiner grid cell size (a length in world units); LAYERED => use_sdf flag
+    // (0/1), on by default.
     int   tetMethod    = SEM_TET_LAYERED;
-    float tetParam     = 0.0f;
-    // Max tet edge length, in world units. <= 0 disables the filter.
-    float tetMaxEdgeLen = 10.0f;
+    float tetParam     = 1.0f;
+    // Max tet edge length, in world units. <= 0 disables the filter. While
+    // tetMaxEdgeAuto is set it follows the offsets: sqrt(2) times the gap between
+    // the last two shells (AutoTetMaxEdge), re-read whenever the mesh is built.
+    float tetMaxEdgeLen  = 10.0f;
+    bool  tetMaxEdgeAuto = true;
+    // sqrt(2) * the gap between the outermost shell and the one inside it, from the
+    // offset settings as they stand (0 when they define no shell).
+    float AutoTetMaxEdge() const;
 
     bool  thermalEnabled = true;
     bool  isoEnabled     = true;
@@ -189,10 +196,14 @@ public:
     int   taperRemeshIters = 2;
 
     // The skirt: both halves extended past the parting plane by their own draft
-    // walls (SEM_SetBodySkirt3D). skirtDepth <= 0 extends each down to the other
-    // half's height.
+    // walls, built by the same Apply as the taper (SEM_ApplyBodyTaperSkirt3D).
+    // skirtDepth <= 0 extends each down to the other half's height. skirtGrowth
+    // thins it out away from the parting line: 0 keeps evenly spaced rings with a
+    // vertex per outline vertex, larger values space the rings ever wider and drop
+    // ring vertices to match (the outline's corners always stay).
     bool  skirtEnabled = false;
     float skirtDepth   = 0.0f;
+    float skirtGrowth  = 0.3f;
 
     // The preform (stage after the isosurface): the two halves glued back into one
     // closed drafted body, at the taper angle above. Which halves, and what fixes
@@ -208,6 +219,16 @@ public:
     // average (<= 0 uses the median), and the sweep count.
     float rmTargetMult  = 1.0f;
     int   rmIters       = 3;
+    // Adaptive instead of plain (SEM_RemeshAdaptiveStandaloneSurface3D): the target
+    // length above becomes the one for flat regions; curved regions get edges down
+    // to rmMinMult (same unit), short enough that a facet sags from the input by at
+    // most rmMaxDevMult, and edges turning by more than rmFeatureDeg are kept sharp.
+    // It needs more sweeps than the plain remesh, hence its own count.
+    bool  rmAdaptive      = false;
+    float rmMinMult       = 0.3f;
+    float rmMaxDevMult    = 0.05f;
+    float rmFeatureDeg    = 40.0f;
+    int   rmAdaptiveIters = 8;
 
     // The parting plane is shared by the body split and the two standalone modes
     // that need one, so the same add/select/remove controls serve all of them.
@@ -241,10 +262,11 @@ public:
     // session to each half's context. Re-splitting replaces both.
     bool ApplySplit(Scene& scene, bool silent);
 
-    // Taper both halves to `taperAngle`. The core always tapers the pristine cut,
-    // so calling this again with another angle rebuilds the halves rather than
-    // stacking a second draft on them; the halves' pipeline stages are dropped
-    // because their source geometry changed.
+    // Taper both halves to `taperAngle` and extend them by the skirt setting above,
+    // in one core call. The core always tapers the pristine cut, so calling this
+    // again with another angle rebuilds the halves rather than stacking a second
+    // draft on them; the halves' pipeline stages are dropped because their source
+    // geometry changed.
     bool ApplyTaper(Scene& scene, bool silent);
     bool TaperReport(int side, int& verts_moved, int& facets_violating,
                      double& min_draft_deg, double& contour_growth) const;
@@ -253,12 +275,9 @@ public:
     bool MeasureDraftNow(int side, double angle_deg,
                          int& facets_violating, double& min_draft_deg) const;
 
-    // Push the skirt setting to the core. On a split body that reloads both halves
-    // as half + skirt (clearing their stages) and rebuilds their primitives, the
-    // skirt drawn in a lighter tint of the half's colour. With a skirt the parting
-    // plane is no longer the halves' clip plane: their stages run on the extended
-    // surfaces, and the preform cuts the results back together.
-    bool ApplySkirt(Scene& scene, bool silent);
+    // Whether the halves the core holds carry a skirt (set by the last taper). With
+    // one the parting plane is no longer the halves' clip plane: their stages run on
+    // the extended surfaces, and the preform cuts the results back together.
     bool SkirtActive() const { return m_skirtActive; }
     // The core's setting and how deep each half's skirt reached.
     bool SkirtState(double& depth, double& reached_pos, double& reached_neg) const;
@@ -547,6 +566,10 @@ public:
     // report. False before one has run.
     bool StandaloneTaperReport(int& verts_moved, int& facets_violating,
                                double& min_draft_deg, double& contour_growth) const;
+    // What the last adaptive remesh kept and produced: the input's sharp edges and
+    // corners, and the result's edge-length range. False before one has run.
+    bool AdaptiveRemeshReport(int& crease_edges, int& corners,
+                              double& min_edge, double& max_edge) const;
     // Where the last standalone result was written: "<source folder>/<stem>_<mode>
     // .csv3d", or the session folder when the source folder refuses the write.
     // Nothing else serializes a standalone run, so that file IS the product.
@@ -723,8 +746,12 @@ private:
         SEM_Plane3D         tpPlane = { { 0, 0, 1 }, 0.0 };
         double              tpTol = 0.01, tpAngle = 7.0;
         int                 tpRemeshIters = 2;
+        // The body taper's skirt, as SEM_ApplyBodyTaperSkirt3D takes it.
+        double              skDepth = 0.0, skGrowth = 0.0;
         double              rmTargetMult = 1.0;
         int                 rmIters = 3;
+        bool                rmAdaptive = false;
+        double              rmMinMult = 0.3, rmMaxDevMult = 0.05, rmFeatureDeg = 40.0;
         SEM_Vec3            soAxisN = { 0.0, 0.0, 1.0 };
         double              soOffset = 0.0, soMinOffset = 0.0, soTargetMult = 1.0;
         int                 soIters = 3;

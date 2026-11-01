@@ -458,6 +458,11 @@ int SafeApplyBodyTaper3D(double taper_angle_deg, int remesh_iters) {
     __try { return SEM_ApplyBodyTaper3D(taper_angle_deg, remesh_iters); }
     __except (EXCEPTION_EXECUTE_HANDLER) { return -100; }
 }
+int SafeApplyBodyTaperSkirt3D(double taper_angle_deg, int remesh_iters,
+                              double skirt_depth, double skirt_growth) {
+    __try { return SEM_ApplyBodyTaperSkirt3D(taper_angle_deg, remesh_iters, skirt_depth, skirt_growth); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return -100; }
+}
 int SafeBuildBodyPreform3D(int source, double draft_angle_deg, double target_volume,
                            double shift, double grid_step) {
     __try { return SEM_BuildBodyPreform3D(source, draft_angle_deg, target_volume, shift, grid_step); }
@@ -486,6 +491,24 @@ int SafeRemeshStandaloneSurface3D(const SEM_Plane3D* planes, int count,
         return SEM_RemeshStandaloneSurface3D(planes, count, on_plane_rel_tol,
                                              target_len_mult, iterations,
                                              xyz, num_nodes, tris, num_tris, out);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -100;
+    }
+}
+
+int SafeRemeshAdaptiveStandaloneSurface3D(const SEM_Plane3D* planes, int count,
+                                          double on_plane_rel_tol,
+                                          double target_len_mult, double min_len_mult,
+                                          double max_dev_mult, double feature_angle_deg,
+                                          int iterations,
+                                          const double* xyz, int num_nodes,
+                                          const int* tris, int num_tris,
+                                          SEM_MeshView* out) {
+    __try {
+        return SEM_RemeshAdaptiveStandaloneSurface3D(planes, count, on_plane_rel_tol,
+                                                     target_len_mult, min_len_mult,
+                                                     max_dev_mult, feature_angle_deg, iterations,
+                                                     xyz, num_nodes, tris, num_tris, out);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return -100;
     }

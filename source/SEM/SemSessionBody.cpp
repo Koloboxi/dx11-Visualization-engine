@@ -284,6 +284,9 @@ bool SemSession::ApplyTaper(Scene& scene, bool silent) {
     m_job.runBodyPreform = false;
     m_job.tpAngle       = (double)taperAngle;
     m_job.tpRemeshIters = taperRemeshIters;
+    // The skirt goes in with the taper: 0 = none, < 0 = down to the other half.
+    m_job.skDepth  = !skirtEnabled ? 0.0 : (skirtDepth > 0.0f ? (double)skirtDepth : -1.0);
+    m_job.skGrowth = (double)skirtGrowth;
     m_job.offsetsPath.clear();
     m_job.meshPath.clear();
     m_job.isoPath.clear();
@@ -299,27 +302,33 @@ bool SemSession::ApplyTaper(Scene& scene, bool silent) {
     m_job.cancelled.store(false);
     m_progressShown.store(0.0f);
     m_job.running.store(true);
-    snprintf(status, sizeof(status), "Tapering both halves...");
+    snprintf(status, sizeof(status), m_job.skDepth != 0.0 ? "Tapering and extending both halves..."
+                                                          : "Tapering both halves...");
     m_job.worker = std::thread(&SemSession::PipelineWorkerBody, this);
     return true;
 }
 
 void SemSession::FinishBodyTaper(Scene& scene) {
     Activate();
-    // The core re-tapered from the pristine cut and reloaded both half contexts,
-    // so every stage those halves had built is gone. Replace their primitives with
-    // the new geometry and reset their stage state. It also dropped the preform,
-    // which was glued from the old halves.
+    // The core re-tapered from the pristine cut, built the skirts on top and
+    // reloaded both half contexts, so every stage those halves had built is gone.
+    // Replace their primitives with the new geometry (half + skirt) and reset their
+    // stage state; the skirt decides whether they are still clipped at the plane.
+    // It also dropped the preform, which was glued from the old halves.
+    m_skirtActive = (m_job.skDepth != 0.0);
     DropPreform(scene);
     RefreshHalfPrims(scene);
 
     int moved = 0, bad = 0;
     double worst = 0.0, growth = 0.0;
     TaperReport(+1, moved, bad, worst, growth);
-    snprintf(status, sizeof(status),
-             "Taper %.2f deg in %.0f ms: moved %d, %d facets short, min draft %.2f deg, "
-             "outline +%.4f.",
-             taperAngle, m_job.taperMs, moved, bad, worst, growth);
+    int n = snprintf(status, sizeof(status),
+                     "Taper %.2f deg in %.0f ms: moved %d, %d facets short, min draft %.2f deg, "
+                     "outline +%.4f.",
+                     taperAngle, m_job.taperMs, moved, bad, worst, growth);
+    double d = 0.0, rp = 0.0, rn = 0.0;
+    if (m_skirtActive && n > 0 && n < (int)sizeof(status) && SkirtState(d, rp, rn))
+        snprintf(status + n, sizeof(status) - n, " Skirt down %.4g / %.4g.", rp, rn);
 }
 
 void SemSession::RefreshHalfPrims(Scene& scene) {
@@ -349,30 +358,6 @@ void SemSession::RefreshHalfPrims(Scene& scene) {
     for (int i = 0; i <= STAGE_ISOSURFACE; ++i) m_dirty[i] = true;
     if (m_splitOnPlaneShown) BuildSplitOnPlane(scene);
     scene.UpdateLight();
-}
-
-bool SemSession::ApplySkirt(Scene& scene, bool silent) {
-    if (!IsBody()) return false;
-    if (AsyncRunning()) return false;
-    Activate();
-    const double depth = !skirtEnabled ? 0.0 : (skirtDepth > 0.0f ? (double)skirtDepth : -1.0);
-    if (!CheckRc(scene, silent, "SEM_SetBodySkirt3D", SEM_SetBodySkirt3D(depth),
-                 { "", "Not a body context", "Could not extend or publish the halves" }))
-        return false;
-    m_skirtActive = (depth != 0.0);
-    if (!m_bodySplit) {
-        snprintf(status, sizeof(status), m_skirtActive ? "Skirt set; it is built on the split."
-                                                       : "Skirt off.");
-        return true;
-    }
-    RefreshHalfPrims(scene);
-    double d = 0.0, rp = 0.0, rn = 0.0;
-    SkirtState(d, rp, rn);
-    if (m_skirtActive)
-        snprintf(status, sizeof(status), "Skirt: + half down %.4g, - half down %.4g.", rp, rn);
-    else
-        snprintf(status, sizeof(status), "Skirt off: the halves are clipped at the plane again.");
-    return true;
 }
 
 bool SemSession::SkirtState(double& depth, double& reached_pos, double& reached_neg) const {
@@ -514,6 +499,14 @@ bool SemSession::StandaloneTaperReport(int& verts_moved, int& facets_violating,
                                     &min_draft_deg, &contour_growth) == 0;
 }
 
+bool SemSession::AdaptiveRemeshReport(int& crease_edges, int& corners,
+                                      double& min_edge, double& max_edge) const {
+    crease_edges = corners = 0;
+    min_edge = max_edge = 0.0;
+    Activate();
+    return SEM_GetLastAdaptiveRemeshReport3D(&crease_edges, &corners, &min_edge, &max_edge) == 0;
+}
+
 bool SemSession::MeasureDraftNow(int side, double angle_deg,
                                  int& facets_violating, double& min_draft_deg) const {
     facets_violating = 0;
@@ -568,7 +561,8 @@ void SemSession::PushStageParams() {
         h->numOffsets = numOffsets; h->grading = grading; h->gaps = gaps;
         h->offEnabled = offEnabled;
         h->tetMethod = tetMethod; h->tetParam = tetParam;
-        h->tetMaxEdgeLen = tetMaxEdgeLen; h->meshEnabled = meshEnabled;
+        h->tetMaxEdgeLen = tetMaxEdgeLen; h->tetMaxEdgeAuto = tetMaxEdgeAuto;
+        h->meshEnabled = meshEnabled;
         h->thermalEnabled = thermalEnabled; h->maxInward = maxInward; h->bcView = bcView;
         h->isoEnabled = isoEnabled; h->isoValue = isoValue; h->isoAxisN = isoAxisN;
         h->isoOffsetValue = isoOffsetValue; h->isoMinOffsetValue = isoMinOffsetValue;

@@ -161,6 +161,8 @@ void SemSession::RecomputeUpToAsync(Scene& scene, Stage to, bool silent) {
     m_job.gaps.assign(gaps.begin(), gaps.end());
     m_job.tetMethod   = tetMethod;
     m_job.tetParam    = (double)tetParam;
+    // An automatic max edge follows the offsets as they are about to be built.
+    if (tetMaxEdgeAuto) tetMaxEdgeLen = AutoTetMaxEdge();
     m_job.tetMaxEdgeLen = (double)tetMaxEdgeLen;
     m_job.isoValue = isoValue;
     m_job.isoAxisN = SEM_Vec3{ isoAxisN.x, isoAxisN.y, isoAxisN.z };
@@ -332,9 +334,13 @@ void SemSession::ApplyStandaloneRemeshAsync(Scene& scene, bool silent) {
     m_job.tpPlane      = pl;
     m_job.tpTol        = (double)splitPlaneTol;
     m_job.rmTargetMult = (double)rmTargetMult;
-    m_job.rmIters      = rmIters;
+    m_job.rmIters      = rmAdaptive ? rmAdaptiveIters : rmIters;
+    m_job.rmAdaptive   = rmAdaptive;
+    m_job.rmMinMult    = (double)rmMinMult;
+    m_job.rmMaxDevMult = (double)rmMaxDevMult;
+    m_job.rmFeatureDeg = (double)rmFeatureDeg;
     m_job.running.store(true);
-    snprintf(status, sizeof(status), "Remeshing...");
+    snprintf(status, sizeof(status), rmAdaptive ? "Remeshing (adaptive)..." : "Remeshing...");
     m_job.worker = std::thread(&SemSession::PipelineWorkerBody, this);
 }
 
@@ -427,7 +433,8 @@ void SemSession::PollAsync(Scene& scene) {
                 // Nothing else serializes a standalone run: write the result next
                 // to the source so there is a file to take away (and to reveal).
                 m_resultPath = SaveStandaloneResult(m_job.runTaper  ? "_taper"
-                                                  : m_job.runRemesh ? "_remesh"
+                                                  : m_job.runRemesh ? (m_job.rmAdaptive ? "_adaptive"
+                                                                                        : "_remesh")
                                                                     : "_offset_remesh");
             } else {
                 m_isolinePath = m_job.isoPath;
@@ -705,16 +712,25 @@ void SemSession::PipelineWorkerBody() {
         SEM_MeshView out{};
         const bool hasPlane = (m_job.tpPlane.n.x != 0.0 || m_job.tpPlane.n.y != 0.0 ||
                                m_job.tpPlane.n.z != 0.0);
-        int rc = SafeRemeshStandaloneSurface3D(hasPlane ? &m_job.tpPlane : nullptr,
-                                               hasPlane ? 1 : 0, m_job.tpTol,
-                                               m_job.rmTargetMult, m_job.rmIters,
-                                               m_job.soXyz.data(), (int)(m_job.soXyz.size() / 3),
-                                               m_job.soTris.data(), (int)(m_job.soTris.size() / 3),
-                                               &out);
+        const SEM_Plane3D* planes = hasPlane ? &m_job.tpPlane : nullptr;
+        const int nNodes = (int)(m_job.soXyz.size() / 3), nTris = (int)(m_job.soTris.size() / 3);
+        int rc = m_job.rmAdaptive
+            ? SafeRemeshAdaptiveStandaloneSurface3D(planes, hasPlane ? 1 : 0, m_job.tpTol,
+                                                    m_job.rmTargetMult, m_job.rmMinMult,
+                                                    m_job.rmMaxDevMult, m_job.rmFeatureDeg,
+                                                    m_job.rmIters,
+                                                    m_job.soXyz.data(), nNodes,
+                                                    m_job.soTris.data(), nTris, &out)
+            : SafeRemeshStandaloneSurface3D(planes, hasPlane ? 1 : 0, m_job.tpTol,
+                                            m_job.rmTargetMult, m_job.rmIters,
+                                            m_job.soXyz.data(), nNodes,
+                                            m_job.soTris.data(), nTris, &out);
         m_job.isoMs = t.GetMillisecondsElapsed();
         if (rc == -100) return Fail("Remesh crashed (access violation caught).");
         if (rc == SEM_RC_CANCELLED) return stageCancelled(m_job.isoMs);
-        if (rc != 0) return Fail("SEM_RemeshStandaloneSurface3D failed (" + std::to_string(rc) + ")");
+        if (rc != 0) return Fail(std::string(m_job.rmAdaptive ? "SEM_RemeshAdaptiveStandaloneSurface3D"
+                                                              : "SEM_RemeshStandaloneSurface3D") +
+                                 " failed (" + std::to_string(rc) + ")");
         m_job.isoDisplayData = ViewToData(out);
         m_job.isoPath = m_job.expIsoRemesh;
         ++idx;
@@ -727,11 +743,12 @@ void SemSession::PipelineWorkerBody() {
         m_job.stageKind.store(7);
         m_job.progressStage.store(idx);
         Timer t; t.Restart();
-        const int rc = SafeApplyBodyTaper3D(m_job.tpAngle, m_job.tpRemeshIters);
+        const int rc = SafeApplyBodyTaperSkirt3D(m_job.tpAngle, m_job.tpRemeshIters,
+                                                 m_job.skDepth, m_job.skGrowth);
         m_job.taperMs = t.GetMillisecondsElapsed();
         if (rc == -100) return Fail("Body taper crashed (access violation caught).");
         if (rc == SEM_RC_CANCELLED) return stageCancelled(m_job.taperMs);
-        if (rc != 0) return Fail("SEM_ApplyBodyTaper3D failed (" + std::to_string(rc) + ")");
+        if (rc != 0) return Fail("SEM_ApplyBodyTaperSkirt3D failed (" + std::to_string(rc) + ")");
         ++idx;
     }
 

@@ -1,6 +1,7 @@
 #include "SemSessionDetail.h"
 #include <filesystem>
 #include <algorithm>
+#include <cmath>
 #include <Windows.h>
 #include <shellapi.h>
 
@@ -347,6 +348,9 @@ void SemSession::ApplyPipelineArgs3D() {
     tetMethod         = a.tet_method;
     tetParam          = (float)a.tet_param;
     tetMaxEdgeLen     = (float)a.tet_max_edge_len;
+    // Keep following the offsets only if the saved value is what they gave.
+    const float autoEdge = AutoTetMaxEdge();
+    tetMaxEdgeAuto = std::abs(tetMaxEdgeLen - autoEdge) <= 1e-4f * (std::max)(1.0f, autoEdge);
 
     // Thermal.
     maxInward = a.max_inward;

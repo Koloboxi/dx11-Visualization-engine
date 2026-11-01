@@ -281,7 +281,13 @@ SEM_API int SEM_ComputeOffsetsAt3D(const double* gaps, int count);
 //                     shells: even shells (0 = source) contribute their vertices,
 //                     odd shells their triangle centroids. `param` is the use_sdf
 //                     flag (0/1): 0 keeps every tet (trim the convex bulge with
-//                     max_edge_len), 1 carves to the band by the source SDF.
+//                     max_edge_len), 1 carves to the band by the source SDF. With
+//                     1, shell points that a self-intersecting shell folded back
+//                     onto or through the source are dropped before the Delaunay,
+//                     and band nodes left on the inner boundary within the first
+//                     gap of the source (where the carve dipped below it) are
+//                     marked as source nodes, so the thermal solve holds them at
+//                     T=1 too.
 enum SEM_TetMethod {
     SEM_TET_BAND    = 0,
     SEM_TET_LAYERED = 1
@@ -574,15 +580,53 @@ SEM_API double SEM_GetBodyVolume3D(void);
 SEM_API int SEM_SetBodySplitPlane3D(SEM_Plane3D plane, double on_plane_rel_tol);
 SEM_API int SEM_GetBodySplitPlane3D(SEM_Plane3D* out_plane, double* out_rel_tol);
 
-// Split the body along the parting plane into two open halves and load each one
-// as the source of its own pipeline context (created here, one per half, reusing
-// the previous pair on a re-split). Each half is serialized next to the body's
-// session as <stem>_half_pos.csv3d / <stem>_half_neg.csv3d and gets a half_pos /
-// half_neg sub-folder as its own session, so both are reloadable on their own. The
-// cut runs through the same edge intersections on both sides, so the two halves
-// start out sharing their parting polyline exactly. Negative if no plane is set or
-// the plane misses the body.
+// How SEM_SplitBody3D divides the body between the two dies:
+//   SEM_SPLIT_PLANE         - a plain plane cut: each half is exactly what lies on
+//                             its side of the plane. A pocket that crosses the plane
+//                             then leaves one half with a hole and the other with a
+//                             loose piece (the pocket's floor or roof).
+//   SEM_SPLIT_OUTER_CONTOUR - the plane fixes the parting line only where it crosses
+//                             the body's OUTER wall. A pocket that crosses the plane
+//                             goes whole to the die that forms it (a pocket opening
+//                             upward to the positive-side die even where it dips
+//                             below the plane, and vice versa), so each half is one
+//                             piece bounded by the parting line alone. With no such
+//                             pocket the result equals the plane cut. Through holes
+//                             are not handled: they stay as holes in both halves.
+// The default is SEM_SPLIT_OUTER_CONTOUR.
+enum SEM_SplitMode { SEM_SPLIT_PLANE = 0, SEM_SPLIT_OUTER_CONTOUR = 1 };
+
+// Select the split mode. Changing it invalidates a previous split, taper and
+// preform, like moving the plane does.
+SEM_API int SEM_SetBodySplitMode3D(int mode);
+// The current split mode, or negative when the active context is not a body.
+SEM_API int SEM_GetBodySplitMode3D(void);
+
+// Split the body into two open halves (see SEM_SetBodySplitMode3D for how) and
+// load each one as the source of its own pipeline context (created here, one per
+// half, reusing the previous pair on a re-split). Each half is serialized next to
+// the body's session as <stem>_half_pos.csv3d / <stem>_half_neg.csv3d and gets a
+// half_pos / half_neg sub-folder as its own session, so both are reloadable on their
+// own. The halves share their parting polyline exactly, vertex for vertex. In the
+// outer-contour mode a half that took over a pocket no longer lies wholly on its own
+// side of the plane. Negative if no plane is set or the plane misses the body.
 SEM_API int SEM_SplitBody3D(void);
+
+// What the last SEM_SplitBody3D did. Any argument may be null.
+//   parting_loops    - loops of the parting line (one per island of the body's
+//                      cross-section in the plane; 1 for an ordinary forging);
+//   pockets_moved    - pieces handed from one half to the other (outer-contour
+//                      mode; always 0 for a plain plane cut);
+//   unresolved_loops - inner cut loops neither die could take: through holes,
+//                      cavities or undercuts crossing the plane. They remain holes
+//                      in both halves;
+//   outer_overhangs  - parting loops with material above or below them outside the
+//                      body, i.e. the plane leaves the outer silhouette there and a
+//                      flat parting line cannot separate the dies cleanly.
+// The plane-mode split reports its loops the same way (pockets show up as
+// unresolved). Negative before a split.
+SEM_API int SEM_GetBodySplitReport3D(int* parting_loops, int* pockets_moved,
+                                     int* unresolved_loops, int* outer_overhangs);
 
 // The ids of the two dependent contexts the split created ("pos" is the half in
 // the plane's positive half-space). They are ordinary pipeline contexts and
@@ -670,6 +714,22 @@ SEM_API double SEM_GetBodyTaperAngle3D(void);
 // skirt's reach the rings are relaxed instead of looping over themselves; a loop that
 // cannot be relaxed (a hole closing up) stops early - see the reached depths below.
 SEM_API int SEM_SetBodySkirt3D(double depth);
+
+// Taper and skirt in one call: store the skirt setting - `skirt_depth` exactly as
+// SEM_SetBodySkirt3D takes it, and `skirt_growth` - then run SEM_ApplyBodyTaper3D
+// (same return codes), whose publish builds the skirts from the freshly tapered
+// halves, so both dependent contexts are reloaded once.
+//
+// skirt_growth (clamped to [0, 1]) thins each skirt out away from the parting
+// line. 0 is the plain skirt: rings about one outline edge h apart, each with a
+// vertex per outline vertex. Above 0 the gap between rings grows with the depth
+// reached, h + growth * depth (0.5: rings at h, 2.5h, 4.75h, ...), and every ring
+// keeps only the vertices of the ring above that lie about a gap apart along it -
+// the outline's corners always - so the far part of the skirt, which only has to
+// carry the draft on, costs a fraction of the points. The growth is kept with the
+// depth and used by every later split, taper and SEM_SetBodySkirt3D.
+SEM_API int SEM_ApplyBodyTaperSkirt3D(double taper_angle_deg, int remesh_iters,
+                                      double skirt_depth, double skirt_growth);
 
 // The skirt setting, and how deep each half's skirt actually reached (the least
 // over its boundary loops; 0 before a split or with the skirt off).
@@ -786,3 +846,38 @@ SEM_API int SEM_RemeshStandaloneSurface3D(const SEM_Plane3D* planes, int count,
                                           const double* xyz, int num_nodes,
                                           const int* tris, int num_tris,
                                           SEM_MeshView* out);
+
+// Adaptive variant of SEM_RemeshStandaloneSurface3D, with the same inputs and the
+// same plane handling: triangles shrink where the input is curved, and sharp
+// creases and corners are kept exactly. The sweeps are the same collapse / split /
+// relax-and-project ones plus valence-improving edge flips; what differs is that
+// the target edge length varies over the surface, derived from the input's
+// curvature so that a flat facet sags from it by about the allowed deviation, and
+// that vertices on a crease only slide along it while the corners where creases
+// meet never move. Lengths are multiples of the input's average edge length:
+//   target_len_mult   : edge length where the surface is flat (<= 0: the median
+//                       input edge);
+//   min_len_mult      : floor of the edge length (<= 0: a tenth of the above);
+//   max_dev_mult      : how far a facet may sag from the curved input (<= 0: a
+//                       fiftieth of the flat-region length);
+//   feature_angle_deg : an edge whose two faces turn by more than this is a sharp
+//                       crease (<= 0: no creases, curvature only);
+//   iterations        : sweeps (<= 0 is a no-op).
+// Run it on the original surface: creases an earlier plain remesh already
+// rounded off are no longer sharp enough to be found. The result has its own
+// buffer; read what was kept with SEM_GetLastAdaptiveRemeshReport3D.
+SEM_API int SEM_RemeshAdaptiveStandaloneSurface3D(const SEM_Plane3D* planes, int count,
+                                                  double on_plane_rel_tol,
+                                                  double target_len_mult, double min_len_mult,
+                                                  double max_dev_mult, double feature_angle_deg,
+                                                  int iterations,
+                                                  const double* xyz, int num_nodes,
+                                                  const int* tris, int num_tris,
+                                                  SEM_MeshView* out);
+
+// What the last SEM_RemeshAdaptiveStandaloneSurface3D found and produced: the
+// sharp crease edges and corners of the input it kept, and the shortest and
+// longest edge of the result. Any argument may be null. Negative if no adaptive
+// remesh has run.
+SEM_API int SEM_GetLastAdaptiveRemeshReport3D(int* crease_edges, int* corners,
+                                              double* min_edge, double* max_edge);

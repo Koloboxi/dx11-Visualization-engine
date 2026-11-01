@@ -7,8 +7,10 @@
 namespace DockHost {
 
 // topInset reserves space at the top of the work area (for the tab strip drawn
-// above the dock host / top strip).
-inline void Begin(Scene& scene, bool& blockMousePick, const char* fpsText, float topInset = 0.f) {
+// above the dock host / top strip). statusBlock is handed to the top strip (see
+// TopStripWindow::DrawMenuBarContents).
+inline void Begin(Scene& scene, bool& blockMousePick, const char* fpsText, float topInset = 0.f,
+                  float (*statusBlock)(bool draw) = nullptr) {
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos({ vp->WorkPos.x, vp->WorkPos.y + topInset });
     ImGui::SetNextWindowSize({ vp->WorkSize.x, vp->WorkSize.y - topInset });
@@ -27,7 +29,7 @@ inline void Begin(Scene& scene, bool& blockMousePick, const char* fpsText, float
     ImGui::Begin("##dockhost", nullptr, hostFlags);
     ImGui::PopStyleVar(3);
 
-    TopStripWindow::DrawMenuBarContents(scene, blockMousePick, fpsText);
+    TopStripWindow::DrawMenuBarContents(scene, blockMousePick, fpsText, statusBlock);
 
     ImGuiID dockId = ImGui::GetID("##dockspace");
     ImGui::DockSpace(dockId, ImVec2(0.f, 0.f), ImGuiDockNodeFlags_PassthruCentralNode);

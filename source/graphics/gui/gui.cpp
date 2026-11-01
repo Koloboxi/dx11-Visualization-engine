@@ -50,7 +50,8 @@ void Graphics::Gui()
         return;
     }
 
-    DockHost::Begin(scene, blockMousePick, fpsStr.c_str(), tabH);
+    // The running SEM job's progress and Cancel sit in the top strip, before FPS.
+    DockHost::Begin(scene, blockMousePick, fpsStr.c_str(), tabH, &SEMWindow::DrawTopStripProgress);
 
     SEMWindow::Draw(scene, blockMousePick);
     SceneWindow::Draw(scene, luaEditor, blockMousePick, blockMouseWheel);

@@ -37,7 +37,11 @@ inline void CloseOtherDropdowns(bool& self) {
     for (bool* p : all) if (p != &self) *p = false;
 }
 
-inline void DrawMenuBarContents(Scene& scene, bool& blockMousePick, const char* fpsText = nullptr) {
+// `statusBlock`, when given, draws extra status (the running SEM job) right-aligned
+// just left of the FPS readout: called with false it only returns the width it
+// needs (0 = nothing to show), called with true it draws.
+inline void DrawMenuBarContents(Scene& scene, bool& blockMousePick, const char* fpsText = nullptr,
+                                float (*statusBlock)(bool draw) = nullptr) {
     if (!ImGui::BeginMenuBar()) return;
 
     float btnSz = ImGui::GetFrameHeight() - 2.f;
@@ -94,16 +98,29 @@ inline void DrawMenuBarContents(Scene& scene, bool& blockMousePick, const char* 
     }
     ImGui::SetItemTooltip("Toggle light / dark UI theme.");
 
+    // Right-aligned: the status block (when there is something to show), then FPS.
+    char fpsBuf[32] = "";
+    float fpsW = 0.f;
     if (fpsText && fpsText[0]) {
-        char buf[32];
-        snprintf(buf, sizeof(buf), "FPS: %s", fpsText);
-        float tw = ImGui::CalcTextSize(buf).x;
+        snprintf(fpsBuf, sizeof(fpsBuf), "FPS: %s", fpsText);
+        fpsW = ImGui::CalcTextSize(fpsBuf).x;
+    }
+    const float statusW = statusBlock ? statusBlock(false) : 0.f;
+    if (statusW > 0.f || fpsW > 0.f) {
+        const float gap = (statusW > 0.f && fpsW > 0.f) ? ImGui::GetStyle().ItemSpacing.x : 0.f;
+        const float rightW = statusW + gap + fpsW + 10.f;
         float avail = ImGui::GetContentRegionAvail().x;
-        if (avail > tw + 10.f) ImGui::SameLine(0.f, avail - tw - 10.f);
+        if (avail > rightW) ImGui::SameLine(0.f, avail - rightW);
         else ImGui::SameLine();
-        ImGui::AlignTextToFramePadding();
-        ImVec4 col = scene.lightTheme ? ImVec4(0.0f, 0.0f, 0.0f, 1.0f) : ImVec4(0.4f, 1.0f, 0.4f, 1.0f);
-        ImGui::TextColored(col, "%s", buf);
+        if (statusW > 0.f) {
+            statusBlock(true);
+            if (fpsW > 0.f) ImGui::SameLine();
+        }
+        if (fpsW > 0.f) {
+            ImGui::AlignTextToFramePadding();
+            ImVec4 col = scene.lightTheme ? ImVec4(0.0f, 0.0f, 0.0f, 1.0f) : ImVec4(0.4f, 1.0f, 0.4f, 1.0f);
+            ImGui::TextColored(col, "%s", fpsBuf);
+        }
     }
 
     ImGui::EndMenuBar();

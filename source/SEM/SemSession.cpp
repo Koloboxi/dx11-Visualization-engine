@@ -1,5 +1,6 @@
 #include "SemSessionDetail.h"
 #include "../utils/errorLogger.h"
+#include <cmath>
 #include <functional>
 
 namespace SemSessionNS {
@@ -227,6 +228,19 @@ void SemSession::Validate(Scene& scene) {
 
 void SemSession::MarkStageDirty(Stage st) {
     if (st >= STAGE_SUBDIVIDE && st <= STAGE_ISOSURFACE) m_dirty[st] = true;
+}
+
+float SemSession::AutoTetMaxEdge() const {
+    // Even spacing makes gap k = |firstGap| * grading^k; custom gaps are the
+    // increments themselves (SEM_ComputeOffsetsAt3D accumulates them).
+    double gap = 0.0;
+    if (offsetMode == OFFSET_EVEN) {
+        if (numOffsets >= 1 && grading > 0.0f)
+            gap = std::abs((double)firstGap) * std::pow((double)grading, numOffsets - 1);
+    } else if (!gaps.empty()) {
+        gap = std::abs((double)gaps.back());
+    }
+    return (float)(std::sqrt(2.0) * gap);
 }
 
 void SemSession::SetSurf3dAlpha(Scene& scene, float a) {

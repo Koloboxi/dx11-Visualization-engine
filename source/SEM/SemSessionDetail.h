@@ -72,6 +72,8 @@ int SafeExtractIsosurface3D(double value, SEM_Vec3 axis, double offset_value, do
 // touch the loaded pipeline cache); the result comes back through `out` (valid until
 // the next standalone call). See SEM_OffsetRemeshInPlaneSurface3D.
 int SafeApplyBodyTaper3D(double taper_angle_deg, int remesh_iters);
+int SafeApplyBodyTaperSkirt3D(double taper_angle_deg, int remesh_iters,
+                              double skirt_depth, double skirt_growth);
 int SafeBuildBodyPreform3D(int source, double draft_angle_deg, double target_volume,
                            double shift, double grid_step);
 int SafeTaperInPlaneSurface3D(SEM_Plane3D parting, double on_plane_rel_tol,
@@ -85,6 +87,14 @@ int SafeRemeshStandaloneSurface3D(const SEM_Plane3D* planes, int count,
                                   const double* xyz, int num_nodes,
                                   const int* tris, int num_tris,
                                   SEM_MeshView* out);
+int SafeRemeshAdaptiveStandaloneSurface3D(const SEM_Plane3D* planes, int count,
+                                          double on_plane_rel_tol,
+                                          double target_len_mult, double min_len_mult,
+                                          double max_dev_mult, double feature_angle_deg,
+                                          int iterations,
+                                          const double* xyz, int num_nodes,
+                                          const int* tris, int num_tris,
+                                          SEM_MeshView* out);
 int SafeOffsetRemeshInPlaneSurface3D(SEM_Vec3 axis, double offset_value,
                                      const double* xyz, int num_nodes,
                                      const int* tris, int num_tris,

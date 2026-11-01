@@ -546,6 +546,50 @@ inline void DrawStandaloneTaperSection(Scene& scene, SemSessionNS::SemSession& S
     ImGui::PopID();
 }
 
+// The knobs both standalone remesh sections share: the plain isotropic remesh, or
+// its adaptive variant that sizes the triangles by the curvature and keeps sharp
+// edges. Adaptive has knobs of its own and its own sweep count.
+inline void DrawRemeshKnobs(SemSessionNS::SemSession& S) {
+    ImGui::Checkbox("Adaptive", &S.rmAdaptive);
+    ImGui::SetItemTooltip("Plain: one edge length everywhere, and creases get rounded off.\n"
+                          "Adaptive: edges shrink where the surface is curved, so a facet\n"
+                          "sags from it by at most 'Max deviation', and edges sharper than\n"
+                          "'Sharp edge angle' stay sharp. Run it on the ORIGINAL surface:\n"
+                          "creases a plain remesh already rounded off cannot be recovered.");
+    ImGui::DragFloat(S.rmAdaptive ? "Flat-region length" : "Target length", &S.rmTargetMult,
+                     0.01f, 0.0f, 0.0f, "%.3f");
+    ImGui::SetItemTooltip(S.rmAdaptive
+        ? "Edge length where the surface is flat, as a multiple of the surface's\n"
+          "own average edge length. 0 or less uses the median instead."
+        : "Target edge length as a multiple of the surface's own average\n"
+          "edge length. 0 or less uses the median instead.");
+    if (S.rmAdaptive) {
+        ImGui::DragFloat("Min length", &S.rmMinMult, 0.005f, 0.0f, 0.0f, "%.3f");
+        ImGui::SetItemTooltip("Shortest edge, same unit. 0 = a tenth of the flat-region length.");
+        ImGui::DragFloat("Max deviation", &S.rmMaxDevMult, 0.001f, 0.0f, 0.0f, "%.4f");
+        ImGui::SetItemTooltip("How far a facet may sag from the curved input, same unit.\n"
+                              "Smaller = finer triangles on fillets and other curves.\n"
+                              "0 = a fiftieth of the flat-region length.");
+        ImGui::DragFloat("Sharp edge angle", &S.rmFeatureDeg, 0.5f, 0.0f, 180.0f, "%.1f deg");
+        ImGui::SetItemTooltip("An edge whose two faces turn by more than this is kept as a\n"
+                              "crease: its vertices slide only along it, and the corners where\n"
+                              "creases meet stay put. 0 = no creases, curvature only.");
+        ImGui::DragInt("Iterations", &S.rmAdaptiveIters, 0.1f, 0, 50);
+        ImGui::SetItemTooltip("Sweeps of split / collapse / flip / relaxation. 0 is a no-op.");
+    } else {
+        ImGui::DragInt("Iterations", &S.rmIters, 0.1f, 0, 50);
+        ImGui::SetItemTooltip("Sweeps of collapse / split / relaxation. 0 is a no-op.");
+    }
+}
+
+// What the last adaptive remesh kept, under its section.
+inline void DrawAdaptiveRemeshReport(SemSessionNS::SemSession& S) {
+    int creases = 0, corners = 0;
+    double lo = 0.0, hi = 0.0;
+    if (S.rmAdaptive && !S.AsyncRunning() && S.AdaptiveRemeshReport(creases, corners, lo, hi))
+        ImGui::TextDisabled("kept %d sharp edges, %d corners; edges %.3g..%.3g", creases, corners, lo, hi);
+}
+
 // Standalone isotropic remesh: triangulation only, the shape is preserved.
 inline void DrawStandaloneRemeshPlainSection(Scene& scene, SemSessionNS::SemSession& S) {
     ImGui::PushID("soremesh");
@@ -560,13 +604,10 @@ inline void DrawStandaloneRemeshPlainSection(Scene& scene, SemSessionNS::SemSess
             ? "Boundary vertices in the plane slide within it."
             : "Without a plane every boundary vertex is frozen.");
 
-        ImGui::DragFloat("Target length", &S.rmTargetMult, 0.01f, 0.0f, 0.0f, "%.3f");
-        ImGui::SetItemTooltip("Target edge length as a multiple of the surface's own average\n"
-                              "edge length. 0 or less uses the median instead.");
-        ImGui::DragInt("Iterations", &S.rmIters, 0.1f, 0, 50);
-        ImGui::SetItemTooltip("Sweeps of collapse / split / relaxation. 0 is a no-op.");
+        DrawRemeshKnobs(S);
         if (ImGui::Button("Apply remesh", {200, 0}))
             S.ApplyStandaloneRemeshAsync(scene, false);
+        DrawAdaptiveRemeshReport(S);
         DrawResultFileRow(scene, S);
     }
     ImGui::PopID();
@@ -587,11 +628,7 @@ inline void DrawBodyRemeshSection(Scene& scene, SemSessionNS::SemSession& S) {
         ImGui::TextDisabled("written next to the source, to be opened as a setup.");
         ImGui::Spacing();
         ImGui::BeginDisabled(S.BodySplit());
-        ImGui::DragFloat("Target length", &S.rmTargetMult, 0.01f, 0.0f, 0.0f, "%.3f");
-        ImGui::SetItemTooltip("Target edge length as a multiple of the surface's own average\n"
-                              "edge length. 0 or less uses the median instead.");
-        ImGui::DragInt("Iterations", &S.rmIters, 0.1f, 0, 50);
-        ImGui::SetItemTooltip("Sweeps of collapse / split / relaxation. 0 is a no-op.");
+        DrawRemeshKnobs(S);
         if (ImGui::Button("Apply remesh", {200, 0}))
             S.ApplyStandaloneRemeshAsync(scene, false);
         ImGui::SetItemTooltip("Remesh the closed surface. The parting plane is ignored here -\n"
@@ -599,6 +636,7 @@ inline void DrawBodyRemeshSection(Scene& scene, SemSessionNS::SemSession& S) {
         ImGui::EndDisabled();
         if (S.BodySplit())
             ImGui::TextDisabled("Remesh the body before splitting it.");
+        DrawAdaptiveRemeshReport(S);
         DrawResultFileRow(scene, S);
     }
     ImGui::PopID();
@@ -674,14 +712,50 @@ inline void DrawBodyTaperSection(Scene& scene, SemSessionNS::SemSession& S) {
                               "taper's own triangulation. The per-facet numbers below are\n"
                               "re-measured after the sweeps.");
 
+        // The skirt is built by the same Apply, from the freshly tapered halves.
+        ImGui::Checkbox("Extend past the parting plane (skirt)", &S.skirtEnabled);
+        ImGui::SetItemTooltip("Carry each half's walls on below the parting plane at the draft\n"
+                              "angle. The halves' stages then run on half + skirt, with no clip\n"
+                              "at the plane: near the parting line the thermal field is an\n"
+                              "interior one and the isosurface keeps the wall's slope instead of\n"
+                              "meeting the plane square on.");
+        ImGui::BeginDisabled(!S.skirtEnabled);
+        ImGui::DragFloat("Skirt depth", &S.skirtDepth, 0.01f, 0.0f, 0.0f, "%.4f");
+        if (S.skirtDepth < 0.0f) S.skirtDepth = 0.0f;
+        ImGui::SetItemTooltip("How far below the plane each skirt goes. 0 = down to the other\n"
+                              "half's height, i.e. through the whole other half. It should also\n"
+                              "be a few times the total offset, so the free edge of the skirt\n"
+                              "stays clear of the parting line.");
+        ImGui::DragFloat("Skirt thinning", &S.skirtGrowth, 0.01f, 0.0f, 1.0f, "%.2f");
+        S.skirtGrowth = (std::min)(1.0f, (std::max)(0.0f, S.skirtGrowth));
+        ImGui::SetItemTooltip("How fast the skirt gets sparser away from the parting line.\n"
+                              "0: rings one outline edge h apart, each with every outline vertex.\n"
+                              "Above 0 each gap is h + thinning * (depth so far) - 0.5 puts the\n"
+                              "rings at h, 2.5h, 4.75h, ... - and every ring keeps only the\n"
+                              "vertices about a gap apart along it (the outline's corners always),\n"
+                              "so the far skirt, which only carries the draft on, costs few points.");
+        ImGui::EndDisabled();
+
         if (ImGui::Button("Apply taper", {200, 0})) S.ApplyTaper(scene, false);
-        ImGui::SetItemTooltip("Taper both halves. The core always tapers the pristine cut, so\n"
+        ImGui::SetItemTooltip("Taper both halves, then extend them by the skirt when it is on -\n"
+                              "one core call. The core always tapers the pristine cut, so\n"
                               "applying another angle rebuilds the halves instead of stacking\n"
                               "a second draft on them. Their pipeline stages are dropped,\n"
                               "because their source geometry changed.");
+        if (S.SkirtActive() != S.skirtEnabled)
+            ImGui::TextDisabled(S.skirtEnabled ? "Skirt not built yet - Apply taper."
+                                               : "Skirt still on - Apply taper to drop it.");
 
-        // Both readouts below ask the core about the halves, so they must not run
+        // The readouts below ask the core about the halves, so they must not run
         // while the taper worker is rewriting them in the same context.
+        if (S.SkirtActive() && S.BodySplit() && !S.AsyncRunning()) {
+            double d = 0.0, rp = 0.0, rn = 0.0;
+            if (S.SkirtState(d, rp, rn))
+                ImGui::TextDisabled("Skirt reached: + half %.4g, - half %.4g", rp, rn);
+            ImGui::SetItemTooltip("The least depth over each half's boundary loops. A loop whose\n"
+                                  "rings cannot be kept from folding over (a hole of the outline\n"
+                                  "closing up) stops early.");
+        }
         if (S.BodySplit() && !S.AsyncRunning()) {
             for (int side = 0; side < 2; ++side) {
                 const int sgn = (side == 0) ? +1 : -1;
@@ -703,44 +777,6 @@ inline void DrawBodyTaperSection(Scene& scene, SemSessionNS::SemSession& S) {
                                "reported here but not corrected.");
         }
         ImGui::EndDisabled();
-    }
-    ImGui::PopID();
-}
-
-// Body session: extend both halves past the parting plane by their own draft
-// walls. Their pipelines then run on the extended surfaces without a clip at the
-// plane, so near the parting line the thermal field is an interior one and the
-// isosurface keeps the wall's slope instead of meeting the plane square on.
-inline void DrawBodySkirtSection(Scene& scene, SemSessionNS::SemSession& S) {
-    ImGui::PushID("bodyskirt");
-    if (ImGui::CollapsingHeader("Extend halves (skirt)", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::Checkbox("Extend past the parting plane", &S.skirtEnabled);
-        ImGui::SetItemTooltip("Carry each half's walls on below the parting plane at the taper\n"
-                              "angle (straight down before any taper). The halves' stages then\n"
-                              "run on half + skirt, with no clip at the plane.");
-        ImGui::BeginDisabled(!S.skirtEnabled);
-        ImGui::DragFloat("Depth", &S.skirtDepth, 0.01f, 0.0f, 0.0f, "%.4f");
-        if (S.skirtDepth < 0.0f) S.skirtDepth = 0.0f;
-        ImGui::SetItemTooltip("How far below the plane each skirt goes. 0 = down to the other\n"
-                              "half's height, i.e. through the whole other half. It should also\n"
-                              "be a few times the total offset, so the free edge of the skirt\n"
-                              "stays clear of the parting line.");
-        ImGui::EndDisabled();
-        if (ImGui::Button("Apply skirt", {200, 0})) S.ApplySkirt(scene, false);
-        ImGui::SetItemTooltip("Push the setting to the core. On a split body both halves are\n"
-                              "reloaded as half + skirt (their stages are dropped) - and back\n"
-                              "to the bare, clipped halves when the box is unticked. Kept for\n"
-                              "every later split and taper.");
-        if (S.SkirtActive() && S.BodySplit() && !S.AsyncRunning()) {
-            double d = 0.0, rp = 0.0, rn = 0.0;
-            if (S.SkirtState(d, rp, rn))
-                ImGui::TextDisabled("Reached: + half %.4g, - half %.4g", rp, rn);
-            ImGui::SetItemTooltip("The least depth over each half's boundary loops. A loop whose\n"
-                                  "rings cannot be kept from folding over (a hole of the outline\n"
-                                  "closing up) stops early.");
-        }
-        if (S.SkirtActive() != (S.skirtEnabled))
-            ImGui::TextDisabled("Not applied yet.");
     }
     ImGui::PopID();
 }
@@ -824,6 +860,63 @@ inline void DrawBodyPreformSection(Scene& scene, SemSessionNS::SemSession& S) {
     ImGui::PopID();
 }
 
+// The running SEM job for the top strip, between the toolbar and the FPS readout:
+// the stage's bar (naming the half of a body), the bar of the phase running inside
+// it, and Cancel. Returns the width it needs and draws only when `draw` is set, so
+// the strip can measure it first to right-align it; 0 while no setup computes.
+inline float DrawTopStripProgress(bool draw) {
+    using namespace SemSessionNS;
+    SemSession* S = nullptr;
+    SemWorkspace& ws = Workspace();
+    for (int i = 0; i < ws.Count() && !S; ++i) {
+        SemSession* s = ws.At(i);
+        if (s && s->AsyncRunning()) S = s;
+    }
+    if (!S) return 0.0f;
+
+    const float kMainW = 280.0f, kSubW = 220.0f;
+    const ImGuiStyle& st = ImGui::GetStyle();
+    const char* sub = S->AsyncSubStageName();
+    const bool hasSub = sub && sub[0];
+    const bool stopping = S->AsyncCancelRequested();
+    const char* btn = stopping ? "Stopping..." : "Cancel";
+    const float btnW = ImGui::CalcTextSize(btn).x + 2.0f * st.FramePadding.x;
+    const float w = kMainW + (hasSub ? st.ItemSpacing.x + kSubW : 0.0f) + st.ItemSpacing.x + btnW;
+    if (!draw) return w;
+
+    const float h = ImGui::GetFrameHeight() - 2.0f;
+    char overlay[160];
+    if (S->IsBody() && S->BodyPhase() > 0)
+        snprintf(overlay, sizeof(overlay), "Half %d/2: %s  %.0f%%", S->BodyPhase(),
+                 S->AsyncStageName(), S->AsyncProgress() * 100.0f);
+    else
+        snprintf(overlay, sizeof(overlay), "%s  %.0f%%", S->AsyncStageName(),
+                 S->AsyncProgress() * 100.0f);
+    ImGui::ProgressBar(S->AsyncProgress(), ImVec2(kMainW, h), overlay);
+    ImGui::SetItemTooltip("%s", overlay);
+    // The phase running now inside this stage and its own fraction
+    // (SEM_GetProgressStage / SEM_GetProgressStageFraction).
+    if (hasSub) {
+        char subOverlay[160];
+        snprintf(subOverlay, sizeof(subOverlay), "%s  %.0f%%", sub,
+                 S->AsyncSubStageProgress() * 100.0f);
+        ImGui::SameLine();
+        ImGui::ProgressBar(S->AsyncSubStageProgress(), ImVec2(kSubW, h), subOverlay);
+        ImGui::SetItemTooltip("%s", subOverlay);
+    }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(stopping);
+    if (ImGui::Button(btn, ImVec2(btnW, h))) S->CancelAsync();
+    ImGui::EndDisabled();
+    ImGui::SetItemTooltip("Stop the 3D pipeline now: the stage running is interrupted at\n"
+                          "its next progress checkpoint and rolled back, and every queued\n"
+                          "stage after it is skipped. Stages that already completed are\n"
+                          "kept. A few third-party kernels (Delaunay, the sparse solve,\n"
+                          "the CDT) can only be stopped before they start, so a stop can\n"
+                          "take until one of those finishes.");
+    return w;
+}
+
 inline void Draw(Scene& scene, bool& blockMousePick) {
     using namespace SemSessionNS;
 
@@ -864,42 +957,15 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
     const float kItemW = 180.0f;
     ImGui::PushItemWidth(kItemW);
 
-    // While a 3D pipeline runs on its worker thread, show a progress bar (driven
-    // by SEM_GetProgress via the session) and disable every control so parameters
-    // can't change mid-computation. The library reports progress process-globally,
-    // so only one setup may compute at a time: a job in ANY setup disables the
-    // controls here, while the bar tracks whichever setup owns it.
+    // While a 3D pipeline runs on its worker thread, disable every control so
+    // parameters can't change mid-computation. Its progress bars and Cancel live in
+    // the top strip (DrawTopStripProgress). The library reports progress
+    // process-globally, so only one setup may compute at a time: a job in ANY setup
+    // disables the controls here.
     const bool busy      = S.AsyncRunning();
     const bool otherBusy = !busy && Workspace().AnyAsyncRunning();
     if (busy) {
-        char overlay[32];
-        snprintf(overlay, sizeof(overlay), "%.0f%%", S.AsyncProgress() * 100.0f);
-        if (S.IsBody() && S.BodyPhase() > 0)
-            ImGui::Text("Half %d of 2: %s...", S.BodyPhase(), S.AsyncStageName());
-        else
-            ImGui::Text("%s...", S.AsyncStageName());
-        ImGui::ProgressBar(S.AsyncProgress(), ImVec2(kItemW, 0.0f), overlay);
-        // Finer breakdown: the phase running now inside this stage and its own bar
-        // (driven by SEM_GetProgressStage / SEM_GetProgressStageFraction).
-        const char* sub = S.AsyncSubStageName();
-        if (sub && sub[0]) {
-            char subOverlay[32];
-            snprintf(subOverlay, sizeof(subOverlay), "%.0f%%",
-                     S.AsyncSubStageProgress() * 100.0f);
-            ImGui::TextDisabled("%s", sub);
-            ImGui::ProgressBar(S.AsyncSubStageProgress(), ImVec2(kItemW, 0.0f), subOverlay);
-        }
-        if (S.AsyncCancelRequested()) {
-            ImGui::TextDisabled("Stopping...");
-        } else if (ImGui::Button("Cancel", {kItemW, 0})) {
-            S.CancelAsync();
-        }
-        ImGui::SetItemTooltip("Stop the 3D pipeline now: the stage running is interrupted at\n"
-                              "its next progress checkpoint and rolled back, and every queued\n"
-                              "stage after it is skipped. Stages that already completed are\n"
-                              "kept. A few third-party kernels (Delaunay, the sparse solve,\n"
-                              "the CDT) can only be stopped before they start, so a stop can\n"
-                              "take until one of those finishes.");
+        ImGui::TextDisabled("Computing - progress and Cancel are in the top bar.");
         ImGui::Separator();
     } else if (otherBusy) {
         ImGui::TextDisabled("Another setup is computing...");
@@ -1005,7 +1071,6 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         // Stages 1 and 2 of a body session; the shared pipeline stack follows below.
         DrawBodySplitSection(scene, S);
         DrawBodyTaperSection(scene, S);
-        DrawBodySkirtSection(scene, S);
     } else if (!is3D) {
         DrawRevolutionSection(scene, S);
     } else if (S.sessionMode == SemSession::SESSION_TAPER ||
@@ -1148,7 +1213,8 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         if (is3D) {
             const char* tetItems = "Band\0" "Layered\0";
             if (ImGui::Combo("Tet method", &S.tetMethod, tetItems)) {
-                S.tetParam = -1.0f;
+                // Band: automatic Steiner cell. Layered: carve by the source SDF.
+                S.tetParam = (S.tetMethod == SEM_TET_LAYERED) ? 1.0f : -1.0f;
                 changed = true;
             }
             if (S.tetMethod == SEM_TET_BAND) {
@@ -1182,12 +1248,28 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         // Max tet edge length filter (3D only), in world units. Sits just above
         // Apply so the meshing parameters read top to bottom. <= 0 disables the filter.
         if (is3D) {
-            ImGui::DragFloat("Max edge (world, 0=off)", &S.tetMaxEdgeLen, 0.05f, 0.0f, 100.0f, "%.3f");
+            // Automatic: sqrt(2) times the gap between the last two offset shells,
+            // following the offset settings until the value is edited by hand.
+            if (S.tetMaxEdgeAuto) {
+                const float a = S.AutoTetMaxEdge();
+                if (a != S.tetMaxEdgeLen) { S.tetMaxEdgeLen = a; S.MarkStageDirty(STAGE_MESH); }
+            }
+            if (ImGui::DragFloat("Max edge (world, 0=off)", &S.tetMaxEdgeLen, 0.05f, 0.0f, 0.0f, "%.3f"))
+                S.tetMaxEdgeAuto = false;
             released |= ImGui::IsItemDeactivatedAfterEdit();
             ImGui::SetItemTooltip("After meshing, remove any tet with an edge longer than this,\n"
                                   "measured as a distance in world units.\n"
-                                  "Vertices are kept. 0 or less disables the filter.");
+                                  "Vertices are kept. 0 or less disables the filter.\n"
+                                  "auto: sqrt(2) x the gap between the last two offsets, updated\n"
+                                  "as the offsets change; editing the value switches it off.");
             if (S.tetMaxEdgeLen < 0.0f) S.tetMaxEdgeLen = 0.0f;
+            ImGui::SameLine();
+            if (S.tetMaxEdgeAuto) {
+                ImGui::TextDisabled("auto");
+            } else if (ImGui::SmallButton("auto##maxedge")) {
+                S.tetMaxEdgeAuto = true;
+                changed = true;
+            }
         }
 
         if (changed || released) S.MarkStageDirty(STAGE_MESH);
@@ -1199,59 +1281,33 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
     }
 
     {
-        ImGui::PushID("thermal");
-        if (ImGui::CollapsingHeader("Thermal solve", ImGuiTreeNodeFlags_DefaultOpen)) {
-        if (ImGui::SmallButton("Reset##thermal")) S.ResetStage(scene, STAGE_THERMAL);
-        stageTime(S.ThermalTimeMs());
+        // The thermal solve is part of this stage: Apply solves the field first
+        // whenever it is stale (a new mesh, or Max inward edited), then extracts.
+        ImGui::PushID("iso");
+        if (ImGui::CollapsingHeader(is3D ? "Isosurface" : "Isoline", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (ImGui::SmallButton("Reset##iso")) S.ResetStage(scene, STAGE_THERMAL);
+        if (S.ThermalTimeMs() >= 0.0) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("solve %.0f ms", S.ThermalTimeMs());
+        }
+        if (S.IsoTimeMs() >= 0.0) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("extract %.0f ms", S.IsoTimeMs());
+        }
 
         ImGui::Indent();
         // SEM_SolveThermal3D knob (3D only — the 2D SEM_SolveThermal takes no
         // parameters). max_inward filters the outermost T=0 nodes by the source
-        // signed distance. It sits ABOVE Apply so the solve params read top to
-        // bottom.
+        // signed distance; editing it makes the next Apply re-solve.
         if (is3D) {
             ImGui::DragFloat("Max inward (0..1)", &S.maxInward, 0.005f, 0.0f, 1.0f, "%.3f");
             if (ImGui::IsItemDeactivatedAfterEdit()) S.MarkStageDirty(STAGE_THERMAL);
-            ImGui::SetItemTooltip("Maximum relative depth (fraction of the outer extent) an\n"
-                                  "outermost node may sit inward of the true outer extent and\n"
-                                  "still be kept as a T=0 node. Deeper nodes are dropped.");
+            ImGui::SetItemTooltip("Thermal solve: the maximum relative depth (fraction of the outer\n"
+                                  "extent) an outermost node may sit inward of the true outer extent\n"
+                                  "and still be kept as a T=0 node. Deeper nodes are dropped.");
             if (S.maxInward < 0.0f) S.maxInward = 0.0f;
             if (S.maxInward > 1.0f) S.maxInward = 1.0f;
         }
-
-        // Apply solves the steady-state field only; the isosurface is extracted by
-        // the separate stage below.
-        if (ImGui::Button("Apply", {160, 0})) S.RecomputeUpToAsync(scene, STAGE_THERMAL, false);
-        ImGui::SetItemTooltip(is3D
-            ? "Solve steady-state heat conduction on the tetrahedral band mesh\n"
-              "(source surface T=1, farthest shell T=0) and recolour the mesh by the\n"
-              "solved field. Does not extract the isosurface."
-            : "Solve steady-state heat conduction on the band mesh (source T=1,\n"
-              "farthest offset T=0) and recolour the mesh by the solved field.");
-
-        // Mesh colouring toggle (only meaningful once the field is solved):
-        // unchecked = T-field gradient (blue..red), checked = BC view (blue T=0,
-        // red T=1, light grey everywhere else).
-        ImGui::BeginDisabled(!S.ThermalSolved());
-        bool bc = S.bcView;
-        if (ImGui::Checkbox("BC / T field", &bc)) S.SetBCView(scene, bc);
-        ImGui::SetItemTooltip("Mesh colouring after the solve.\n"
-                              "Off: temperature field as a blue (T=0) to red (T=1) gradient.\n"
-                              "On: only the boundary-condition nodes are tinted — blue for\n"
-                              "T=0, red for T=1 — and every interior node is light grey.");
-        ImGui::EndDisabled();
-        ImGui::Unindent();
-        }
-        ImGui::PopID();
-    }
-
-    {
-        ImGui::PushID("iso");
-        if (ImGui::CollapsingHeader(is3D ? "Isosurface" : "Isoline", ImGuiTreeNodeFlags_DefaultOpen)) {
-        if (ImGui::SmallButton("Reset##iso")) S.ResetStage(scene, STAGE_ISOSURFACE);
-        stageTime(S.IsoTimeMs());
-
-        ImGui::Indent();
         ImGui::DragFloat(is3D ? "Isosurface value (0..1)" : "Isoline value (0..1)",
                          &S.isoValue, 0.005f, 0.0f, 1.0f, "%.3f");
         if (ImGui::IsItemDeactivatedAfterEdit()) S.MarkStageDirty(STAGE_ISOSURFACE);
@@ -1337,17 +1393,31 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
                                   "Nothing turns red when the winding is uniform.");
         }
 
-        // Apply extracts the iso sheet from the solved field. It runs on the worker
-        // (it is now a long-running, progress-reporting SEM call) and solves the
-        // thermal field first if it is still stale.
+        // Apply solves the thermal field when it is stale and extracts the iso sheet
+        // from it, both on the worker (long-running, progress-reporting SEM calls).
         if (ImGui::Button(is3D ? "Apply isosurface" : "Apply isoline", {160, 0}))
             S.RecomputeUpToAsync(scene, STAGE_ISOSURFACE, false);
         ImGui::SetItemTooltip(is3D
-            ? "Extract the isosurface at the chosen value from the solved field\n"
-              "(applying the offset/remesh axis and shift). Solves the thermal\n"
-              "field first if it is not yet solved."
-            : "Extract the isotherm at the chosen value from the solved field.\n"
-              "Solves the thermal field first if it is not yet solved.");
+            ? "Solve steady-state heat conduction on the tetrahedral band mesh\n"
+              "(source surface T=1, farthest shell T=0) when the field is stale -\n"
+              "a new mesh or an edited Max inward - then extract the isosurface at\n"
+              "the chosen value (applying the offset/remesh axis and shift).\n"
+              "Changing only the value re-extracts without re-solving."
+            : "Solve steady-state heat conduction on the band mesh (source T=1,\n"
+              "farthest offset T=0) when the field is stale, then extract the\n"
+              "isotherm at the chosen value.");
+
+        // Mesh colouring by the solved field (only meaningful once it is solved):
+        // unchecked = T-field gradient (blue..red), checked = BC view (blue T=0,
+        // red T=1, light grey everywhere else).
+        ImGui::BeginDisabled(!S.ThermalSolved());
+        bool bc = S.bcView;
+        if (ImGui::Checkbox("BC / T field", &bc)) S.SetBCView(scene, bc);
+        ImGui::SetItemTooltip("Mesh colouring after the solve (show the mesh to see it).\n"
+                              "Off: temperature field as a blue (T=0) to red (T=1) gradient.\n"
+                              "On: only the boundary-condition nodes are tinted — blue for\n"
+                              "T=0, red for T=1 — and every interior node is light grey.");
+        ImGui::EndDisabled();
 
         if (is3D) {
             // Angle-weighted vertex pseudonormals of the extracted isosurface,
