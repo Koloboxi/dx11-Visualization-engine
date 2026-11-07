@@ -167,9 +167,10 @@ inline void DrawMenuBarContents(Scene& scene, bool& blockMousePick, const char* 
             ImGuiWindowFlags_NoDocking        | ImGuiWindowFlags_NoCollapse);
 
         ImGui::Checkbox("Enable section", &scene.section.enabled);
-        ImGui::SetItemTooltip("Clip solid meshes against a plane to reveal a\n"
-                              "cross-section. Points, lines, grid and axes are\n"
-                              "left intact.");
+        ImGui::SetItemTooltip("Clip the scene against a plane to reveal a\n"
+                              "cross-section: surfaces, lines (cut where they\n"
+                              "cross the plane) and points. The grid, the axes\n"
+                              "and the gizmos are left intact.");
 
         ImGui::BeginDisabled(!scene.section.enabled);
 

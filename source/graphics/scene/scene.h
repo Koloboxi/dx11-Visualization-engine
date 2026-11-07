@@ -136,7 +136,7 @@ public:
 	// management, Time Control and Lua Globals collapsible sections.
 	bool sceneTreeOnly = false;
 
-	// Visual cross-section: clip meshes (dim==2) against a single plane.
+	// Visual cross-section: clip surfaces, lines and points against a single plane.
 	// axis selects the plane by its normal: 0 = YZ (normal X), 1 = XZ (normal Y),
 	// 2 = XY (normal Z). offset slides the plane along that normal; flip swaps
 	// which half is kept.
@@ -196,6 +196,10 @@ public:
 
 	// Add a flat triangle-soup surface from explicit per-vertex positions/colours
 	// (poses.size() must be a multiple of 3). The supplied winding is kept as-is.
+	// A line list (two vertices per segment, per-vertex colours) as one primitive.
+	// Null when there is nothing to draw.
+	Primitive* AddColoredLines(const std::vector<XMFLOAT3>& poses, const std::vector<XMFLOAT4>& cols,
+		const std::string& name, SceneNode* parent);
 	Primitive* AddColoredTriangles(const std::vector<XMFLOAT3>& poses, const std::vector<XMFLOAT4>& cols,
 		const std::string& name, SceneNode* parent = nullptr);
 

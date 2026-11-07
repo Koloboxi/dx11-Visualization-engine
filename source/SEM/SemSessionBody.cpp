@@ -56,10 +56,10 @@ void SemSession::BindExisting(Scene& scene, int ctx, Primitive* prim,
     dim         = 3;
     sessionMode = SESSION_PIPELINE;
     m_isHalf    = true;
-    m_offsets = nullptr; m_mesh = nullptr; m_isoline = nullptr;
-    m_isoSource = nullptr; m_isoProj = nullptr; m_isoProjected = false;
-    m_srcNormals = nullptr; m_isoNormals = nullptr; m_isoSrcNormals = nullptr;
-    m_isoLoops = nullptr;
+    m_offsets = nullptr; m_mesh = nullptr; m_isoline = nullptr; m_gridBox = nullptr;
+    m_meshPos.clear(); m_meshT.clear(); m_meshEdges.clear();
+    m_isoProj = nullptr; m_isoProjected = false;
+    m_srcNormals = nullptr;
     m_meshPath.clear(); m_isolinePath.clear();
     m_thermalSolved = false;
     m_offStats = m_meshStats = Stats();
@@ -394,20 +394,6 @@ bool SemSession::ApplyPreform(Scene& scene, bool silent) {
         Report(scene, silent, "Extract the isosurface on both halves first.");
         return false;
     }
-    double target = 0.0;
-    if (preformSizing == PREFORM_MATCH_BODY) {
-        target = BodyVolume();
-        if (target <= 0.0) {
-            Report(scene, silent, "The body has no enclosed volume to match.");
-            return false;
-        }
-    } else if (preformSizing == PREFORM_MATCH_VOLUME) {
-        target = preformVolume;
-        if (target <= 0.0) {
-            Report(scene, silent, "Enter a positive target volume.");
-            return false;
-        }
-    }
 
     if (m_job.worker.joinable()) m_job.worker.join();
     m_job.runOffsets = m_job.runMesh = m_job.runThermal = m_job.runIso = false;
@@ -416,10 +402,6 @@ bool SemSession::ApplyPreform(Scene& scene, bool silent) {
     m_job.runBodyPreform = true;
     m_job.pfSource = (preformSource == PREFORM_FROM_ISOSURFACES) ? SEM_PREFORM_FROM_ISOSURFACES
                                                                  : SEM_PREFORM_FROM_HALVES;
-    m_job.pfAngle  = (double)taperAngle;
-    m_job.pfTarget = target;
-    m_job.pfShift  = (preformSizing == PREFORM_FIXED_SHIFT) ? (double)preformShift : 0.0;
-    m_job.pfStep   = (double)preformGridStep;
     m_job.offsetsPath.clear();
     m_job.meshPath.clear();
     m_job.isoPath.clear();
@@ -473,22 +455,25 @@ void SemSession::FinishBodyPreform(Scene& scene) {
     m_preformPath = SaveNextToSource("_preform", m_preformData);
     scene.UpdateLight();
 
-    double shift = 0.0, volume = 0.0, step = 0.0, added = 0.0, worst = 0.0;
-    PreformReport(shift, volume, step, added, worst);
+    double volume = 0.0, land = 0.0;
+    int lp = 0, ln = 0, cross = 0, open = 0;
+    PreformReport(volume, land, lp, ln, cross, open);
     snprintf(status, sizeof(status),
-             "Preform in %.0f ms: volume %.6g, shift %.4g per half, min draft %.2f deg%s%s.",
-             m_job.preformMs, volume, shift, worst,
+             "Preform in %.0f ms: volume %.6g, lands %.4g%s%s%s.",
+             m_job.preformMs, volume, land,
+             open > 0 ? ", NOT closed" : "",
              m_preformPath.empty() ? "" : ", saved ",
              m_preformPath.empty() ? "" : BaseName(m_preformPath).c_str());
 }
 
-bool SemSession::PreformReport(double& shift, double& volume, double& grid_step,
-                               double& draft_volume, double& min_draft_deg) const {
-    shift = volume = grid_step = draft_volume = min_draft_deg = 0.0;
+bool SemSession::PreformReport(double& volume, double& land_area, int& loops_pos, int& loops_neg,
+                               int& crossings, int& open_edges) const {
+    volume = land_area = 0.0;
+    loops_pos = loops_neg = crossings = open_edges = 0;
     if (!IsBody() || !m_bodySplit) return false;
     Activate();
-    return SEM_GetBodyPreformReport3D(&shift, &volume, &grid_step,
-                                      &draft_volume, &min_draft_deg) == 0;
+    return SEM_GetBodyPreformReport3D(&volume, &land_area, &loops_pos, &loops_neg,
+                                      &crossings, &open_edges) == 0;
 }
 
 bool SemSession::TaperReport(int side, int& verts_moved, int& facets_violating,
@@ -575,11 +560,12 @@ void SemSession::PushStageParams() {
         h->tetMaxEdgeLen = tetMaxEdgeLen; h->tetMaxEdgeAuto = tetMaxEdgeAuto;
         h->meshEnabled = meshEnabled;
         h->thermalEnabled = thermalEnabled; h->maxInward = maxInward; h->bcView = bcView;
-        h->activeLayers = activeLayers;
-        h->isoEnabled = isoEnabled; h->isoValue = isoValue; h->isoAxisN = isoAxisN;
-        h->isoOffsetValue = isoOffsetValue; h->isoMinOffsetValue = isoMinOffsetValue;
-        h->isoFinalTargetMult = isoFinalTargetMult; h->isoFinalIters = isoFinalIters;
-        h->isoShowWinding = isoShowWinding; h->isoShowNonManifold = isoShowNonManifold;
+        h->innerEnabled = innerEnabled; h->innerFirstGap = innerFirstGap;
+        h->innerNum = innerNum; h->innerGrading = innerGrading;
+        h->gridBoxScale = gridBoxScale; h->gridStep = gridStep;
+        h->bcFrom = bcFrom; h->bcTo = bcTo; h->isoShift = isoShift;
+        h->isoEnabled = isoEnabled; h->isoValue = isoValue;
+        h->isoShowNonManifold = isoShowNonManifold;
         h->surf3dAlpha = surf3dAlpha;
         // The stage knobs are edited on this session, so this is also where the
         // staleness the UI recorded here reaches the halves.

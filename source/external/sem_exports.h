@@ -273,6 +273,27 @@ SEM_API int SEM_ClearClipPlanes3D(void);
 SEM_API int SEM_ComputeOffsets3D(double first_gap, int num_offsets, double grading);
 SEM_API int SEM_ComputeOffsetsAt3D(const double* gaps, int count);
 
+// Compute graded offset shells INTO the material (against the source normals),
+// alongside the outer ones: first_gap > 0 is the depth of the first, the next
+// gaps scale by `grading`. num_offsets = 0 removes them. Like the outer shells
+// they are rebuilt on a clip change and dropped by a subdivide. Only the GRID
+// mesh embeds them. Writes <stem>_offset3d_in_<k>.csv3d (k = 1 = shallowest).
+SEM_API int SEM_ComputeInnerOffsets3D(double first_gap, int num_offsets, double grading);
+
+// The levels a GRID mesh embeds and SEM_SetThermalBC3D chooses from, as signed
+// distances from the source (negative = inner): level k runs from -num_inner (the
+// deepest inner offset) through 0 (the source) to num_outer (the outermost outer
+// offset). `dists` receives dists[k + num_inner] for every level, room for `max`.
+// Negative without a source.
+SEM_API int SEM_GetOffsetLevels3D(int* num_inner, int* num_outer, double* dists, int max);
+
+// Stand-ins for "the outermost" and "the deepest" level in SEM_SetThermalBC3D,
+// resolved against the levels at each solve.
+enum SEM_LevelSentinel {
+    SEM_LEVEL_OUTERMOST = 1000000,
+    SEM_LEVEL_INNERMOST = -1000000
+};
+
 // Tetrahedralization variant for SEM_BuildMesh3D:
 //   SEM_TET_BAND    - Delaunay of (source verts + outermost-offset verts + an
 //                     interior Steiner grid), carved to the band by the source
@@ -287,93 +308,108 @@ SEM_API int SEM_ComputeOffsetsAt3D(const double* gaps, int count);
 //                     and band nodes left on the inner boundary within the first
 //                     gap of the source (where the carve dipped below it) are
 //                     marked as source nodes, so the thermal solve holds them at
-//                     T=1 too.
+//                     their value too.
+//   SEM_TET_GRID    - the domain is a box around the source, `box_scale` times
+//                     its extents along each axis (and never less than what holds
+//                     every offset shell), meshed as a regular grid of spacing
+//                     `param` with the points of every level - the source, the
+//                     outer and the inner offsets - embedded: each level's points
+//                     are thinned to half a grid step and put at exactly their
+//                     distance from the source (folds of an offset are dropped),
+//                     grid points too close to them are left out, then all of it
+//                     is tetrahedralized (Delaunay). Clip planes cut the box flush,
+//                     and so does the parting plane of a body half (its domain ends
+//                     on it even when the half carries a skirt past it); the box is
+//                     measured on what lies on the kept side. For an open source
+//                     the domain ends on the prism its normals sweep from its free
+//                     edges. No offset shell is meshed as a surface - the levels
+//                     exist as nodes only. The thermal BCs are then chosen among
+//                     the levels (SEM_SetThermalBC3D).
 enum SEM_TetMethod {
     SEM_TET_BAND    = 0,
-    SEM_TET_LAYERED = 1
+    SEM_TET_LAYERED = 1,
+    SEM_TET_GRID    = 2
 };
 
 struct SEM_MeshParams3D {
     int    method;
     // SEM_TET_BAND:    Steiner grid cell size. < 0 = auto (source avg edge length).
     // SEM_TET_LAYERED: use_sdf flag (0/1). < 0 = auto (0 = SDF-free).
+    // SEM_TET_GRID:    grid step, world units. <= 0 = auto (about 1e5 grid points).
     double param;
     // Max tet edge length, in world units. After meshing, any tet with a longer
     // edge is removed, along with any vertex left referenced by no remaining tet
-    // (the mesh is compacted). <= 0 = off.
+    // (the mesh is compacted). <= 0 = off. Not used by SEM_TET_GRID.
     double max_edge_len;
+    // SEM_TET_GRID: the box as multiples of the source's extents along x, y, z,
+    // centred on it. A component <= 0 takes 1.5.
+    SEM_Vec3 box_scale;
 };
+
+// The box and grid step of the last SEM_TET_GRID mesh. Negative without one.
+SEM_API int SEM_GetGridInfo3D(SEM_Vec3* box_min, SEM_Vec3* box_max, double* step);
 
 // Tetrahedralize the band (see SEM_TetMethod / SEM_MeshParams3D).
 SEM_API int SEM_BuildMesh3D(const SEM_MeshParams3D* params);
 
-// Solve the steady-state thermal field on the tet band. Dirichlet BCs by shell:
-// source-shell nodes -> T=1, outermost-offset nodes -> T=0. The T=0 set is
-// filtered by each node's cached signed distance to the source: max_inward in
-// [0,1] is the deepest (as a fraction of the outer extent) an outermost node may
-// sit inward and still be kept, dropping self-intersection artifacts that
-// penetrate further. max_inward < 0 disables the filter (keep all T=0 nodes).
+// Solve the steady-state thermal field. The field runs from T = 0 at the BC
+// level `from` to T = 1 at the level `to` (SEM_SetThermalBC3D):
+//   SEM_TET_GRID: every node on the far side of `from` (from `to`) and on it
+//     holds T = 0, every node on `to` and past it T = 1, by the node's signed
+//     distance to the source - the levels are the regions the offsets bound, not
+//     the offsets' own (possibly folded) points. The box faces, clip planes and
+//     the ends of an open source's prism are insulated.
+//   SEM_TET_BAND / LAYERED: the source nodes hold T = 0 and the outermost-offset
+//     nodes T = 1, whatever the BC levels; max_inward in [0,1] drops outermost
+//     nodes lying inward of the true outer extent by more than that fraction
+//     (self-intersection artifacts), < 0 keeps them all. Ignored by GRID.
+// The stiffness matrix of a mesh is assembled by its first solve and kept, so
+// re-solving for other BC levels only changes the fixed nodes. The nodal gradient
+// of the field is computed with it (it drives SEM_SetIsoShift3D).
 SEM_API int SEM_SolveThermal3D(float max_inward);
 
-// Number of offset layers the band spans - the offset shells past the source -
-// which bounds SEM_SetActiveLayers3D. Negative without offsets.
-SEM_API int SEM_GetOffsetLayerCount3D(void);
+// Choose the BC levels (see SEM_GetOffsetLevels3D; SEM_LEVEL_OUTERMOST /
+// SEM_LEVEL_INNERMOST follow the extreme levels). Out-of-range levels are clamped
+// at the solve. Takes effect at the next SEM_SolveThermal3D. Default: from the
+// source (0) to the outermost offset. Persisted in the session.
+SEM_API int SEM_SetThermalBC3D(int from_level, int to_level);
 
-// Use only the first `layers` offset layers of the band mesh, dropping its nodes
-// that lie deeper: the thermal problem is then posed on the kept tets alone (those
-// whose nodes all lie within these layers) with T = 0 where the kept part meets the
-// dropped one, as if the band had been meshed only that deep. max_inward filters
-// that new far boundary the way it filters the outermost offset. layers <= 0, or
-// the layer count or more, uses the whole band. The stiffness matrix assembled by
-// the first solve on a mesh is kept and reused (only the fixed nodes and the
-// dropped tets' share change), so a re-solve skips the assembly. resolve != 0 with
-// a solved field re-solves it at once with the last max_inward (rc as
-// SEM_SolveThermal3D); otherwise the setting applies to the next solve. Dropped
-// nodes get T = 0, so isosurfaces come from the kept part only, and SEM_GetMesh3D
-// returns just that part. Persisted in the session.
-SEM_API int SEM_SetActiveLayers3D(int layers, int resolve);
+// The BC levels as set, and as the last solve resolved them (null to skip).
+SEM_API int SEM_GetThermalBC3D(int* from_level, int* to_level,
+                               int* solved_from, int* solved_to);
 
-// The SEM_SetActiveLayers3D setting (0 = whole band). Negative without a source.
-SEM_API int SEM_GetActiveLayers3D(void);
+// What the BC levels as set now hold fixed, one entry per mesh node, without
+// solving: 0 = held at T = 0, 1 = held at T = 1, -1 = free (solved for). The same
+// rule SEM_SolveThermal3D applies, so it shows the BCs of the next solve. `out` gets
+// room for `max` entries; *count receives the node count regardless of `max`.
+// Negative without a mesh, or when the levels leave one side empty (then `out` is
+// still filled).
+SEM_API int SEM_GetThermalBCNodes3D(signed char* out, int max, int* count);
 
-// Extract the iso surface at the given level set of the normalized field
-// (value in [0,1]), then optionally offset-and-remesh it in one call. Clip planes are
-// applied. The extracted iso is kept as a Surface (read it back with
-// SEM_GetSourceIsosurface3D, including its vertex normals) and written to
-// <stem>_isosurface3d.csv3d.
-//
-// axis == zero vector (0,0,0): extract only — no offset-remesh runs (SEM_GetIsosurface3D
-// stays empty).
-// axis == any non-zero vector (the projection-plane normal; need not be unit —
-// (1,0,0)/(0,1,0)/(0,0,1) are the former X/Y/Z): the offset-remesh stage runs as the
-// final step, folded in from the former SEM_OffsetRemeshIsosurface3D. The cached iso
-// Surface is shifted along its angle-weighted pseudonormals by offset_value world units
-// — a signed distance, positive inward against the outward normals, negative outward —
-// concave folds nearer than the min_offset_value clearance are dropped (same cull
-// semantics as the standalone SEM_OffsetRemeshInPlaneSurface3D below), and the
-// survivors are re-meshed over the base plane with normal `axis` as a single
-// boundary-constrained Delaunay of the projected point cloud (a single-valued height
-// field along `axis`; a folded projection is rejected) — the offset-remesh base.
-//
-// A final isotropic remesh (folded in from the former SEM_RemeshIsosurface3D) then runs
-// over that base as an optional cleanup: the height-field re-mesh leaves tall, narrow,
-// near-degenerate triangles where a near-vertical wall projects to a thin sliver over the
-// base plane; `iterations` sweeps of short-edge collapse, long-edge split, and tangential
-// relaxation break those slivers into well-shaped triangles at a target edge length of
-// target_len_mult * the sheet's average edge length (target_len_mult <= 0 uses the median
-// edge length). iterations <= 0 skips this pass and publishes the base as-is. Boundary
-// vertices lying in a clip plane slide flat within it; every other boundary vertex is frozen.
-//
-// The remeshed result is cached (read it back with SEM_GetIsosurface3D, the flat projection
-// with SEM_GetIsosurfaceProjection3D) and written to surface_remesh3d.csv3d. Clip planes are
-// applied throughout. As an optimization, a repeat call that changes only target_len_mult /
-// iterations (value, axis, offset_value, min_offset_value unchanged) re-runs just the final
-// remesh on the cached base, skipping extraction and offset-remesh. A clip plane change is
-// not tracked here — it rebuilds the whole pipeline upstream, invalidating the cached base.
-// Negative on failure.
-SEM_API int SEM_ExtractIsosurface3D(double value, SEM_Vec3 axis, double offset_value,
-                                    double min_offset_value,
-                                    double target_len_mult = 1.0, int iterations = 3);
+// Shift the field back along its gradient before an isosurface is extracted (on
+// by default). The field rises from 0 at the BC level `from` to 1 at `to`, so the
+// level `value` lies about value * gap away from `from`, the gap being the distance
+// between the two levels, |d_to - d_from|; with the shift each node takes the field
+// from the end of the field line traced up the gradient from it for value * gap,
+// which brings that level back onto `from` - `value` then sets how much the
+// isosurface is smoothed, not where it lies.
+// Applies to SEM_TET_GRID meshes only (a legacy band ends on the source, where the
+// shifted level would lie). Persisted in the session.
+SEM_API int SEM_SetIsoShift3D(int enabled);
+
+// The shift setting, and the gap the shift uses: that of the last solve's levels,
+// or of the levels as set before a solve (null to skip).
+SEM_API int SEM_GetIsoShift3D(int* enabled, double* gap);
+
+// Extract the iso surface at the given level set of the normalized field (value in
+// [0,1]: 0 at the BC level `from`, 1 at `to`; with SEM_SetIsoShift3D on, the amount
+// of smoothing - the shift returns the level onto `from`). It is cut flush at the
+// clip planes and at a body half's parting plane, given a light isotropic remesh
+// (boundary vertices in those planes slide within them), oriented with its normals
+// pointing from the inner level to the outer one, kept as a Surface (read it back
+// with SEM_GetSourceIsosurface3D, including its vertex normals) and written to
+// <stem>_isosurface3d.csv3d. Negative on failure.
+SEM_API int SEM_ExtractIsosurface3D(double value);
 
 // --- Reload a whole serialized session into the cache -----------------------
 
@@ -420,13 +456,15 @@ struct SEM_PipelineArgs3D {
     double tet_param;             // SEM_MeshParams3D.param
     double tet_max_edge_len;      // SEM_MeshParams3D.max_edge_len
     float  max_inward;            // SEM_SolveThermal3D
-    double   iso_value;           // SEM_ExtractIsosurface3D
-    SEM_Vec3 iso_axis;            // projection-plane normal; (0,0,0) = extract only
-    double iso_offset_value;
-    double iso_min_offset_value;
-    double iso_target_len_mult;
-    int    iso_iterations;
+    double iso_value;             // SEM_ExtractIsosurface3D
     int    stages_present;        // bitmask of SEM_StageFlags
+    double inner_first_gap;       // SEM_ComputeInnerOffsets3D (0 offsets = none)
+    int    inner_num_offsets;
+    double inner_grading;
+    SEM_Vec3 grid_box_scale;      // SEM_MeshParams3D.box_scale (SEM_TET_GRID)
+    int    bc_from;               // SEM_SetThermalBC3D, as set
+    int    bc_to;
+    int    iso_shift;             // SEM_SetIsoShift3D
 };
 SEM_API int SEM_GetPipelineArgs3D(SEM_PipelineArgs3D* out);
 
@@ -521,39 +559,25 @@ SEM_API const char* SEM_GetSourcePath3D(void);
 // for the lifetime/layout contract. Negative if no source is loaded.
 SEM_API int SEM_GetSourceSurface3D(SEM_MeshView* out);
 
-// Band tet mesh (coords/tets, plus T after a solve). With fewer offset layers in
-// use (SEM_SetActiveLayers3D) only the kept tets and their nodes, renumbered.
-// Negative if the mesh has not been built/loaded yet. See SEM_MeshView for the
-// lifetime/layout contract.
+// Band tet mesh (coords/tets, plus T after a solve). Negative if the mesh has not
+// been built/loaded yet. See SEM_MeshView for the lifetime/layout contract.
 SEM_API int SEM_GetMesh3D(SEM_MeshView* out);
 
-// The source isosurface consumed by the offset-remesh: the extracted iso
-// (SEM_ExtractIsosurface3D), oriented outward. Fills coords/tris AND `normals` (the
-// angle-weighted unit vertex pseudonormals that drive the offset). Empty until
-// SEM_ExtractIsosurface3D has run; negative if not yet computed.
+// The extracted isosurface (SEM_ExtractIsosurface3D), oriented outward. Fills
+// coords/tris AND `normals` (the angle-weighted unit vertex pseudonormals). Negative
+// until SEM_ExtractIsosurface3D has run.
 SEM_API int SEM_GetSourceIsosurface3D(SEM_MeshView* out);
 
-// The final remeshed isosurface produced by SEM_ExtractIsosurface3D with an offset axis
-// (coords/tris). SEM_GetIsosurfaceProjection3D fills its flat base-plane projection
-// (coords/tris plus wireframe edges). Both are empty until an offset-remesh has run;
-// negative if not yet computed.
-SEM_API int SEM_GetIsosurface3D(SEM_MeshView* out);
+// The flat base-plane projection the last standalone offset-remesh
+// (SEM_OffsetRemeshInPlaneSurface3D) re-triangulated over (coords/tris plus
+// wireframe edges). Negative until one has run.
 SEM_API int SEM_GetIsosurfaceProjection3D(SEM_MeshView* out);
-
-// The CDT constraint loops traced for the offset-remesh (SEM_ExtractIsosurface3D with an offset axis):
-// the closed boundary loops of the source isosurface used as the re-triangulation
-// constraints. Fills `coords` with the source isosurface vertices
-// (SEM_GetSourceIsosurface3D) and `edges` with the loop wireframe (each loop closed
-// last->first), so the indices index straight into `coords`. Empty until the
-// offset-remesh has run; negative if not yet computed. See SEM_MeshView
-// for the lifetime/layout contract.
-SEM_API int SEM_GetIsosurfaceLoops3D(SEM_MeshView* out);
 
 // What one clip-plane operation of the 3D pipeline did to the geometry it ran on:
 //   stage     : "<pipeline stage>/<operation>" label. Stages, in pipeline order:
 //               "source" (the source restriction on load / clip change), "offset<i>"
 //               (the cut of offset shell i), "isosurface" (the extracted-iso
-//               restriction), "remesh" (the final cut of the remeshed sheet).
+//               restriction).
 //               Operations: "snap" (near-plane vertices projected onto the planes),
 //               "cut<j>" (the half-space cut by plane j), "drop" (coplanar caps
 //               removed).
@@ -570,8 +594,8 @@ struct SEM_ClipChangeView {
 };
 
 // The log of every clip-plane operation the 3D pipeline stages ran, one
-// SEM_ClipChangeView per call, in pipeline order (source, offsets, isosurface,
-// remesh). Each stage's entries are replaced when that stage reruns and dropped when
+// SEM_ClipChangeView per call, in pipeline order (source, offsets, isosurface).
+// Each stage's entries are replaced when that stage reruns and dropped when
 // its geometry is invalidated. Empty (count 0, out null) when no clip planes are set
 // or nothing has run. `*out` points into the cache and follows the SEM_MeshView
 // lifetime contract. The standalone SEM_OffsetRemeshInPlaneSurface3D is not logged
@@ -769,59 +793,38 @@ SEM_API int SEM_MeasureBodyDraft3D(int side, double taper_angle_deg,
                                    int* facets_violating, double* min_draft_deg);
 
 // Where SEM_BuildBodyPreform3D takes the two halves from: the body's own halves
-// (as split, or as last tapered), or the latest iso surface each half's pipeline
-// context extracted (the remeshed one when its offset-remesh ran).
+// (as split, or as last tapered; without their skirts), or the isosurface each
+// half's pipeline context extracted last.
 enum SEM_PreformSource { SEM_PREFORM_FROM_HALVES = 0, SEM_PREFORM_FROM_ISOSURFACES = 1 };
 
-// Glue the two halves back into ONE closed, drafted body - the preform - whose
-// parting line lies flat in the parting plane.
-//
-// Each half is read as a height field over the parting plane and replaced by its
-// draft-cone dilation (the same cone-max as the taper, at `draft_angle_deg`): that
-// leaves a drafted half alone, fills it in wherever it falls short of the draft
-// (e.g. an iso surface meeting an adiabatic clip plane square on), and outside its
-// footprint continues every wall at exactly the draft angle. Each is then moved
-// toward the other by `shift` (each; negative = apart). Wherever a half crosses
-// the parting plane on its way out to a parting line (the outer one, or one
-// around a hole) it is held on the plane, so every parting line lies flat in it
-// and both halves share it no matter how their own outlines differ; where one
-// half's walls reach the plane further in than the other's, that half lies flat
-// on the plane out to the parting line (a flat land). Where a half crosses the
-// plane inside the material - a pocket whose floor is below the plane, a recess
-// reaching above it - its shape is kept.
-//
-// target_volume > 0: the shift is solved for so the preform encloses that volume
-// (by bisection: it falls as the shift grows, with a step where a shift opens a
-// pocket out to a parting line); `shift` is ignored.
-// target_volume <= 0: `shift` is used as given (0 = halves where they are).
-// draft_angle_deg <= 0 uses the angle of the last SEM_ApplyBodyTaper3D.
-// grid_step is the in-plane sampling step (<= 0: a quarter of the halves' mean
-// edge sum, i.e. about half an edge); the surface is rebuilt on that grid, so
-// detail finer than it is smoothed away. Capped at a few million grid nodes.
+// Glue the two halves back into ONE closed body - the preform - on their own
+// geometry: no vertex of either half moves and nothing is resampled. Each half has
+// to end on the parting plane (an isosurface of a half does: its domain is cut
+// there), and the loops it leaves in the plane bound its footprint. The plane joins
+// the halves: where only one half's footprint reaches, it is closed by a flat land
+// in the plane facing away from that half; where both reach, the halves meet and
+// nothing is added. Where the two outlines cross, both are split at the crossing,
+// so the seam is welded vertex for vertex. A boundary loop of a half that does not
+// lie in the plane is left open (reported as open edges).
 //
 // Written to <stem>_preform.csv3d in the body's working dir. Honours
 // SEM_RequestCancel (returns SEM_RC_CANCELLED). Moving the plane, re-splitting or
-// re-tapering discards the preform.
-SEM_API int SEM_BuildBodyPreform3D(int source, double draft_angle_deg,
-                                   double target_volume, double shift, double grid_step);
+// re-tapering discards the preform. Negative when a half has no boundary loop in
+// the plane or the lands cannot be triangulated.
+SEM_API int SEM_BuildBodyPreform3D(int source);
 
 // The last preform. See SEM_MeshView for the lifetime/layout contract.
 SEM_API int SEM_GetBodyPreform3D(SEM_MeshView* out);
 
 // What the last preform came out as:
-//   shift         - the shift actually applied (solved or given);
-//   volume        - its enclosed volume, measured on the output mesh;
-//   grid_step     - the in-plane sampling step used;
-//   draft_volume  - volume the draft cones added on the halves' own sides of the
-//                   parting plane: ~0 when both halves already had the draft,
-//                   the whole wall wedge when their walls were vertical;
-//   min_draft_deg - the least drafted facet of the output. Smooth inputs reach
-//                   the target; a sharp corner of an input (a cone apex) leaves
-//                   the few facets around it somewhat under it, because no grid
-//                   triangulation follows a point-like crease.
+//   volume     - its enclosed volume, measured on the output mesh;
+//   land_area  - area of the flat lands the plane added;
+//   loops_pos, loops_neg - boundary loops each half left in the plane;
+//   crossings  - points where the two outlines cross (each split both halves);
+//   open_edges - edges of the output with one triangle (0 = closed).
 // Any argument may be null.
-SEM_API int SEM_GetBodyPreformReport3D(double* shift, double* volume, double* grid_step,
-                                       double* draft_volume, double* min_draft_deg);
+SEM_API int SEM_GetBodyPreformReport3D(double* volume, double* land_area, int* loops_pos,
+                                       int* loops_neg, int* crossings, int* open_edges);
 
 
 // ===========================================================================

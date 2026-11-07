@@ -16,12 +16,9 @@ enum Stage { STAGE_SUBDIVIDE = 0, STAGE_OFFSETS = 1, STAGE_MESH = 2, STAGE_THERM
 enum OffsetMode { OFFSET_EVEN = 0, OFFSET_GAPS = 1 };
 
 // Grouping of the SEM_GetClipChanges3D records by the pipeline stage that produced
-// them, so each section of the SEM window toggles only the changes it owns:
-//   CLIPCHG_SOURCE  - the "source/..." records (Source surface section)
-//   CLIPCHG_OFFSETS - the "offset<i>/..." records (Offsets section)
-//   CLIPCHG_ISO     - the "isosurface/..." and "remesh/..." records (Isosurface section)
-enum ClipChangeCategory { CLIPCHG_SOURCE = 0, CLIPCHG_OFFSETS = 1, CLIPCHG_ISO = 2,
-                          CLIPCHG_COUNT = 3 };
+// them. Only the source's are shown (Source surface section):
+//   CLIPCHG_SOURCE  - the "source/..." records
+enum ClipChangeCategory { CLIPCHG_SOURCE = 0, CLIPCHG_COUNT = 1 };
 
 struct Stats {
     bool valid    = false;
@@ -89,10 +86,11 @@ public:
     float steinerMargin = 0.45f;
     bool  meshEnabled   = true;
 
-    // tetMethod: SEM_TET_BAND or SEM_TET_LAYERED. tetParam (<0 => per-method auto):
-    // BAND => Steiner grid cell size (a length in world units); LAYERED => use_sdf flag
-    // (0/1), on by default.
-    int   tetMethod    = SEM_TET_LAYERED;
+    // tetMethod: the 3D mesh is the grid domain (SEM_TET_GRID); the band methods
+    // (SEM_TET_BAND / SEM_TET_LAYERED) only come back with older sessions, until the
+    // mesh is rebuilt. tetParam (<0 => per-method auto): BAND => Steiner grid cell
+    // size (a length in world units); LAYERED => use_sdf flag (0/1).
+    int   tetMethod    = SEM_TET_GRID;
     float tetParam     = 1.0f;
     // Max tet edge length, in world units. <= 0 disables the filter. While
     // tetMaxEdgeAuto is set it follows the offsets: sqrt(2) times the gap between
@@ -105,47 +103,40 @@ public:
 
     bool  thermalEnabled = true;
     bool  isoEnabled     = true;
-    float isoValue   = 0.8f;
-    // isoAxisN = zero vector: plain extraction (clip planes only). Any non-zero vector
-    // is the projection-plane normal (need not be unit; (0,0,1) is the former Z axis):
-    // offset-and-remesh an open iso sheet, shifted along its pseudonormals by
-    // isoOffsetValue as a distance in world units (signed, no range limit):
-    // positive inward toward the source, negative outward. Ignored when isoAxisN == 0.
-    XMFLOAT3 isoAxisN    = { 0.0f, 0.0f, 0.0f };
-    float isoOffsetValue = 0.0f;
-    // Minimum clearance a shifted vertex must keep from the iso before it is pruned
-    // (ignored when isoAxisN == 0), stored as the fraction c in [0,1] of isoOffsetValue.
-    // The absolute clearance handed to SEM is c * isoOffsetValue, from which the core
-    // recomputes c. c = 1 (== |shift|) is fold cull — drop every concave fold that
-    // collapsed the sheet onto itself; c = 0 is signed-crossing cull — keep the folds
-    // and drop only vertices that crossed THROUGH the iso. Maps to
-    // SEM_ExtractIsosurface3D's min_offset_value.
-    float isoMinOffsetValue = 0.99f;
-    // Final isotropic remesh of the offset-remeshed sheet, now folded into the isosurface
-    // stage: target edge length as a multiple of the sheet's own average edge length
-    // (<= 0 uses the median), and the sweep count (0 skips it). Passed to
-    // SEM_ExtractIsosurface3D's target_len_mult / iterations after the offset-remesh.
-    float isoFinalTargetMult = 1.0f;
-    int   isoFinalIters      = 3;
-    // When set, the extracted isosurface is drawn with its real (possibly
-    // inconsistent) winding and the minority-oriented triangles are painted pure
-    // red instead of the uniform green. See SetIsoWinding / WindingMinorityTris.
-    bool  isoShowWinding = false;
-    // When set, triangles of the displayed sheet that touch a non-manifold edge or
-    // bowtie vertex are painted bright magenta over the uniform green — the topology
-    // defects vertex welding can leave in the offset-remeshed surface. See
-    // SetIsoNonManifold / NonManifoldTris.
+    // 3D: the smoothing - the level of the field the isosurface is taken at, which
+    // the shift brings back onto the From level. 2D: the isoline value.
+    float isoValue   = 0.05f;
+    // When set, triangles of the displayed standalone result that touch a
+    // non-manifold edge or bowtie vertex are painted bright magenta over the uniform
+    // green — the topology defects vertex welding can leave in an offset-remeshed
+    // surface. See SetIsoNonManifold / NonManifoldTris.
     bool  isoShowNonManifold = false;
-    // false = "T field" (gradient over the solved temperature); true = "BC" (only
-    // Dirichlet boundary nodes tinted, interior grey).
+    // How the domain mesh is drawn. true = "BC": only the nodes the BC levels hold
+    // fixed and the edges between them, blue at T = 0 and red at T = 1; false = the
+    // solved T field over every edge. Until the field is solved for the BC levels as
+    // they stand, the BCs are drawn either way.
     bool  bcView     = false;
     // Max inward penetration (0..1) for the outermost-offset T=0 BCs. < 0 keeps
     // every outermost node.
     float maxInward  = 0.04f;
-    // Offset layers the thermal solve uses (SEM_SetActiveLayers3D): the band mesh
-    // past the first activeLayers offsets is dropped and T = 0 is set where the
-    // rest meets it. 0 = the whole band.
-    int   activeLayers = 0;
+    // Offsets into the material (SEM_ComputeInnerOffsets3D), graded like the outer
+    // ones; the grid embeds them as further levels.
+    bool  innerEnabled  = false;
+    float innerFirstGap = 1.0f;
+    int   innerNum      = 2;
+    float innerGrading  = 1.0f;
+    // The grid domain (SEM_TET_GRID): the box as multiples of the part's extents
+    // along x, y, z, and the grid step in world units (0 = auto).
+    XMFLOAT3 gridBoxScale = { 1.5f, 1.5f, 1.5f };
+    float    gridStep     = 0.0f;
+    // Thermal BC levels (SEM_SetThermalBC3D): the field runs from 0 on bcFrom to 1
+    // on bcTo. Level 0 is the source, k > 0 the k-th outer offset, k < 0 the k-th
+    // inner one; SEM_LEVEL_OUTERMOST / INNERMOST follow the extreme levels.
+    int   bcFrom = 0;
+    int   bcTo   = SEM_LEVEL_OUTERMOST;
+    // Shift the field back along its gradient before the isosurface is taken
+    // (SEM_SetIsoShift3D), so isoValue sets the smoothing, not the size.
+    bool  isoShift = true;
 
     bool  subAuto     = false;
     bool  offAuto     = false;
@@ -212,15 +203,10 @@ public:
     float skirtGrowth  = 0.3f;
 
     // The preform (stage after the isosurface): the two halves glued back into one
-    // closed drafted body, at the taper angle above. Which halves, and what fixes
-    // how far they are moved together:
+    // closed body on their own geometry, joined by flat lands in the parting plane.
+    // Which halves it takes:
     enum PreformSource  { PREFORM_FROM_HALVES = 0, PREFORM_FROM_ISOSURFACES = 1 };
-    enum PreformSizing  { PREFORM_MATCH_BODY = 0, PREFORM_MATCH_VOLUME = 1, PREFORM_FIXED_SHIFT = 2 };
     int    preformSource   = PREFORM_FROM_ISOSURFACES;
-    int    preformSizing   = PREFORM_MATCH_BODY;
-    double preformVolume   = 0.0;       // PREFORM_MATCH_VOLUME target
-    float  preformShift    = 0.0f;      // PREFORM_FIXED_SHIFT, per half (negative = apart)
-    float  preformGridStep = 0.0f;      // in-plane sampling step; <= 0 = automatic
     // SESSION_REMESH knobs: target edge length as a multiple of the surface's own
     // average (<= 0 uses the median), and the sweep count.
     float rmTargetMult  = 1.0f;
@@ -282,9 +268,8 @@ public:
                          int& facets_violating, double& min_draft_deg) const;
 
     // Whether the halves the core holds carry a skirt (set by the last split or
-    // taper). With
-    // one the parting plane is no longer the halves' clip plane: their stages run on
-    // the extended surfaces, and the preform cuts the results back together.
+    // taper). With one, the halves' offsets and distances run on the extended
+    // surfaces, while their domains still end on the parting plane.
     bool SkirtActive() const { return m_skirtActive; }
     // The core's setting and how deep each half's skirt reached.
     bool SkirtState(double& depth, double& reached_pos, double& reached_neg) const;
@@ -300,8 +285,8 @@ public:
     bool HalvesHaveIsosurfaces() const;
     // What the last preform came out as (SEM_GetBodyPreformReport3D). False when
     // there is none.
-    bool PreformReport(double& shift, double& volume, double& grid_step,
-                       double& draft_volume, double& min_draft_deg) const;
+    bool PreformReport(double& volume, double& land_area, int& loops_pos, int& loops_neg,
+                       int& crossings, int& open_edges) const;
     Primitive*         PreformPrim() const { return m_preformPrim; }
     const std::string& PreformPath() const { return m_preformPath; }
 
@@ -323,28 +308,26 @@ public:
     Primitive*  SourcePrim()  const;
     SceneNode*  OffsetsNode() const;
     Primitive*  MeshPrim()    const;
+    // The grid box of the domain as grey lines (3D), null without a domain.
+    Primitive*  GridBoxPrim() const;
+    // Whether a domain mesh is built (a body asks its positive half). Its primitive
+    // can be absent while it is: the BC view of a domain with no fixed node draws
+    // nothing.
+    bool        MeshBuilt()   const;
     Primitive*  IsolinePrim() const;
-    // Intermediate iso-extraction stages, available only after an offset-and-remesh
-    // (projection) extraction; null otherwise. See ShowSourceIsosurface3D below.
-    Primitive*  IsoSourcePrim()     const;
+    // The flat projection of a standalone offset-remesh (SESSION_OFFSET_REMESH);
+    // null otherwise. See ShowIsosurfaceProjection3D below.
     Primitive*  IsoProjectionPrim() const;
-    // Pseudonormal line overlays of the source surface / extracted isosurface /
-    // pre-offset source isosurface, null when not shown. See Show*Pseudonormals.
+    // Pseudonormal line overlay of the source surface, null when not shown.
     Primitive*  SrcNormalsPrim() const;
-    Primitive*  IsoNormalsPrim() const;
-    Primitive*  IsoSrcNormalsPrim() const;
-    // Wireframe of the offset-remesh constraint loops (SEM_GetIsosurfaceLoops3D),
-    // null when not shown. See ShowIsosurfaceLoops3D.
-    Primitive*  IsoLoopsPrim() const;
     Primitive*  SrcRevSurf()  const;
     Primitive*  IsoRevSurf()  const;
     bool        HasSource()   const;
     int         Dim()         const;
     bool        ThermalSolved() const;
     bool        HasIsolinePath() const;
-    // True once an isosurface has been extracted with an offset axis (offset-and-
-    // remesh / CDT proj-unproj). Only then do the SEM_Get{Source,Projection}
-    // isosurface caches hold a result, so this gates the two Show* toggles below.
+    // True once a standalone offset-remesh has produced its flat projection
+    // (SEM_GetIsosurfaceProjection3D), which gates ShowIsosurfaceProjection3D.
     bool        HasIsoProjection() const;
 
     const std::string& WorkDir() const { return m_workDir; }
@@ -395,11 +378,18 @@ public:
     void MarkStageDirty(Stage st);
     void RecomputeUpTo(Scene& scene, Stage to, bool silent);
 
-    // Offset layers the band spans (0 without offsets; a body asks its halves),
-    // and what the "layers in use" slider runs on release: the thermal stage again,
-    // which the core poses on the kept layers with the stiffness matrix it holds.
-    int  OffsetLayerCount();
-    void ApplyActiveLayers(Scene& scene);
+    // The levels the grid embeds, as signed distances from the deepest inner offset
+    // to the outermost outer one (level k is [k + numInner]); empty without offsets.
+    // A body asks its halves. Kept from the last read while a worker runs.
+    const std::vector<double>& OffsetLevels(int& numInner);
+    // A change of the BC levels: they go to the core at once and the domain is
+    // redrawn by them (a body does both halves); the field is re-solved by the next
+    // isosurface Apply.
+    void ApplyThermalBC(Scene& scene);
+    // The gap the shift scales - the distance between the BC levels - and the box
+    // and step of the grid; false while there is none or a worker runs.
+    bool IsoShiftGap(double& gap);
+    bool GridInfo(XMFLOAT3& lo, XMFLOAT3& hi, double& step);
 
     SceneNode* StagePrim(Stage st) const;
     void ResetStage(Scene& scene, Stage st);
@@ -489,51 +479,21 @@ public:
     bool ApplyThermal(Scene& scene, bool silent);
     bool ApplyIsoline(Scene& scene, bool silent);
 
-    // Toggle the uneven-winding highlight (isoShowWinding). When an isosurface is
-    // already extracted this recolours it in place from the cached display data —
-    // no re-extraction; otherwise it just stores the flag for the next extraction.
-    void SetIsoWinding(Scene& scene, bool on);
-
     // Toggle the non-manifold highlight (isoShowNonManifold). Recolours the already
     // displayed sheet in place from the cached display data (no re-extraction) when
-    // one exists; otherwise just stores the flag for the next extraction.
+    // one exists; otherwise just stores the flag for the next run.
     void SetIsoNonManifold(Scene& scene, bool on);
 
-    // Show/hide vertex normals as short line segments:
-    //   source   - the SEM core's pseudonormals of the active source surface
-    //              (SEM_GetSourceSurface3D, yellow);
-    //   isosurface - angle-weighted pseudonormals computed from the displayed
-    //              (offset-remeshed) isosurface geometry, which the core does not
-    //              carry normals for (cyan).
-    // show=false drops the overlay. 3D only; the iso form needs an extracted
-    // isosurface.
+    // Show/hide the SEM core's pseudonormals of the active source surface
+    // (SEM_GetSourceSurface3D) as short yellow line segments. 3D only.
     bool ShowSourcePseudonormals(Scene& scene, bool show, bool silent);
-    bool ShowIsoPseudonormals(Scene& scene, bool show, bool silent);
 
-    // Show/hide the SEM core's vertex pseudonormals of the PRE-offset source
-    // isosurface (the orange sheet, SEM_GetSourceIsosurface3D) as short orange line
-    // segments — these are the directions the offset-and-remesh shifted each iso
-    // vertex along. Available only after an offset-axis extraction (HasIsoProjection);
-    // show=false drops the overlay. 3D only.
-    bool ShowSourceIsoPseudonormals(Scene& scene, bool show, bool silent);
-
-    // Show/hide the constrained-CDT boundary loops traced for the offset-remesh
-    // (SEM_GetIsosurfaceLoops3D): the closed loops of the source isosurface used as
-    // the re-triangulation constraints, drawn as a magenta thick-line wireframe.
-    // Available only after an offset-axis extraction (HasIsoProjection); show=false
-    // drops the overlay. 3D only.
-    bool ShowIsosurfaceLoops3D(Scene& scene, bool show, bool silent);
-
-    // Show/hide the two intermediate stages of an offset-and-remesh extraction,
-    // fetched on demand from the SEM cache (they are not serialized to disk):
-    //   ShowSourceIsosurface3D     - the original extracted iso sheet, before the
-    //                                offset/remesh stage (SEM_GetSourceIsosurface3D).
-    //   ShowIsosurfaceProjection3D - the flat base-plane re-meshed projection with
-    //                                its wireframe edges (SEM_GetIsosurfaceProjection3D).
-    // Both require HasIsoProjection(); show=false drops the primitive. 3D only.
-    bool ShowSourceIsosurface3D(Scene& scene, bool show, bool silent);
+    // Show/hide the flat base-plane re-meshed projection (with its wireframe edges)
+    // of the last standalone offset-remesh (SEM_GetIsosurfaceProjection3D). Requires
+    // HasIsoProjection(); show=false drops the primitive. 3D only.
     bool ShowIsosurfaceProjection3D(Scene& scene, bool show, bool silent);
 
+    // BC or T-field drawing of the domain (bcView). A body sets both halves.
     void SetBCView(Scene& scene, bool on);
 
     // workDir picks the session folder to serialize into; empty => Bind allocates
@@ -616,23 +576,24 @@ private:
     SceneNode*  m_offsets = nullptr;
     Primitive*  m_mesh    = nullptr;
     Primitive*  m_isoline = nullptr;
-    // Intermediate offset-and-remesh iso stages (cache-only, never serialized).
-    Primitive*  m_isoSource = nullptr;   // pre-offset extracted sheet
-    Primitive*  m_isoProj   = nullptr;   // flat re-meshed projection
-    // Set when the last extraction ran with an offset axis (offset-and-remesh /
-    // CDT proj-unproj), so the two intermediate caches are valid to fetch.
+    // The flat projection of a standalone offset-remesh (cache-only, never serialized),
+    // and whether the cache holds one.
+    Primitive*  m_isoProj   = nullptr;
     bool        m_isoProjected = false;
     Primitive*  m_srcRevSurf = nullptr;
     Primitive*  m_isoRevSurf = nullptr;
-    // Pseudonormal line overlays (vertex normals drawn as segments).
+    // Pseudonormal line overlay of the source (vertex normals drawn as segments).
     Primitive*  m_srcNormals = nullptr;
-    Primitive*  m_isoNormals = nullptr;
-    Primitive*  m_isoSrcNormals = nullptr;   // pre-offset source isosurface normals
-    Primitive*  m_isoLoops = nullptr;        // offset-remesh constraint loops wireframe
     // Copy of the geometry currently displayed as the isosurface, kept so the
-    // winding highlight can recolour and the pseudonormals can be computed without
-    // re-extracting or re-reading a file (handles the offset-and-remesh case too).
+    // non-manifold highlight can recolour it without re-extracting.
     CSV3DLoader::CSV3DData m_isoData;
+    // The 3D domain mesh as last read from the core, kept so its drawing can be
+    // rebuilt (BC / T field, new BC levels) without reading it again: the node
+    // positions and solved T, and the unique edges of its tets (a << 32 | b).
+    std::vector<XMFLOAT3>           m_meshPos;
+    std::vector<float>              m_meshT;
+    std::vector<unsigned long long> m_meshEdges;
+    Primitive*                      m_gridBox = nullptr;
     bool        m_thermalSolved = false;
     Stats m_srcStats, m_offStats, m_meshStats;
 
@@ -651,8 +612,8 @@ private:
 
     // Per-category clip-change overlay: one group node owns the snap-displacement
     // lines and removed-geometry surfaces logged for that stage category.
-    bool        m_clipChangesShown[CLIPCHG_COUNT] = { false, false, false };
-    SceneNode*  m_clipChangeGroup[CLIPCHG_COUNT]  = { nullptr, nullptr, nullptr };
+    bool        m_clipChangesShown[CLIPCHG_COUNT] = { false };
+    SceneNode*  m_clipChangeGroup[CLIPCHG_COUNT]  = { nullptr };
 
     // Stage compute durations in ms; < 0 means "not measured this session".
     double m_offsetsMs = -1.0;
@@ -671,7 +632,10 @@ private:
     bool           m_isHalf    = false;
     bool           m_bodySplit = false;
     bool           m_skirtActive = false;  // the core extends the halves
-    int            m_layerCount  = 0;      // last OffsetLayerCount, while a worker runs
+    // The 3D offsets have no primitives: they are levels of the grid in the core.
+    bool                m_offsetsReady = false;
+    std::vector<double> m_levels;            // last OffsetLevels, while a worker runs
+    int                 m_levelsInner  = 0;
     // A half's own look, kept so that rebuilding its primitive (after a subdivide)
     // gives back the same tint: which side it is, the parting plane (normal toward
     // the positive side), and whether its skirt is tinted apart.
@@ -701,11 +665,11 @@ private:
     // on) and rebuild their primitives and stage state.
     void RefreshHalfPrims(Scene& scene);
     // Give one half's context the parting plane as its clip plane, oriented so the
-    // kept half-space is that half's own side. Both halves therefore carry the
-    // same plane with opposite cut directions, and every stage they run (offset
-    // shells, the tet band, the isosurface) is cut flush at the parting plane
-    // instead of bulging across into the other half. Re-applied after a taper,
-    // because republishing a half reloads its source and clears its clip planes.
+    // kept half-space is that half's own side, when it carries no skirt: its source
+    // and offsets are then cut flush at the plane too. (Its domain and isosurface
+    // end on the plane either way - the core sets that up for every half.)
+    // Re-applied after a taper, because republishing a half reloads its source and
+    // clears its clip planes.
     void PushSplitClipPlane(int side);
     void StartBodyHalf(Scene& scene, int side);
     // Copy the shared stage knobs (and the staleness flags the UI set here) into
@@ -758,7 +722,6 @@ private:
         // The body's other own stage: SEM_BuildBodyPreform3D, gluing the halves.
         bool   runBodyPreform = false;
         int    pfSource = 0;
-        double pfAngle = 7.0, pfTarget = 0.0, pfShift = 0.0, pfStep = 0.0;
         double preformMs = -1.0;
         SEM_Plane3D         tpPlane = { { 0, 0, 1 }, 0.0 };
         double              tpTol = 0.01, tpAngle = 7.0;
@@ -785,26 +748,23 @@ private:
         int                 tetMethod = SEM_TET_BAND;
         double              tetParam = -1.0;
         double              tetMaxEdgeLen = 0.0;
-        double              isoValue = 0.5;
-        SEM_Vec3            isoAxisN = { 0.0, 0.0, 0.0 };
-        double              isoOffsetValue = 0.0;
-        double              isoMinOffsetValue = 0.0;
-        double              isoFinalTargetMult = 1.0;
-        int                 isoFinalIters = 3;
+        double              isoValue = 0.05;
         float               maxInward = 1.0f;
-        int                 activeLayers = 0;
+        bool                innerEnabled = false;
+        double              innerFirstGap = 1.0, innerGrading = 1.0;
+        int                 innerNum = 0;
+        SEM_Vec3            gridBoxScale = { 1.5, 1.5, 1.5 };
+        double              gridStep = 0.0;
+        int                 bcFrom = 0, bcTo = SEM_LEVEL_OUTERMOST;
+        bool                isoShift = true;
 
         // Deterministic output paths the SEM core writes (computed at launch).
-        // expIsoRemesh is the offset-and-remesh product (offset axis only).
+        // expIsoRemesh tags a standalone result.
         std::string         expOffsets, expMesh, expIso, expIsoRemesh;
         // Worker outputs (read by the main thread after join()).
         std::string         offsetsPath, meshPath, isoPath, error;
         // Isosurface geometry copied off the SEM cache on the worker thread (so the
-        // main thread neither re-reads a file nor races the cache lifetime). For an
-        // offset-axis run this is the offset-and-remesh result the cache holds only
-        // transiently — reloading it from disk was both redundant and broken (the
-        // host expected a <stem>_isosurface3d_remesh3d.csv3d the core never writes
-        // under that name).
+        // main thread neither re-reads a file nor races the cache lifetime).
         CSV3DLoader::CSV3DData isoDisplayData;
         // Manifold-repair counts of a standalone offset-remesh result (SEM_GetLast-
         // ManifoldRepair3D). -1 = not queried / not a standalone run.
@@ -876,13 +836,16 @@ private:
     void DropOffsets(Scene& scene);
     void DropMesh(Scene& scene);
     void DropIsoline(Scene& scene);
-    void DropIsoSource(Scene& scene);
     void DropIsoProjection(Scene& scene);
     void DropSrcNormals(Scene& scene);
-    void DropIsoNormals(Scene& scene);
-    void DropIsoSrcNormals(Scene& scene);
-    void DropIsoLoops(Scene& scene);
     void ReloadMeshColored(Scene& scene);
+    // 3D domain drawing. TakeMeshData keeps the positions and T of a freshly read
+    // mesh (and its edges when `topology` is set); RebuildMeshDisplay redraws it in
+    // the current mode (bcView, or the BCs while the field is stale), keeping the
+    // primitive's visibility; RebuildGridBox redraws the grid box.
+    void TakeMeshData(const CSV3DLoader::CSV3DData& data, bool topology);
+    void RebuildMeshDisplay(Scene& scene);
+    void RebuildGridBox(Scene& scene);
 
     // Assign line style `style` (a Scene LineStyleId) to every thick-line (dim==1)
     // primitive in p's subtree — used to give the SEM overlays their thickness tier
@@ -890,13 +853,11 @@ private:
     static void StyleLines(Primitive* p, int style);
 
     // Build the displayed isosurface primitive from `data`, honouring
-    // isoShowWinding (per-triangle minority-red colouring) and isoShowNonManifold
-    // (bright-magenta defect colouring) or the plain green surface, named and
-    // surface-configured. Does not touch m_isoline/m_isoData.
+    // isoShowNonManifold (bright-magenta defect colouring) or the plain green
+    // surface, named and surface-configured. Does not touch m_isoline/m_isoData.
     Primitive* BuildIsoDisplay(Scene& scene, const CSV3DLoader::CSV3DData& data);
     // Recolour the already displayed iso sheet in place from m_isoData (no
-    // re-extraction), preserving visibility and dependent overlays. Shared by the
-    // SetIsoWinding / SetIsoNonManifold toggles.
+    // re-extraction), preserving visibility and dependent overlays.
     void RebuildIsoDisplayInPlace(Scene& scene);
     // Build a line-list primitive of vertex normals for the surface in `data`,
     // parented under `parent` and drawn in `color`. The explicit-normals overload
@@ -912,7 +873,6 @@ private:
 
     bool FetchMeshData(Scene& scene, bool silent, CSV3DLoader::CSV3DData& out);
     bool FetchIsoData(Scene& scene, bool silent, CSV3DLoader::CSV3DData& out);
-    bool FetchSourceIsoData(Scene& scene, bool silent, CSV3DLoader::CSV3DData& out);
     bool FetchIsoProjData(Scene& scene, bool silent, CSV3DLoader::CSV3DData& out);
 
     bool LoadOffsetShells(Scene& scene, bool silent, const std::string& dir = std::string());

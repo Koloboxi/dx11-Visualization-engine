@@ -6,9 +6,8 @@ cbuffer mycBuffer : register(b0)
 };
 
 // Global section / clip-plane state (see CB_VS_section on the C++ side).
-// Only the main mesh path reaches the rasterizer straight from this VS, so
-// SV_ClipDistance here clips solids only; points/lines go through a GS that
-// drops the clip distance and are left intact.
+// Solids reach the rasterizer straight from this VS; points and lines go
+// through a GS that passes the clip distance on, so the section cuts them too.
 cbuffer Section : register(b1)
 {
     float4 sectionPlaneNormal;

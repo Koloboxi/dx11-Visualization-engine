@@ -261,11 +261,8 @@ void SemSession::ShowClipMirror(Scene& scene, int planeIdx, bool show) {
 
 static const char* kOnPlanePrefix = "sem_onplane_";
 
-// Per-surface overlay colours: source surface white, source isosurface orange,
-// final isosurface cyan (matching the orange/cyan pseudonormal conventions used
-// elsewhere for those two sheets).
+// Per-surface overlay colours: source surface white, isosurface cyan.
 static const XMFLOAT4 kOnPlaneSrcColor    = Colors::WHITE;
-static const XMFLOAT4 kOnPlaneIsoSrcColor = XMFLOAT4(1.0f, 0.55f, 0.0f, 1.0f);
 static const XMFLOAT4 kOnPlaneIsoFinColor = Colors::CYAN;
 
 void SemSession::DropClipOnPlane(Scene& scene) {
@@ -413,11 +410,6 @@ void SemSession::BuildClipOnPlane(Scene& scene) {
         SEM_MeshView vi{};
         if (SEM_GetSourceIsosurface3D(&vi) == 0 && vi.num_nodes > 0)
             any |= BuildOnPlaneOverlay(scene, grp, ViewToData(vi), planes, tol, lift,
-                                       kOnPlaneIsoSrcColor, "isosrc");
-
-        SEM_MeshView vf{};
-        if (SEM_GetIsosurface3D(&vf) == 0 && vf.num_nodes > 0)
-            any |= BuildOnPlaneOverlay(scene, grp, ViewToData(vf), planes, tol, lift,
                                        kOnPlaneIsoFinColor, "isofin");
     }
 
@@ -447,16 +439,11 @@ static const char* kClipChangePrefix = "sem_clipchg_";
 static const XMFLOAT4 kClipChgMoveColor   = Colors::YELLOW;
 static const XMFLOAT4 kClipChgRemoveColor = XMFLOAT4(0.90f, 0.30f, 0.30f, 0.45f);
 
-// Map a record's "<stage>/<op>" label to its window-section category: "offset<i>/.."
-// -> Offsets, "isosurface/.." and "remesh/.." -> Isosurface, everything else
-// ("source/..") -> Source surface.
+// Map a record's "<stage>/<op>" label to its window-section category: the
+// "source/.." records go to the Source surface section; the rest are not shown.
 static int ClipChangeCategoryOf(const char* stage) {
-    if (!stage) return CLIPCHG_SOURCE;
-    std::string s(stage);
-    if (s.rfind("offset", 0) == 0)     return CLIPCHG_OFFSETS;
-    if (s.rfind("isosurface", 0) == 0) return CLIPCHG_ISO;
-    if (s.rfind("remesh", 0) == 0)     return CLIPCHG_ISO;
-    return CLIPCHG_SOURCE;
+    if (!stage) return -1;
+    return (std::string(stage).rfind("source", 0) == 0) ? CLIPCHG_SOURCE : -1;
 }
 
 void SemSession::BuildClipChanges(Scene& scene, int category) {

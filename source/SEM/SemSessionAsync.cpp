@@ -96,7 +96,7 @@ void SemSession::RecomputeUpToAsync(Scene& scene, Stage to, bool silent) {
     // is a separate progress-reporting SEM call run on the worker.
     bool runOff = false, runMesh = false, runTherm = false, runIso = false;
     if (to >= STAGE_OFFSETS && (m_dirty[STAGE_OFFSETS] || ran)) {
-        if (offEnabled || (m_offsets && Alive(scene, m_offsets))) { runOff = true; ran = true; }
+        if (offEnabled || m_offsetsReady || (m_offsets && Alive(scene, m_offsets))) { runOff = true; ran = true; }
         m_dirty[STAGE_OFFSETS] = false;
     }
     if (to >= STAGE_MESH && (m_dirty[STAGE_MESH] || ran)) {
@@ -123,8 +123,8 @@ void SemSession::RecomputeUpToAsync(Scene& scene, Stage to, bool silent) {
     // Preconditions the worker cannot check itself (it has no Scene access):
     // any solve/extract run needs a mesh already built and present, and an iso
     // extraction that does not also solve needs the field already solved.
-    if ((runTherm || runIso) && !runMesh && !(m_mesh && Alive(scene, m_mesh))) {
-        Report(scene, silent, "Build the mesh first.");
+    if ((runTherm || runIso) && !runMesh && !MeshBuilt()) {
+        Report(scene, silent, "Build the domain first.");
         return;
     }
     if (runIso && !runTherm && !m_thermalSolved) {
@@ -165,17 +165,16 @@ void SemSession::RecomputeUpToAsync(Scene& scene, Stage to, bool silent) {
     if (tetMaxEdgeAuto) tetMaxEdgeLen = AutoTetMaxEdge();
     m_job.tetMaxEdgeLen = (double)tetMaxEdgeLen;
     m_job.isoValue = isoValue;
-    m_job.isoAxisN = SEM_Vec3{ isoAxisN.x, isoAxisN.y, isoAxisN.z };
-    m_job.isoOffsetValue = (double)isoOffsetValue;
-    // isoMinOffsetValue is stored as the fraction c in [0,1]; the SEM core wants the
-    // absolute clearance (min_offset_value), from which it recomputes c = min/offset.
-    m_job.isoMinOffsetValue = (double)isoMinOffsetValue * (double)isoOffsetValue;
-    // Final isotropic remesh knobs — now part of the isosurface stage (folded into
-    // SEM_ExtractIsosurface3D), run after the offset-remesh when an offset axis is set.
-    m_job.isoFinalTargetMult = (double)isoFinalTargetMult;
-    m_job.isoFinalIters      = isoFinalIters;
     m_job.maxInward = maxInward;
-    m_job.activeLayers = activeLayers;
+    m_job.innerEnabled  = innerEnabled;
+    m_job.innerFirstGap = (double)innerFirstGap;
+    m_job.innerNum      = innerNum;
+    m_job.innerGrading  = (double)innerGrading;
+    m_job.gridBoxScale  = SEM_Vec3{ gridBoxScale.x, gridBoxScale.y, gridBoxScale.z };
+    m_job.gridStep      = (double)gridStep;
+    m_job.bcFrom        = bcFrom;
+    m_job.bcTo          = bcTo;
+    m_job.isoShift      = isoShift;
 
     // Deterministic output paths the SEM core writes during each compute call.
     m_job.expOffsets = OutPath("_offsets3d.csv3d");
@@ -371,55 +370,44 @@ void SemSession::PollAsync(Scene& scene) {
     // cancellation leaves thermalMs < 0, so don't trust runThermal alone.)
     const bool solvedThisRun = (m_job.thermalMs >= 0.0);
 
-    // Offset shells.
+    // Offset shells: in 3D they are levels the grid embeds, kept in the core and
+    // not drawn.
     if (!m_job.offsetsPath.empty()) {
         DropOffsets(scene);
-        LoadOffsetShells(scene, true);
-        if (m_offsets && Alive(scene, m_offsets)) scene.SetNodeVisibleCascade(m_offsets, m_job.offVisible);
+        m_offsetsReady = true;
     }
 
-    // Tetrahedral mesh. Built from the cache-resident mesh (SEM_GetMesh3D) the
-    // worker left behind, not the serialized file. The worker ran offsets→mesh→
-    // (thermal) in order and is now joined, so the cache holds the final mesh —
-    // with the solved T when this run also solved.
+    // The domain mesh, read from the core (SEM_GetMesh3D) the joined worker left it
+    // in - with the solved T when this run also solved. It is drawn by its BCs until
+    // the field is solved for them (RebuildMeshDisplay), with its grid box.
     if (!m_job.meshPath.empty()) {
         CSV3DLoader::CSV3DData data;
         if (FetchMeshData(scene, true, data)) {
             DropMesh(scene);
-            // When this run also solved the thermal field the cached mesh already
-            // holds the solved T, so colour it like the sync solve (blue..red,
-            // honouring the BC view). An unsolved mesh keeps cyan..yellow.
-            const bool solved = solvedThisRun;
-            m_mesh = scene.AddFromCSV3DData(data, "mesh_" + Stem(m_srcPath),
-                                            AttachParent(), nullptr,
-                                            solved ? Colors::BLUE : Colors::CYAN,
-                                            solved ? Colors::RED  : Colors::YELLOW,
-                                            solved && bcView, /*registerColorSets*/ solved);
+            TakeMeshData(data, true);
             m_meshPath = m_job.meshPath;
-            StyleLines(m_mesh, LINESTYLE_HAIRLINE);
-            ConfigureSurface3D(m_mesh);
             m_meshStats = ComputeStatsData(data);
             if (solvedThisRun) m_thermalSolved = true;
+            RebuildMeshDisplay(scene);
+            RebuildGridBox(scene);
             if (m_mesh && Alive(scene, m_mesh)) scene.SetNodeVisibleCascade(m_mesh, m_job.meshVisible);
         }
     }
     else if (solvedThisRun) {
         // Thermal-only run: the mesh was not rebuilt above, but SEM_SolveThermal3D
-        // overwrote its file with the solved T. Re-import in place so the existing
-        // mesh recolours by the new field, then apply this run's visibility intent
-        // (shown when Thermal was the pressed stage, hidden as a prerequisite).
+        // wrote the solved T into the core's mesh. Take it and redraw, then apply
+        // this run's visibility intent (shown when Thermal was the pressed stage,
+        // hidden when the isosurface was).
         m_thermalSolved = true;
         ReloadMeshColored(scene);
         if (m_mesh && Alive(scene, m_mesh)) scene.SetNodeVisibleCascade(m_mesh, m_job.meshVisible);
     }
 
-    // Isosurface. A plain extraction is the extracted iso (SEM_GetSourceIsosurface3D);
-    // an offset-axis run is the offset-and-remesh product (SEM_GetIsosurface3D).
+    // Isosurface (SEM_GetSourceIsosurface3D), or a standalone result.
     if (!m_job.isoPath.empty()) {
-        // The worker already marshalled the displayed isosurface off the cache
-        // (m_job.isoDisplayData) — covering both a plain extraction and the offset-
-        // and-remesh product — so there is no file to re-read here. Route it through
-        // BuildIsoDisplay so the uneven-winding highlight applies.
+        // The worker already marshalled the displayed surface off the cache
+        // (m_job.isoDisplayData), so there is no file to re-read here. Route it
+        // through BuildIsoDisplay so the non-manifold highlight applies.
         DropIsoline(scene);
         m_isoData = m_job.isoDisplayData;
         m_isoline = BuildIsoDisplay(scene, m_isoData);
@@ -439,10 +427,7 @@ void SemSession::PollAsync(Scene& scene) {
                                                                     : "_offset_remesh");
             } else {
                 m_isolinePath = m_job.isoPath;
-                // An offset axis means the offset-and-remesh step ran, so the
-                // intermediate-stage caches (source iso, projection) are valid.
-                m_isoProjected = (m_job.isoAxisN.x != 0.0 || m_job.isoAxisN.y != 0.0 ||
-                                  m_job.isoAxisN.z != 0.0);
+                m_isoProjected = false;
             }
             if (Alive(scene, m_isoline)) scene.SetNodeVisibleCascade(m_isoline, m_job.isoVisible);
         }
@@ -570,6 +555,13 @@ void SemSession::PipelineWorkerBody() {
         m_job.offsetsMs = t.GetMillisecondsElapsed();
         if (rc == SEM_RC_CANCELLED) return stageCancelled(m_job.offsetsMs);
         if (rc != 0) return Fail("SEM_ComputeOffsets3D failed (" + std::to_string(rc) + ")");
+        // The inner offsets ride along (0 of them removes any there were).
+        rc = SEM_ComputeInnerOffsets3D(m_job.innerFirstGap,
+                                       m_job.innerEnabled ? m_job.innerNum : 0,
+                                       m_job.innerGrading);
+        m_job.offsetsMs = t.GetMillisecondsElapsed();
+        if (rc == SEM_RC_CANCELLED) return stageCancelled(m_job.offsetsMs);
+        if (rc != 0) return Fail("SEM_ComputeInnerOffsets3D failed (" + std::to_string(rc) + ")");
         m_job.offsetsPath = m_job.expOffsets;
         ++idx;
     }
@@ -579,7 +571,7 @@ void SemSession::PipelineWorkerBody() {
         if (stopIfCancelled()) return;
         m_job.stageKind.store(1);
         m_job.progressStage.store(idx);
-        SEM_MeshParams3D params3d{ m_job.tetMethod, m_job.tetParam, m_job.tetMaxEdgeLen };
+        SEM_MeshParams3D params3d{ SEM_TET_GRID, m_job.gridStep, 0.0, m_job.gridBoxScale };
         Timer t; t.Restart();
         int rc = SafeBuildMesh3D(&params3d);
         m_job.meshMs = t.GetMillisecondsElapsed();
@@ -597,7 +589,7 @@ void SemSession::PipelineWorkerBody() {
         m_job.stageKind.store(2);
         m_job.progressStage.store(idx);
         Timer t; t.Restart();
-        SEM_SetActiveLayers3D(m_job.activeLayers, 0);
+        SEM_SetThermalBC3D(m_job.bcFrom, m_job.bcTo);
         int rc = SafeSolveThermal3D(m_job.maxInward);
         m_job.thermalMs = t.GetMillisecondsElapsed();
         if (rc == -100) return Fail("Thermal solver crashed (access violation caught).");
@@ -616,44 +608,20 @@ void SemSession::PipelineWorkerBody() {
         if (v < 0.0) v = 0.0;
         if (v > 1.0) v = 1.0;
         Timer t; t.Restart();
-        // Extract-and-remesh in one call. axis == 0 extracts only; axis 1/2/3 also runs
-        // the folded-in offset-and-remesh (was SEM_OffsetRemeshIsosurface3D) AND the final
-        // isotropic remesh (was SEM_RemeshIsosurface3D) as part of this stage, reading the
-        // result back through SEM_GetIsosurface3D. When only the final-remesh knobs changed
-        // since the last extract, the core takes its fast path and re-remeshes the cached
-        // base without re-extracting.
-        int rc = SafeExtractIsosurface3D(v, m_job.isoAxisN, m_job.isoOffsetValue,
-                                         m_job.isoMinOffsetValue,
-                                         m_job.isoFinalTargetMult, m_job.isoFinalIters);
+        SEM_SetIsoShift3D(m_job.isoShift ? 1 : 0);
+        int rc = SafeExtractIsosurface3D(v);
         m_job.isoMs = t.GetMillisecondsElapsed();
         if (rc == -100) return Fail("Isosurface extraction crashed (access violation caught).");
         if (rc == SEM_RC_CANCELLED) return stageCancelled(m_job.isoMs);
         if (rc != 0) return Fail("SEM_ExtractIsosurface3D failed (" + std::to_string(rc) + ")");
         m_job.isoPath = m_job.expIso;
 
-        // Copy the result straight off the SEM cache here on the worker thread.
-        // SEM_MeshView pointers live in the process-global cache and stay valid only
-        // until the next mutating SEM call, so we marshal them out now (ViewToData)
-        // instead of having the main thread re-read a serialized file later — that
-        // disk round-trip was redundant and, for the offset-and-remesh product, also
-        // broken: the host looked for a <stem>_isosurface3d_remesh3d.csv3d the core
-        // never writes under that name (it writes surface_remesh3d.csv3d).
-        if (m_job.isoAxisN.x != 0.0 || m_job.isoAxisN.y != 0.0 || m_job.isoAxisN.z != 0.0) {
-            // The offset-and-remesh ran as part of the extract; its remeshed result is
-            // cached and read back through SEM_GetIsosurface3D.
-            SEM_MeshView rv{};
-            int grc = SEM_GetIsosurface3D(&rv);
-            if (grc != 0) return Fail("SEM_GetIsosurface3D failed (" + std::to_string(grc) + ")");
-            m_job.isoDisplayData = ViewToData(rv);            // copy before any further SEM call
-            m_job.isoPath = m_job.expIsoRemesh;
-        } else {
-            // Plain extraction: the displayed surface is the extracted iso itself
-            // (no remesh ran, so SEM_GetIsosurface3D is empty — read the source iso).
-            SEM_MeshView iv{};
-            int grc = SEM_GetSourceIsosurface3D(&iv);
-            if (grc != 0) return Fail("SEM_GetSourceIsosurface3D failed (" + std::to_string(grc) + ")");
-            m_job.isoDisplayData = ViewToData(iv);
-        }
+        // Copy the result straight off the SEM cache here on the worker thread:
+        // SEM_MeshView pointers stay valid only until the next mutating SEM call.
+        SEM_MeshView iv{};
+        int grc = SEM_GetSourceIsosurface3D(&iv);
+        if (grc != 0) return Fail("SEM_GetSourceIsosurface3D failed (" + std::to_string(grc) + ")");
+        m_job.isoDisplayData = ViewToData(iv);
         ++idx;
     }
 
@@ -761,8 +729,7 @@ void SemSession::PipelineWorkerBody() {
         m_job.stageKind.store(8);
         m_job.progressStage.store(idx);
         Timer t; t.Restart();
-        const int rc = SafeBuildBodyPreform3D(m_job.pfSource, m_job.pfAngle, m_job.pfTarget,
-                                              m_job.pfShift, m_job.pfStep);
+        const int rc = SafeBuildBodyPreform3D(m_job.pfSource);
         m_job.preformMs = t.GetMillisecondsElapsed();
         if (rc == -100) return Fail("Preform crashed (access violation caught).");
         if (rc == SEM_RC_CANCELLED) return stageCancelled(m_job.preformMs);
@@ -780,24 +747,76 @@ void SemSession::Fail(const std::string& msg) {
     m_job.done.store(true);
 }
 
-int SemSession::OffsetLayerCount() {
+const std::vector<double>& SemSession::OffsetLevels(int& numInner) {
     // The readout asks the core, which a running worker may be rewriting.
-    if (AsyncRunning()) return m_layerCount;
-    SemSession* s = IsBody() ? m_half[0] : this;
-    if (!s || !s->HasSource()) return m_layerCount = 0;
-    s->Activate();
-    const int n = SEM_GetOffsetLayerCount3D();
-    Activate();
-    m_layerCount = (n > 0) ? n : 0;
-    return m_layerCount;
+    if (!AsyncRunning()) {
+        m_levels.clear();
+        m_levelsInner = 0;
+        SemSession* s = IsBody() ? m_half[0] : this;
+        if (s && s->HasSource() && dim == 3) {
+            s->Activate();
+            int ni = 0, no = 0;
+            if (SEM_GetOffsetLevels3D(&ni, &no, nullptr, 0) == 0 && no > 0) {
+                m_levels.resize((size_t)(ni + no + 1));
+                SEM_GetOffsetLevels3D(&ni, &no, m_levels.data(), (int)m_levels.size());
+                m_levelsInner = ni;
+            }
+            Activate();
+        }
+    }
+    numInner = m_levelsInner;
+    return m_levels;
 }
 
-void SemSession::ApplyActiveLayers(Scene& scene) {
-    // The setting rides along with every thermal solve; with a mesh in place it is
-    // applied right away by solving again on the kept layers.
+void SemSession::ApplyThermalBC(Scene& scene) {
+    // The levels ride along with every thermal solve, so the field is stale now;
+    // the domain shows the new BCs at once.
     MarkStageDirty(STAGE_THERMAL);
-    if (AsyncRunning() || !MeshPrim()) return;
-    RecomputeUpToAsync(scene, STAGE_THERMAL, false);
+    if (AsyncRunning() || dim != 3) return;
+    if (IsBody()) {
+        for (SemSession* h : m_half) {
+            if (!h) continue;
+            h->bcFrom = bcFrom;
+            h->bcTo   = bcTo;
+            h->MarkStageDirty(STAGE_THERMAL);
+            h->Activate();
+            SEM_SetThermalBC3D(bcFrom, bcTo);
+            h->RebuildMeshDisplay(scene);
+        }
+        Activate();
+    } else {
+        Activate();
+        SEM_SetThermalBC3D(bcFrom, bcTo);
+        RebuildMeshDisplay(scene);
+    }
+    scene.UpdateLight();
+}
+
+bool SemSession::IsoShiftGap(double& gap) {
+    if (AsyncRunning() || dim != 3) return false;
+    SemSession* s = IsBody() ? m_half[0] : this;
+    if (!s || !s->HasSource()) return false;
+    s->Activate();
+    gap = 0.0;
+    const bool ok = (SEM_GetIsoShift3D(nullptr, &gap) == 0);
+    Activate();
+    return ok && gap > 0.0;
+}
+
+bool SemSession::GridInfo(XMFLOAT3& lo, XMFLOAT3& hi, double& step) {
+    if (AsyncRunning() || dim != 3) return false;
+    SemSession* s = IsBody() ? m_half[0] : this;
+    if (!s || !s->HasSource()) return false;
+    s->Activate();
+    SEM_Vec3 a{}, b{};
+    double st = 0.0;
+    const bool ok = (SEM_GetGridInfo3D(&a, &b, &st) == 0);
+    Activate();
+    if (!ok) return false;
+    lo = XMFLOAT3((float)a.x, (float)a.y, (float)a.z);
+    hi = XMFLOAT3((float)b.x, (float)b.y, (float)b.z);
+    step = st;
+    return true;
 }
 
 }

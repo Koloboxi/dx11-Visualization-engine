@@ -9,6 +9,7 @@ struct VS_OUT
     float4 pos : SV_POSITION;
     float3 normal : NORMAL;
     float4 color : COLOR;
+    float  clip : SV_ClipDistance0;
 };
 
 struct GS_OUT
@@ -16,6 +17,7 @@ struct GS_OUT
     float4 pos : SV_POSITION;
     float3 normal : NORMAL;
     float4 color : COLOR;
+    float  clip : SV_ClipDistance0;
 };
 
 [maxvertexcount(4)]
@@ -31,21 +33,26 @@ void gs_thick_line(line VS_OUT input[2], inout TriangleStream<GS_OUT> stream)
     GS_OUT output;
     output.normal = input[0].normal;
 
-    // Each quad corner inherits its source endpoint's colour so the
-    // rasteriser interpolates the colour gradient along the segment.
+    // Each quad corner inherits its source endpoint's colour so the rasteriser
+    // interpolates the colour gradient along the segment, and its section
+    // distance, so a section cuts the segment where it crosses the plane.
     output.color = input[0].color;
+    output.clip = input[0].clip;
     output.pos = float4(p0.xy - perp, p0.z, p0.w);
     stream.Append(output);
 
     output.color = input[1].color;
+    output.clip = input[1].clip;
     output.pos = float4(p1.xy - perp, p1.z, p1.w);
     stream.Append(output);
 
     output.color = input[0].color;
+    output.clip = input[0].clip;
     output.pos = float4(p0.xy + perp, p0.z, p0.w);
     stream.Append(output);
 
     output.color = input[1].color;
+    output.clip = input[1].clip;
     output.pos = float4(p1.xy + perp, p1.z, p1.w);
     stream.Append(output);
 

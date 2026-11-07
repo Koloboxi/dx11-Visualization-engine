@@ -162,8 +162,13 @@ bool SemSession::ImportOffsets(Scene& scene, const std::string& dir) {
     }
 
     DropOffsets(scene);
-    if (!LoadOffsetShells(scene, false, dir)) return false;
-    if (m_offsets && Alive(scene, m_offsets)) scene.SetNodeVisibleCascade(m_offsets, true);
+    if (dim == 3) {
+        // The 3D offsets are levels the grid embeds; there is nothing to draw.
+        m_offsetsReady = true;
+    } else {
+        if (!LoadOffsetShells(scene, false, dir)) return false;
+        if (m_offsets && Alive(scene, m_offsets)) scene.SetNodeVisibleCascade(m_offsets, true);
+    }
 
     // The reloaded offsets (and the subdivide they came from) now populate the
     // cache; recomputing either would clobber it, so mark both clean. The mesh
@@ -192,13 +197,24 @@ bool SemSession::ImportMesh(Scene& scene, const std::string& path) {
     }
 
     DropMesh(scene);
-    m_mesh = scene.AddFromCSV3D(path, "mesh_" + Stem(m_srcPath), AttachParent(),
-                                nullptr, Colors::CYAN, Colors::YELLOW);
-    if (!m_mesh) { Report(scene, false, "Import mesh: file has no drawable geometry."); return false; }
-    m_meshPath = path;
-    if (dim == 3) ConfigureSurface3D(m_mesh);
-    m_meshStats = ComputeStats(path);
-    if (m_mesh && Alive(scene, m_mesh)) scene.SetNodeVisibleCascade(m_mesh, true);
+    if (dim == 3) {
+        // The domain as the core holds it, drawn like a freshly built one.
+        CSV3DLoader::CSV3DData data;
+        if (!FetchMeshData(scene, false, data)) return false;
+        TakeMeshData(data, true);
+        m_meshPath  = path;
+        m_meshStats = ComputeStatsData(data);
+        m_dirty[STAGE_THERMAL] = true;
+        RebuildMeshDisplay(scene);
+        RebuildGridBox(scene);
+    } else {
+        m_mesh = scene.AddFromCSV3D(path, "mesh_" + Stem(m_srcPath), AttachParent(),
+                                    nullptr, Colors::CYAN, Colors::YELLOW);
+        if (!m_mesh) { Report(scene, false, "Import mesh: file has no drawable geometry."); return false; }
+        m_meshPath = path;
+        m_meshStats = ComputeStats(path);
+        if (m_mesh && Alive(scene, m_mesh)) scene.SetNodeVisibleCascade(m_mesh, true);
+    }
 
     // The reloaded mesh satisfies subdivide + offsets + mesh (BCs are distance-
     // based, so the offsets are not needed to re-solve). Require an explicit
@@ -287,18 +303,15 @@ void SemSession::LoadSessionStages3D(Scene& scene) {
     // the planes; this only recreates the editable visuals).
     LoadClipPlanesFromState(scene);
 
-    // Iso deliverable: the remeshed sheet when the extraction used an offset axis,
-    // else the plain extracted iso. Colour the mesh by the solved field first.
-    const bool isoOffsetRemesh = (a.iso_axis.x != 0.0 || a.iso_axis.y != 0.0 || a.iso_axis.z != 0.0);
+    // The solved field colours the domain; then the extracted isosurface.
+    if ((a.stages_present & SEM_STAGE_THERMAL) && MeshBuilt()) {
+        m_thermalSolved = true;
+        m_dirty[STAGE_THERMAL] = false;
+        ReloadMeshColored(scene);
+    }
     const std::string isoPath =
-        (fs::path(m_workDir) / (Stem(m_srcPath) +
-            (isoOffsetRemesh ? "_remesh3d.csv3d" : "_isosurface3d.csv3d"))).string();
-    if ((a.stages_present & SEM_STAGE_ISO) && Alive(scene, m_mesh) && fs::exists(isoPath)) {
-        if (a.stages_present & SEM_STAGE_THERMAL) {
-            m_thermalSolved = true;
-            ReloadMeshColored(scene);
-            m_dirty[STAGE_THERMAL] = false;
-        }
+        (fs::path(m_workDir) / (Stem(m_srcPath) + "_isosurface3d.csv3d")).string();
+    if ((a.stages_present & SEM_STAGE_ISO) && MeshBuilt() && fs::exists(isoPath)) {
         DropIsoline(scene);
         const XMFLOAT4 green(0.0f, 1.0f, 0.0f, 1.0f);
         m_isoline = scene.AddFromCSV3D(isoPath, "isosurface_" + Stem(m_srcPath),
@@ -352,18 +365,28 @@ void SemSession::ApplyPipelineArgs3D() {
     const float autoEdge = AutoTetMaxEdge();
     tetMaxEdgeAuto = std::abs(tetMaxEdgeLen - autoEdge) <= 1e-4f * (std::max)(1.0f, autoEdge);
 
-    // Thermal.
-    maxInward = a.max_inward;
-    activeLayers = (std::max)(0, SEM_GetActiveLayers3D());
+    // The mesh is rebuilt as the grid domain whatever the session was meshed with.
+    if (a.tet_method == SEM_TET_GRID) gridStep = (float)(std::max)(0.0, a.tet_param);
+    tetMethod    = SEM_TET_GRID;
+    gridBoxScale = XMFLOAT3((float)a.grid_box_scale.x, (float)a.grid_box_scale.y,
+                            (float)a.grid_box_scale.z);
 
-    // Iso. The core stores min-offset as the absolute clearance c*offset; recover c.
-    isoValue       = (float)a.iso_value;
-    isoAxisN       = XMFLOAT3((float)a.iso_axis.x, (float)a.iso_axis.y, (float)a.iso_axis.z);
-    isoOffsetValue = (float)a.iso_offset_value;
-    if (a.iso_offset_value > 1e-12 || a.iso_offset_value < -1e-12)
-        isoMinOffsetValue = (float)(a.iso_min_offset_value / a.iso_offset_value);
-    isoFinalTargetMult = (float)a.iso_target_len_mult;
-    isoFinalIters      = a.iso_iterations;
+    // Inner offsets.
+    innerEnabled = (a.inner_num_offsets > 0);
+    if (innerEnabled) {
+        innerFirstGap = (float)a.inner_first_gap;
+        innerNum      = a.inner_num_offsets;
+        innerGrading  = (float)a.inner_grading;
+    }
+
+    // Thermal BC levels and the field shift.
+    maxInward = a.max_inward;
+    bcFrom    = a.bc_from;
+    bcTo      = a.bc_to;
+    isoShift  = (a.iso_shift != 0);
+
+    // Iso: the smoothing it was extracted with (kept at the default before one).
+    if (a.stages_present & SEM_STAGE_ISO) isoValue = (float)a.iso_value;
 }
 
 }

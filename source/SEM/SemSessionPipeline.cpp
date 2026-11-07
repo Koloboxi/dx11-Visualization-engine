@@ -177,15 +177,11 @@ Primitive* SemSession::BuildIsoDisplay(Scene& scene, const CSV3DLoader::CSV3DDat
     const XMFLOAT4 green = Colors::GREEN;
     Primitive* prim = nullptr;
 
-    if (dim == 3 && (isoShowWinding || isoShowNonManifold) && !data.triangles.empty()) {
-        // Per-triangle defect colouring. Non-manifold triangles (edges shared by 3+
+    if (dim == 3 && isoShowNonManifold && !data.triangles.empty()) {
+        // Per-triangle defect colouring: non-manifold triangles (edges shared by 3+
         // faces, or bowtie vertices — the artefacts vertex welding leaves) are painted
-        // bright magenta; minority-winding triangles pure red; the rest green. The
-        // triangles are emitted with their real winding (ColoredTriangles no longer
-        // re-orients), so the minority genuinely reads as red. Non-manifold takes
-        // priority over winding when both highlights are on.
-        std::vector<char> minority = isoShowWinding    ? WindingMinorityTris(data) : std::vector<char>();
-        std::vector<char> nonman   = isoShowNonManifold ? NonManifoldTris(data)     : std::vector<char>();
+        // bright magenta, the rest green.
+        std::vector<char> nonman = NonManifoldTris(data);
         const size_t nN = data.nodes.size();
         std::vector<XMFLOAT3> poses;
         std::vector<XMFLOAT4> cols;
@@ -194,9 +190,7 @@ Primitive* SemSession::BuildIsoDisplay(Scene& scene, const CSV3DLoader::CSV3DDat
         for (size_t i = 0; i < data.triangles.size(); ++i) {
             const auto& t = data.triangles[i];
             if (t.x >= nN || t.y >= nN || t.z >= nN) continue;
-            const XMFLOAT4& c = (!nonman.empty()   && nonman[i])   ? Colors::MAGENTA
-                              : (!minority.empty() && minority[i]) ? Colors::RED
-                                                                   : green;
+            const XMFLOAT4& c = (!nonman.empty() && nonman[i]) ? Colors::MAGENTA : green;
             poses.push_back(data.nodes[t.x].pos); cols.push_back(c);
             poses.push_back(data.nodes[t.y].pos); cols.push_back(c);
             poses.push_back(data.nodes[t.z].pos); cols.push_back(c);
@@ -265,25 +259,16 @@ void SemSession::RebuildIsoDisplayInPlace(Scene& scene) {
     // revolution / clip-mirror surfaces — no re-extraction.
     const bool vis = m_isoline->visible;
     const bool revWasShown  = Alive(scene, m_isoRevSurf) && m_isoRevSurf->visible;
-    const bool normalsShown = m_isoNormals != nullptr;
 
-    DropIsoNormals(scene);
     DropIsoRev(scene);
     scene.RemovePrimitive(m_isoline);
     m_isoline = BuildIsoDisplay(scene, m_isoData);
     if (m_isoline) {
         if (Alive(scene, m_isoline)) scene.SetNodeVisibleCascade(m_isoline, vis);
-        if (normalsShown) ShowIsoPseudonormals(scene, true, true);
         if (revWasShown)  BuildIsolineRevolution(scene);
     }
     if (AnyClipMirror()) RebuildClipMirrors(scene);
     scene.UpdateLight();
-}
-
-void SemSession::SetIsoWinding(Scene& scene, bool on) {
-    if (isoShowWinding == on) return;
-    isoShowWinding = on;
-    RebuildIsoDisplayInPlace(scene);
 }
 
 void SemSession::SetIsoNonManifold(Scene& scene, bool on) {
@@ -316,94 +301,133 @@ bool SemSession::ShowSourcePseudonormals(Scene& scene, bool show, bool silent) {
     return true;
 }
 
-bool SemSession::ShowIsoPseudonormals(Scene& scene, bool show, bool silent) {
-    if (!show) { DropIsoNormals(scene); scene.UpdateLight(); return true; }
-    if (dim != 3) { Report(scene, silent, "Pseudonormals apply to the 3D isosurface only."); return false; }
-    if (!Alive(scene, m_isoline) || m_isoData.triangles.empty()) {
-        Report(scene, silent, "Extract the isosurface first.");
-        return false;
-    }
-    DropIsoNormals(scene);
-    m_isoNormals = BuildPseudonormalLines(scene, m_isoData, Colors::CYAN,
-                                          "iso_normals_" + Stem(m_srcPath), m_isoline);
-    if (!m_isoNormals) { Report(scene, silent, "Isosurface pseudonormals: build failed."); return false; }
-    scene.UpdateLight();
-    snprintf(status, sizeof(status), "Isosurface pseudonormals shown.");
-    return true;
-}
-
-bool SemSession::ShowSourceIsoPseudonormals(Scene& scene, bool show, bool silent) {
-    if (!show) { DropIsoSrcNormals(scene); scene.UpdateLight(); return true; }
-    if (dim != 3) { Report(scene, silent, "Pseudonormals apply to the 3D isosurface only."); return false; }
-    if (!m_isoProjected) {
-        Report(scene, silent, "Extract the isosurface with an offset axis first.");
-        return false;
-    }
-    // The pre-offset source isosurface (the orange sheet) lives only in the SEM
-    // cache; fetch it on demand so the overlay shows even when the sheet itself is
-    // hidden. Its pseudonormals (the core's, the directions the remesh shifted each
-    // vertex along) come straight off the same view — read before any other SEM_* call.
-    SEM_MeshView v{};
-    if (SEM_GetSourceIsosurface3D(&v) != 0) {
-        Report(scene, silent, "SEM_GetSourceIsosurface3D failed" + SemDetail());
-        return false;
-    }
-    CSV3DLoader::CSV3DData data = ViewToData(v);
-    std::vector<XMFLOAT3> normals = ViewNormals(v);
-    DropIsoSrcNormals(scene);
-    const XMFLOAT4 orange(1.0f, 0.5f, 0.0f, 1.0f);
-    m_isoSrcNormals = BuildPseudonormalLines(scene, data, normals, orange,
-                                             "isosrc_normals_" + Stem(m_srcPath), AttachParent());
-    if (!m_isoSrcNormals) { Report(scene, silent, "Source isosurface pseudonormals: build failed."); return false; }
-    scene.UpdateLight();
-    snprintf(status, sizeof(status), "Source isosurface pseudonormals shown.");
-    return true;
-}
-
-bool SemSession::ShowIsosurfaceLoops3D(Scene& scene, bool show, bool silent) {
-    if (!show) { DropIsoLoops(scene); scene.UpdateLight(); return true; }
-    if (dim != 3) { Report(scene, silent, "Isosurface loops are 3D only."); return false; }
-    if (!m_isoProjected) {
-        Report(scene, silent, "Extract the isosurface with an offset axis first.");
-        return false;
-    }
-    // The loops are the closed boundary loops of the source isosurface used as the
-    // offset-remesh's CDT constraints: coords are the source-iso vertices, edges the
-    // per-loop wireframe (each loop closed last->first). Both live only in the SEM
-    // cache; ViewToData copies them out before any other SEM_* call invalidates them.
-    SEM_MeshView v{};
-    if (SEM_GetIsosurfaceLoops3D(&v) != 0) {
-        Report(scene, silent, "SEM_GetIsosurfaceLoops3D failed" + SemDetail());
-        return false;
-    }
-    CSV3DLoader::CSV3DData data = ViewToData(v);
-    if (data.edges.empty()) { Report(scene, silent, "No isosurface loops to show."); return false; }
-    DropIsoLoops(scene);
-    const XMFLOAT4 magenta = Colors::MAGENTA;
-    m_isoLoops = scene.AddFromCSV3DData(data, "isoloops_" + Stem(m_srcPath),
-                                        AttachParent(), &magenta);
-    if (!m_isoLoops) { Report(scene, silent, "Isosurface loops: build failed."); return false; }
-    // Thickest tier of the SEM line overlays.
-    StyleLines(m_isoLoops, LINESTYLE_THICK);
-    scene.UpdateLight();
-    snprintf(status, sizeof(status), "Isosurface loops shown.");
-    return true;
-}
-
 void SemSession::SetBCView(Scene& scene, bool on) {
-    if (bcView == on) return;
     bcView = on;
-    // Only a solved mesh carries a meaningful T field. Switch the pre-built colour
-    // set in place; fall back to a full recolour reload if the sets are absent.
+    // A body draws its domains on its halves.
+    if (IsBody()) {
+        for (SemSession* h : m_half) {
+            if (!h) continue;
+            h->bcView = on;
+            h->Activate();
+            h->RebuildMeshDisplay(scene);
+        }
+        Activate();
+        scene.UpdateLight();
+        return;
+    }
+    if (dim == 3) {
+        Activate();
+        RebuildMeshDisplay(scene);
+        scene.UpdateLight();
+        return;
+    }
+    // 2D: only a solved mesh carries a meaningful T field. Switch the pre-built
+    // colour set in place; fall back to a full recolour reload if the sets are absent.
     if (m_thermalSolved && Alive(scene, m_mesh)) {
         if (!m_mesh->ActivateColorSet(on ? "bc" : "tfield"))
             ReloadMeshColored(scene);
     }
 }
 
+void SemSession::TakeMeshData(const CSV3DLoader::CSV3DData& data, bool topology) {
+    const size_t nn = data.nodes.size();
+    m_meshPos.resize(nn);
+    m_meshT.resize(nn);
+    for (size_t i = 0; i < nn; ++i) {
+        m_meshPos[i] = data.nodes[i].pos;
+        m_meshT[i]   = data.nodes[i].T;
+    }
+    if (!topology) return;
+    // Every tet contributes its six edges; sorting the packed pairs dedupes the
+    // edges tets share far faster than a node set would.
+    m_meshEdges.clear();
+    m_meshEdges.reserve(data.tets.size() * 6);
+    auto add = [&](unsigned a, unsigned b) {
+        if (a == b || a >= nn || b >= nn) return;
+        if (a > b) std::swap(a, b);
+        m_meshEdges.push_back(((unsigned long long)a << 32) | (unsigned long long)b);
+    };
+    for (const auto& t : data.tets) {
+        add(t.x, t.y); add(t.x, t.z); add(t.x, t.w);
+        add(t.y, t.z); add(t.y, t.w); add(t.z, t.w);
+    }
+    std::sort(m_meshEdges.begin(), m_meshEdges.end());
+    m_meshEdges.erase(std::unique(m_meshEdges.begin(), m_meshEdges.end()), m_meshEdges.end());
+}
+
+void SemSession::RebuildMeshDisplay(Scene& scene) {
+    if (dim != 3 || IsBody()) return;
+    const bool wasVisible = Alive(scene, m_mesh) ? m_mesh->visible : true;
+    if (Alive(scene, m_mesh)) scene.RemovePrimitive(m_mesh);
+    m_mesh = nullptr;
+    if (m_meshEdges.empty() || m_meshPos.empty()) return;
+
+    // The BCs while the field is not solved for the levels as they stand, else as
+    // the BC/T choice says.
+    const bool bc = bcView || !m_thermalSolved || m_dirty[STAGE_THERMAL];
+    std::vector<signed char> flags;
+    if (bc) {
+        SEM_SetThermalBC3D(bcFrom, bcTo);
+        int n = 0;
+        SEM_GetThermalBCNodes3D(nullptr, 0, &n);
+        if (n > 0) {
+            flags.assign((size_t)n, -1);
+            SEM_GetThermalBCNodes3D(flags.data(), n, &n);
+        }
+    }
+    const size_t nn = m_meshPos.size();
+    std::vector<XMFLOAT3> poses;
+    std::vector<XMFLOAT4> cols;
+    poses.reserve(m_meshEdges.size() * 2);
+    cols.reserve(m_meshEdges.size() * 2);
+    for (unsigned long long e : m_meshEdges) {
+        const unsigned a = (unsigned)(e >> 32), b = (unsigned)(e & 0xFFFFFFFFULL);
+        if (a >= nn || b >= nn) continue;
+        if (bc) {
+            // Nodes the BCs leave free are not drawn, nor any edge touching one.
+            if (a >= flags.size() || b >= flags.size() || flags[a] < 0 || flags[b] < 0) continue;
+            poses.push_back(m_meshPos[a]); cols.push_back(flags[a] ? Colors::RED : Colors::BLUE);
+            poses.push_back(m_meshPos[b]); cols.push_back(flags[b] ? Colors::RED : Colors::BLUE);
+        } else {
+            poses.push_back(m_meshPos[a]); cols.push_back(Colors::Lerp(Colors::BLUE, Colors::RED, m_meshT[a]));
+            poses.push_back(m_meshPos[b]); cols.push_back(Colors::Lerp(Colors::BLUE, Colors::RED, m_meshT[b]));
+        }
+    }
+    m_mesh = scene.AddColoredLines(poses, cols, "mesh_" + Stem(m_srcPath), AttachParent());
+    if (!m_mesh) return;
+    StyleLines(m_mesh, LINESTYLE_HAIRLINE);
+    ConfigureSurface3D(m_mesh);
+    if (!wasVisible) scene.SetNodeVisibleCascade(m_mesh, false);
+}
+
+void SemSession::RebuildGridBox(Scene& scene) {
+    const bool wasVisible = Alive(scene, m_gridBox) ? m_gridBox->visible : true;
+    if (Alive(scene, m_gridBox)) scene.RemovePrimitive(m_gridBox);
+    m_gridBox = nullptr;
+    if (dim != 3 || IsBody()) return;
+    SEM_Vec3 lo{}, hi{};
+    double step = 0.0;
+    if (SEM_GetGridInfo3D(&lo, &hi, &step) != 0) return;
+    const float x[2] = { (float)lo.x, (float)hi.x }, y[2] = { (float)lo.y, (float)hi.y },
+                z[2] = { (float)lo.z, (float)hi.z };
+    auto corner = [&](int i) { return XMFLOAT3(x[i & 1], y[(i >> 1) & 1], z[(i >> 2) & 1]); };
+    // The twelve edges join corners that differ in one coordinate.
+    std::vector<XMFLOAT3> poses;
+    for (int i = 0; i < 8; ++i)
+        for (int bit : { 1, 2, 4 })
+            if (!(i & bit)) { poses.push_back(corner(i)); poses.push_back(corner(i | bit)); }
+    const XMFLOAT4 grey(0.55f, 0.55f, 0.55f, 1.0f);
+    std::vector<XMFLOAT4> cols(poses.size(), grey);
+    m_gridBox = scene.AddColoredLines(poses, cols, "grid_box_" + Stem(m_srcPath), AttachParent());
+    if (!m_gridBox) return;
+    StyleLines(m_gridBox, LINESTYLE_THIN);
+    if (!wasVisible) scene.SetNodeVisibleCascade(m_gridBox, false);
+}
+
 void SemSession::DropOffsets(Scene& scene) {
     if (Alive(scene, m_offsets)) scene.RemoveNode(m_offsets);
     m_offsets = nullptr; m_offStats = Stats();
+    m_offsetsReady = false;
 }
 
 // Called BEFORE a compute (never after) so a run producing fewer shells than a
@@ -470,12 +494,24 @@ bool SemSession::LoadOffsetShells(Scene& scene, bool silent, const std::string& 
 
 void SemSession::DropMesh(Scene& scene) {
     if (Alive(scene, m_mesh)) scene.RemovePrimitive(m_mesh);
-    m_mesh = nullptr; m_meshStats = Stats(); m_meshPath.clear();
+    if (Alive(scene, m_gridBox)) scene.RemovePrimitive(m_gridBox);
+    m_mesh = nullptr; m_gridBox = nullptr; m_meshStats = Stats(); m_meshPath.clear();
+    m_meshPos.clear(); m_meshT.clear(); m_meshEdges.clear();
     m_thermalSolved = false;
     DropIsoline(scene);
 }
 
 void SemSession::ReloadMeshColored(Scene& scene) {
+    // 3D: the solve wrote T into the core's mesh; take it and redraw.
+    if (dim == 3) {
+        if (m_meshEdges.empty()) return;
+        CSV3DLoader::CSV3DData data;
+        if (!FetchMeshData(scene, true, data)) return;
+        TakeMeshData(data, data.nodes.size() != m_meshPos.size());
+        RebuildMeshDisplay(scene);
+        scene.UpdateLight();
+        return;
+    }
     if (m_meshPath.empty() || !Alive(scene, m_mesh)) return;
     // Snapshot what a focused reload must preserve; unlike DropMesh this neither
     // clears m_meshPath/m_thermalSolved nor drops the isotherm.
@@ -516,9 +552,9 @@ bool SemSession::FetchMeshData(Scene& scene, bool silent, CSV3DLoader::CSV3DData
 
 bool SemSession::FetchIsoData(Scene& scene, bool silent, CSV3DLoader::CSV3DData& out) {
     SEM_MeshView v{};
-    int rc = (dim == 3) ? SEM_GetIsosurface3D(&v) : SEM_GetIsoline(&v);
+    int rc = (dim == 3) ? SEM_GetSourceIsosurface3D(&v) : SEM_GetIsoline(&v);
     if (rc != 0) {
-        Report(scene, silent, std::string(dim == 3 ? "SEM_GetIsosurface3D" : "SEM_GetIsoline")
+        Report(scene, silent, std::string(dim == 3 ? "SEM_GetSourceIsosurface3D" : "SEM_GetIsoline")
                + " failed (" + std::to_string(rc) + ")" + SemDetail());
         return false;
     }
@@ -527,21 +563,13 @@ bool SemSession::FetchIsoData(Scene& scene, bool silent, CSV3DLoader::CSV3DData&
 }
 
 void SemSession::DropIsoline(Scene& scene) {
-    // Drop the pseudonormal overlay first — it is parented under m_isoline, so
-    // removing the isosurface would otherwise destroy it and dangle the pointer.
-    DropIsoNormals(scene);
     if (Alive(scene, m_isoline)) scene.RemovePrimitive(m_isoline);
     m_isoline = nullptr;
     m_isoData = CSV3DLoader::CSV3DData();
     DropIsoRev(scene);
     m_isolinePath.clear();
-    // A new (or cleared) extraction invalidates the intermediate offset/remesh
-    // stages and their caches, so drop their primitives (and the source-iso
-    // pseudonormal overlay computed from them) and the gate flag too.
-    DropIsoSource(scene);
+    // A new (or cleared) result invalidates a standalone projection shown with it.
     DropIsoProjection(scene);
-    DropIsoSrcNormals(scene);
-    DropIsoLoops(scene);
     m_isoProjected = false;
 }
 
@@ -550,46 +578,14 @@ void SemSession::DropSrcNormals(Scene& scene) {
     m_srcNormals = nullptr;
 }
 
-void SemSession::DropIsoNormals(Scene& scene) {
-    if (Alive(scene, m_isoNormals)) scene.RemovePrimitive(m_isoNormals);
-    m_isoNormals = nullptr;
-}
-
-void SemSession::DropIsoSrcNormals(Scene& scene) {
-    if (Alive(scene, m_isoSrcNormals)) scene.RemovePrimitive(m_isoSrcNormals);
-    m_isoSrcNormals = nullptr;
-}
-
-void SemSession::DropIsoLoops(Scene& scene) {
-    if (Alive(scene, m_isoLoops)) scene.RemovePrimitive(m_isoLoops);
-    m_isoLoops = nullptr;
-}
-
-void SemSession::DropIsoSource(Scene& scene) {
-    if (Alive(scene, m_isoSource)) scene.RemovePrimitive(m_isoSource);
-    m_isoSource = nullptr;
-}
-
 void SemSession::DropIsoProjection(Scene& scene) {
     if (Alive(scene, m_isoProj)) scene.RemovePrimitive(m_isoProj);
     m_isoProj = nullptr;
 }
 
-// SEM_GetSourceIsosurface3D / SEM_GetIsosurfaceProjection3D return the two
-// intermediate stages of an offset-and-remesh extraction directly from the cache
-// (negative if no projection extraction has run). The view's arrays are valid
-// only until the next SEM_* call, so ViewToData copies everything out.
-bool SemSession::FetchSourceIsoData(Scene& scene, bool silent, CSV3DLoader::CSV3DData& out) {
-    SEM_MeshView v{};
-    int rc = SEM_GetSourceIsosurface3D(&v);
-    if (rc != 0) {
-        Report(scene, silent, "SEM_GetSourceIsosurface3D failed (" + std::to_string(rc) + ")" + SemDetail());
-        return false;
-    }
-    out = ViewToData(v);
-    return true;
-}
-
+// SEM_GetIsosurfaceProjection3D returns the flat projection of a standalone
+// offset-remesh from the cache (negative if none has run). The view's arrays are
+// valid only until the next SEM_* call, so ViewToData copies everything out.
 bool SemSession::FetchIsoProjData(Scene& scene, bool silent, CSV3DLoader::CSV3DData& out) {
     SEM_MeshView v{};
     int rc = SEM_GetIsosurfaceProjection3D(&v);
@@ -601,30 +597,11 @@ bool SemSession::FetchIsoProjData(Scene& scene, bool silent, CSV3DLoader::CSV3DD
     return true;
 }
 
-bool SemSession::ShowSourceIsosurface3D(Scene& scene, bool show, bool silent) {
-    if (!show) { DropIsoSource(scene); scene.UpdateLight(); return true; }
-    if (dim != 3) { Report(scene, silent, "Source isosurface is 3D only."); return false; }
-    if (!m_isoProjected) {
-        Report(scene, silent, "Extract the isosurface with an offset axis first.");
-        return false;
-    }
-    CSV3DLoader::CSV3DData data;
-    if (!FetchSourceIsoData(scene, silent, data)) return false;
-    DropIsoSource(scene);
-    const XMFLOAT4 orange(1.0f, 0.5f, 0.0f, 1.0f);
-    m_isoSource = scene.AddFromCSV3DData(data, "isosource_" + Stem(m_srcPath),
-                                         AttachParent(), &orange, Colors::BLUE, Colors::RED);
-    if (!m_isoSource) { Report(scene, silent, "Source isosurface: build failed."); return false; }
-    ConfigureSurface3D(m_isoSource);
-    scene.UpdateLight();
-    return true;
-}
-
 bool SemSession::ShowIsosurfaceProjection3D(Scene& scene, bool show, bool silent) {
     if (!show) { DropIsoProjection(scene); scene.UpdateLight(); return true; }
     if (dim != 3) { Report(scene, silent, "Isosurface projection is 3D only."); return false; }
     if (!m_isoProjected) {
-        Report(scene, silent, "Extract the isosurface with an offset axis first.");
+        Report(scene, silent, "Run the offset-remesh first.");
         return false;
     }
     CSV3DLoader::CSV3DData data;

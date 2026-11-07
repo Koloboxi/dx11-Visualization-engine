@@ -672,9 +672,10 @@ inline void DrawBodySplitSection(Scene& scene, SemSessionNS::SemSession& S) {
                 ImGui::PopID();
             }
             if (S.SkirtActive()) {
-                ImGui::TextDisabled("The halves are extended past this plane (skirt),");
-                ImGui::TextDisabled("so it is NOT their clip plane: their stages run");
-                ImGui::TextDisabled("on half + skirt, lighter tint = the skirt.");
+                ImGui::TextDisabled("The halves are extended past this plane (skirt):");
+                ImGui::TextDisabled("their offsets and distances run on half + skirt,");
+                ImGui::TextDisabled("lighter tint = the skirt. Their domains still end");
+                ImGui::TextDisabled("on the plane.");
             } else {
                 ImGui::TextDisabled("Both halves carry this plane as a clip plane,");
                 ImGui::TextDisabled("each keeping its own side, so their stages are");
@@ -717,11 +718,11 @@ inline void DrawBodyTaperSection(Scene& scene, SemSessionNS::SemSession& S) {
         ImGui::EndDisabled();
         ImGui::Checkbox("Extend past the parting plane (skirt)", &S.skirtEnabled);
         ImGui::SetItemTooltip("Carry each half's walls on below the parting plane at the draft\n"
-                              "angle. The halves' stages then run on half + skirt, with no clip\n"
-                              "at the plane: near the parting line the thermal field is an\n"
-                              "interior one and the isosurface keeps the wall's slope instead of\n"
-                              "meeting the plane square on. On by default: Split builds it\n"
-                              "straight down, Apply taper rebuilds it at the draft angle.");
+                              "angle. The halves' offsets and distances then run on half + skirt,\n"
+                              "so near the parting line the BC levels follow the drafted walls\n"
+                              "instead of rounding off at the cut; the domain still ends on the\n"
+                              "plane. On by default: Split builds it straight down, Apply taper\n"
+                              "rebuilds it at the draft angle.");
         ImGui::BeginDisabled(!S.skirtEnabled);
         ImGui::DragFloat("Skirt depth", &S.skirtDepth, 0.01f, 0.0f, 0.0f, "%.4f");
         if (S.skirtDepth < 0.0f) S.skirtDepth = 0.0f;
@@ -785,11 +786,9 @@ inline void DrawBodyTaperSection(Scene& scene, SemSessionNS::SemSession& S) {
     ImGui::PopID();
 }
 
-// Body session, last stage: glue the two halves back into one closed body.
-// Each half is extended past the parting plane by its own draft walls (cone
-// dilation at the taper angle, which also drafts whatever the half was missing),
-// moved toward the other and cut off at the plane, and the shift is solved so the
-// result encloses the chosen volume. The parting line lies flat in the plane.
+// Body session, last stage: glue the two halves back into one closed body on
+// their own geometry. Both end on the parting plane; the plane closes whatever only
+// one of them covers there (a flat land), so the parting line lies in it.
 inline void DrawBodyPreformSection(Scene& scene, SemSessionNS::SemSession& S) {
     using namespace SemSessionNS;
     ImGui::PushID("bodypreform");
@@ -798,66 +797,39 @@ inline void DrawBodyPreformSection(Scene& scene, SemSessionNS::SemSession& S) {
         ImGui::TextUnformatted("Halves");
         ImGui::SameLine();
         ImGui::RadioButton("Isosurfaces", &S.preformSource, SemSession::PREFORM_FROM_ISOSURFACES);
-        ImGui::SetItemTooltip("The isosurface each half extracted last (the offset-remeshed one\n"
-                              "when its offset axis was set). Extract it on both halves first.");
+        ImGui::SetItemTooltip("The isosurface each half extracted last. Both end on the parting\n"
+                              "plane, the halves' domains being cut there. Extract it on both\n"
+                              "halves first.");
         ImGui::SameLine();
         ImGui::RadioButton("Split / tapered", &S.preformSource, SemSession::PREFORM_FROM_HALVES);
-        ImGui::SetItemTooltip("The halves as the split cut them, or as the last taper left them.");
+        ImGui::SetItemTooltip("The halves as the split cut them, or as the last taper left them\n"
+                              "(without their skirts).");
         if (S.preformSource == SemSession::PREFORM_FROM_ISOSURFACES && !haveIso)
             ImGui::TextDisabled("No isosurface on both halves yet.");
-
-        ImGui::TextDisabled("Draft angle: %.2f deg (from Taper)", S.taperAngle);
-
-        ImGui::RadioButton("Body volume", &S.preformSizing, SemSession::PREFORM_MATCH_BODY);
-        ImGui::SetItemTooltip("Move the halves together until the preform encloses exactly\n"
-                              "the closed body's volume.");
-        ImGui::SameLine();
-        ImGui::RadioButton("Volume", &S.preformSizing, SemSession::PREFORM_MATCH_VOLUME);
-        ImGui::SetItemTooltip("Match a volume of your own - e.g. the body plus flash.");
-        ImGui::SameLine();
-        ImGui::RadioButton("Fixed shift", &S.preformSizing, SemSession::PREFORM_FIXED_SHIFT);
-        ImGui::SetItemTooltip("Move each half by a given distance instead; 0 glues them where\n"
-                              "they are, negative pulls them apart.");
-        if (S.preformSizing == SemSession::PREFORM_MATCH_BODY) {
-            const double vol = S.BodyVolume();
-            if (vol > 0.0) ImGui::TextDisabled("Target %.6g", vol);
-        } else if (S.preformSizing == SemSession::PREFORM_MATCH_VOLUME) {
-            if (S.preformVolume <= 0.0) S.preformVolume = (std::max)(0.0, S.BodyVolume());
-            ImGui::InputDouble("Target volume", &S.preformVolume, 0.0, 0.0, "%.6g");
-        } else {
-            ImGui::DragFloat("Shift per half", &S.preformShift, 0.001f, 0.0f, 0.0f, "%.5f");
-        }
-
-        ImGui::DragFloat("Grid step", &S.preformGridStep, 0.0005f, 0.0f, 0.0f, "%.5f");
-        if (S.preformGridStep < 0.0f) S.preformGridStep = 0.0f;
-        ImGui::SetItemTooltip("In-plane sampling step the preform is rebuilt on. 0 = about half\n"
-                              "the halves' mean edge. Detail finer than the step is smoothed away;\n"
-                              "the grid is capped at a few million nodes.");
 
         ImGui::BeginDisabled(S.preformSource == SemSession::PREFORM_FROM_ISOSURFACES && !haveIso);
         if (ImGui::Button("Apply preform", {200, 0})) S.ApplyPreform(scene, false);
         ImGui::EndDisabled();
-        ImGui::SetItemTooltip("Glue both halves into one closed, drafted surface with a flat\n"
-                              "parting line in the parting plane. Their own outlines need not\n"
-                              "match: where one half's walls reach the plane further in than\n"
-                              "the other's, that half lies flat on the plane out to the\n"
-                              "parting line (a flat land).");
+        ImGui::SetItemTooltip("Glue both halves into one closed surface on their own geometry: no\n"
+                              "vertex moves and nothing is resampled. Where only one half reaches\n"
+                              "the parting plane, the plane closes it with a flat land; where the\n"
+                              "two outlines cross, both are split at the crossing, so the seam is\n"
+                              "welded vertex for vertex.");
 
         if (Primitive* pp = S.PreformPrim()) {
             bool vis = pp->visible;
             if (ImGui::Checkbox("Show preform", &vis)) scene.SetNodeVisibleCascade(pp, vis);
             if (!S.AsyncRunning()) {
-                double shift = 0.0, volume = 0.0, step = 0.0, added = 0.0, worst = 0.0;
-                if (S.PreformReport(shift, volume, step, added, worst)) {
-                    ImGui::TextDisabled("Volume %.6g, shift %.5g per half", volume, shift);
-                    ImGui::TextDisabled("Grid step %.5g, draft added %.4g", step, added);
-                    ImGui::SetItemTooltip("Volume the draft cones added on the halves' own sides of\n"
-                                          "the parting plane: ~0 when the halves already had the\n"
-                                          "draft, the whole wall wedge when they had vertical walls.");
-                    ImGui::TextDisabled("Min draft %.2f deg", worst);
-                    ImGui::SetItemTooltip("Least drafted facet of the preform. A sharp corner of a\n"
-                                          "half leaves the few facets around it somewhat under the\n"
-                                          "angle; smooth isosurfaces reach it.");
+                double volume = 0.0, land = 0.0;
+                int lp = 0, ln = 0, cross = 0, open = 0;
+                if (S.PreformReport(volume, land, lp, ln, cross, open)) {
+                    ImGui::TextDisabled("Volume %.6g, lands %.4g", volume, land);
+                    ImGui::SetItemTooltip("Lands: the area of the parting plane that closes what only one\n"
+                                          "half reaches.");
+                    ImGui::TextDisabled("Parting loops %d / %d, outline crossings %d", lp, ln, cross);
+                    if (open > 0)
+                        ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f),
+                                           "%d edges open: a half has a boundary off the plane.", open);
                 }
             }
             DrawSavedFileRow(scene, S.PreformPath());
@@ -921,6 +893,203 @@ inline float DrawTopStripProgress(bool draw) {
                           "the CDT) can only be stopped before they start, so a stop can\n"
                           "take until one of those finishes.");
     return w;
+}
+
+// The offset spacing knobs, shared by the 2D Offsets section and the 3D Domain:
+// even spacing (first gap, count, grading) or a list of custom gaps. `changed`
+// reports a click edit, `released` the end of a drag edit.
+inline void DrawOffsetSpacing(SemSessionNS::SemSession& S, bool& changed, bool& released) {
+    using namespace SemSessionNS;
+    const char* modes = "Even spacing\0Custom gaps\0";
+    changed |= ImGui::Combo("Spacing", &S.offsetMode, modes);
+
+    if (S.offsetMode == OFFSET_EVEN) {
+        ImGui::DragFloat("First gap", &S.firstGap, 0.05f, -1000.0f, 1000.0f, "%.3f");
+        released |= ImGui::IsItemDeactivatedAfterEdit();
+        ImGui::SetItemTooltip("Size of the first gap, as a distance in world units.\n"
+                              "Sign selects the side (left/right of travel).\n"
+                              "Successive gaps scale by Grading.");
+        ImGui::DragInt("Num offsets", &S.numOffsets, 0.2f, 1, 500);
+        released |= ImGui::IsItemDeactivatedAfterEdit();
+        ImGui::DragFloat("Grading", &S.grading, 0.01f, 0.05f, 20.0f, "%.3f");
+        released |= ImGui::IsItemDeactivatedAfterEdit();
+        if (S.numOffsets < 1) S.numOffsets = 1;
+        if (S.grading <= 0.0f) S.grading = 1.0f;
+    } else {
+        int removeIdx = -1;
+        for (int i = 0; i < (int)S.gaps.size(); ++i) {
+            ImGui::PushID(i);
+            ImGui::SetNextItemWidth(140);
+            ImGui::DragFloat("##gap", &S.gaps[i], 0.5f, -5000.0f, 5000.0f, "%.2f");
+            released |= ImGui::IsItemDeactivatedAfterEdit();
+            ImGui::SameLine();
+            if (ImGui::Button("X")) removeIdx = i;
+            ImGui::SameLine();
+            ImGui::Text("gap %d", i);
+            ImGui::PopID();
+        }
+        if (removeIdx >= 0) { S.gaps.erase(S.gaps.begin() + removeIdx); changed = true; }
+        if (ImGui::Button("+ Add gap")) {
+            S.gaps.push_back(S.gaps.empty() ? 25.0f : S.gaps.back());
+            changed = true;
+        }
+    }
+}
+
+// The thermal BCs (3D): the field runs from 0 on one level to 1 on another, chosen
+// among the source and the offsets the grid embeds. A change goes to the core at
+// once and the domain is redrawn by it; the field is re-solved by the next
+// isosurface Apply.
+inline void DrawBcLevelChoice(Scene& scene, SemSessionNS::SemSession& S) {
+    int ni = 0;
+    const std::vector<double>& lv = S.OffsetLevels(ni);
+    if (lv.empty()) {
+        ImGui::TextDisabled("Apply the domain to choose the BC levels.");
+        return;
+    }
+    const int no = (int)lv.size() - 1 - ni;
+    auto label = [&](int k) {
+        char buf[64];
+        if (k == 0)     snprintf(buf, sizeof(buf), "source");
+        else if (k > 0) snprintf(buf, sizeof(buf), "outer %d (%+.4g)", k, lv[(size_t)(k + ni)]);
+        else            snprintf(buf, sizeof(buf), "inner %d (%+.4g)", -k, lv[(size_t)(k + ni)]);
+        return std::string(buf);
+    };
+    auto resolve = [&](int k) {
+        if (k >= SEM_LEVEL_OUTERMOST) return no;
+        if (k <= SEM_LEVEL_INNERMOST) return -ni;
+        return (std::max)(-ni, (std::min)(no, k));
+    };
+    // The extreme levels are kept as such, so they follow the offsets.
+    auto store = [&](int k) {
+        if (k == no) return (int)SEM_LEVEL_OUTERMOST;
+        if (k == -ni && ni > 0) return (int)SEM_LEVEL_INNERMOST;
+        return k;
+    };
+    bool bcChanged = false;
+    ImGui::BeginDisabled(S.AsyncRunning());
+    for (int which = 0; which < 2; ++which) {
+        int& slot = (which == 0) ? S.bcFrom : S.bcTo;
+        const int cur = resolve(slot);
+        if (ImGui::BeginCombo(which == 0 ? "From (T = 0)" : "To (T = 1)", label(cur).c_str())) {
+            for (int k = -ni; k <= no; ++k)
+                if (ImGui::Selectable(label(k).c_str(), k == cur) && k != cur) {
+                    slot = store(k);
+                    bcChanged = true;
+                }
+            ImGui::EndCombo();
+        }
+        ImGui::SetItemTooltip(which == 0
+            ? "Level the field starts from (T = 0): it and everything beyond it, away\n"
+              "from To, is held at 0. Smoothing 0 gives this level back."
+            : "Level the field reaches (T = 1): it and everything beyond it is held\n"
+              "at 1. The distance between From and To sets how far the shift reaches.");
+    }
+    ImGui::EndDisabled();
+    if (resolve(S.bcFrom) == resolve(S.bcTo))
+        ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "From and To are the same level.");
+    else if (bcChanged)
+        S.ApplyThermalBC(scene);
+    if (S.MeshBuilt())
+        ImGui::TextDisabled("On the domain: blue = held at 0, red = held at 1.");
+}
+
+// Show or hide the grid box of the domain - of both halves for a body.
+inline void DrawGridBoxToggle(Scene& scene, SemSessionNS::SemSession& S) {
+    std::vector<Primitive*> boxes;
+    if (S.IsBody()) {
+        for (int side : { +1, -1 })
+            if (SemSessionNS::SemSession* h = S.HalfSession(side))
+                if (Primitive* b = h->GridBoxPrim()) boxes.push_back(b);
+    } else if (Primitive* b = S.GridBoxPrim()) {
+        boxes.push_back(b);
+    }
+    if (boxes.empty()) return;
+    bool vis = boxes.front()->visible;
+    if (ImGui::Checkbox("Show grid box", &vis))
+        for (Primitive* b : boxes) scene.SetNodeVisibleCascade(b, vis);
+    ImGui::SetItemTooltip("The box the domain fills, as grey lines.");
+}
+
+// 3D: the domain the thermal problem is solved in - a box around the part meshed
+// as a regular grid, with the source and every offset level embedded in it as
+// nodes - and the BC levels chosen among those levels. The offset levels and the
+// mesh are computed by one Apply.
+inline void DrawDomainSection(Scene& scene, SemSessionNS::SemSession& S) {
+    using namespace SemSessionNS;
+    ImGui::PushID("domain");
+    if (ImGui::CollapsingHeader("Domain", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (ImGui::SmallButton("Reset##domain")) S.ResetStage(scene, STAGE_OFFSETS);
+        const double offMs = S.OffsetsTimeMs(), meshMs = S.MeshTimeMs();
+        if (offMs >= 0.0 || meshMs >= 0.0) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("%.0f ms", (std::max)(0.0, offMs) + (std::max)(0.0, meshMs));
+        }
+
+        ImGui::Indent();
+        bool meshChanged = false, offChanged = false, offReleased = false;
+        ImGui::DragFloat3("Box (x part extents)", &S.gridBoxScale.x, 0.01f, 1.0f, 20.0f, "%.2f");
+        meshChanged |= ImGui::IsItemDeactivatedAfterEdit();
+        ImGui::SetItemTooltip("The box the thermal problem is solved in, as multiples of the part's\n"
+                              "extents along x, y, z, centred on it. It is grown as needed to hold\n"
+                              "every offset level with a grid step to spare. The domain of a body\n"
+                              "half ends on the parting plane.");
+        ImGui::DragFloat("Grid step", &S.gridStep, 0.05f, 0.0f, 1e6f, "%.3f");
+        meshChanged |= ImGui::IsItemDeactivatedAfterEdit();
+        ImGui::SetItemTooltip("Spacing of the regular grid, world units. 0 = auto: about 1e5 grid\n"
+                              "points in the box. The offset levels are sampled at half the step,\n"
+                              "and grid points closer to them than that are left out.");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("auto")) { S.gridStep = 0.0f; meshChanged = true; }
+        S.gridBoxScale.x = (std::max)(1.0f, S.gridBoxScale.x);
+        S.gridBoxScale.y = (std::max)(1.0f, S.gridBoxScale.y);
+        S.gridBoxScale.z = (std::max)(1.0f, S.gridBoxScale.z);
+        if (S.gridStep < 0.0f) S.gridStep = 0.0f;
+
+        ImGui::Separator();
+        ImGui::TextDisabled("Offset levels, embedded in the grid as nodes");
+        DrawOffsetSpacing(S, offChanged, offReleased);
+        offChanged |= ImGui::Checkbox("Inward offsets", &S.innerEnabled);
+        ImGui::SetItemTooltip("Also offset the part into its material. The grid embeds these levels\n"
+                              "too, and the thermal BCs can then be set on them.");
+        ImGui::BeginDisabled(!S.innerEnabled);
+        ImGui::DragFloat("Inner first gap", &S.innerFirstGap, 0.05f, 0.0f, 1000.0f, "%.3f");
+        offReleased |= ImGui::IsItemDeactivatedAfterEdit();
+        ImGui::SetItemTooltip("Depth of the first inner offset, world units. Successive gaps scale\n"
+                              "by Inner grading.");
+        ImGui::DragInt("Inner offsets", &S.innerNum, 0.2f, 1, 100);
+        offReleased |= ImGui::IsItemDeactivatedAfterEdit();
+        ImGui::DragFloat("Inner grading", &S.innerGrading, 0.01f, 0.05f, 20.0f, "%.3f");
+        offReleased |= ImGui::IsItemDeactivatedAfterEdit();
+        ImGui::EndDisabled();
+        if (S.innerFirstGap <= 0.0f) S.innerFirstGap = 0.001f;
+        if (S.innerNum < 1) S.innerNum = 1;
+        if (S.innerGrading <= 0.0f) S.innerGrading = 1.0f;
+
+        if (offChanged || offReleased) S.MarkStageDirty(STAGE_OFFSETS);
+        if (meshChanged) S.MarkStageDirty(STAGE_MESH);
+        if (ImGui::Button("Apply domain", {160, 0})) S.RecomputeUpToAsync(scene, STAGE_MESH, false);
+        ImGui::SetItemTooltip("Compute the offset levels when they changed, then mesh the box as\n"
+                              "a regular grid with the source and every level embedded as nodes.\n"
+                              "The domain is then drawn by its current BCs.");
+        int ni = 0;
+        const std::vector<double>& lv = S.OffsetLevels(ni);
+        if (!lv.empty())
+            ImGui::TextDisabled("Levels: %d inner, %d outer, %.4g .. %+.4g",
+                                ni, (int)lv.size() - 1 - ni, lv.front(), lv.back());
+        XMFLOAT3 glo, ghi;
+        double gst = 0.0;
+        if (S.GridInfo(glo, ghi, gst))
+            ImGui::TextDisabled("Grid: step %.4g, box %.4g x %.4g x %.4g", gst,
+                                ghi.x - glo.x, ghi.y - glo.y, ghi.z - glo.z);
+        DrawGridBoxToggle(scene, S);
+
+        ImGui::Separator();
+        ImGui::TextDisabled("Boundary conditions");
+        DrawBcLevelChoice(scene, S);
+        ImGui::Unindent();
+    }
+    ImGui::PopID();
 }
 
 inline void Draw(Scene& scene, bool& blockMousePick) {
@@ -1030,8 +1199,8 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         ImGui::PushID("srcsurf");
         if (ImGui::CollapsingHeader("Source surface", ImGuiTreeNodeFlags_DefaultOpen)) {
             // Show/hide the source surface on its own, without touching the pipeline
-            // products parented under it (offsets, mesh, isosurface). Independent of
-            // the tree eye, whose toggle cascades to the whole subtree.
+            // products parented under it (offsets, mesh, isosurface). The tree eye
+            // instead hides the whole subtree (and shows the node alone).
             Primitive* sp = S.SourcePrim();
             bool srcVisible = sp && sp->visible;
             if (ImGui::Checkbox("Show source surface", &srcVisible))
@@ -1144,6 +1313,7 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         ImGui::PopID();
     }
 
+    if (!is3D) {
     {
         ImGui::PushID("off");
         if (ImGui::CollapsingHeader("Offsets", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -1153,55 +1323,10 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
 
         ImGui::Indent();
         bool changed = false, released = false;
-        const char* modes = "Even spacing\0Custom gaps\0";
-        changed |= ImGui::Combo("Spacing", &S.offsetMode, modes);
-
-        if (S.offsetMode == OFFSET_EVEN) {
-            ImGui::DragFloat("First gap", &S.firstGap, 0.05f, -1000.0f, 1000.0f, "%.3f");
-            released |= ImGui::IsItemDeactivatedAfterEdit();
-            ImGui::SetItemTooltip("Size of the first gap, as a distance in world units.\n"
-                                  "Sign selects the side (left/right of travel).\n"
-                                  "Successive gaps scale by Grading.");
-            ImGui::DragInt("Num offsets", &S.numOffsets, 0.2f, 1, 500);
-            released |= ImGui::IsItemDeactivatedAfterEdit();
-            ImGui::DragFloat("Grading", &S.grading, 0.01f, 0.05f, 20.0f, "%.3f");
-            released |= ImGui::IsItemDeactivatedAfterEdit();
-            if (S.numOffsets < 1) S.numOffsets = 1;
-            if (S.grading <= 0.0f) S.grading = 1.0f;
-        } else {
-            int removeIdx = -1;
-            for (int i = 0; i < (int)S.gaps.size(); ++i) {
-                ImGui::PushID(i);
-                ImGui::SetNextItemWidth(140);
-                ImGui::DragFloat("##gap", &S.gaps[i], 0.5f, -5000.0f, 5000.0f, "%.2f");
-                released |= ImGui::IsItemDeactivatedAfterEdit();
-                ImGui::SameLine();
-                if (ImGui::Button("X")) removeIdx = i;
-                ImGui::SameLine();
-                ImGui::Text("gap %d", i);
-                ImGui::PopID();
-            }
-            if (removeIdx >= 0) { S.gaps.erase(S.gaps.begin() + removeIdx); changed = true; }
-            if (ImGui::Button("+ Add gap")) {
-                S.gaps.push_back(S.gaps.empty() ? 25.0f : S.gaps.back());
-                changed = true;
-            }
-        }
-
+        DrawOffsetSpacing(S, changed, released);
         if (changed || released) S.MarkStageDirty(STAGE_OFFSETS);
-        if (!is3D && S.offAuto) { if (changed || released) S.RecomputeUpToAsync(scene, STAGE_OFFSETS, true); }
+        if (S.offAuto) { if (changed || released) S.RecomputeUpToAsync(scene, STAGE_OFFSETS, true); }
         else if (ImGui::Button("Apply", {160, 0})) S.RecomputeUpToAsync(scene, STAGE_OFFSETS, false);
-
-        // Clip-plane geometry changes logged for the OFFSET shells: the translucent
-        // red geometry each shell's half-space cut removed (offset shells are not
-        // snapped, so there are no snap segments here).
-        if (is3D) {
-            bool offChg = S.ClipChangesShown(SemSessionNS::CLIPCHG_OFFSETS);
-            if (ImGui::Checkbox("Offset clip changes", &offChg))
-                S.ShowClipChanges(scene, SemSessionNS::CLIPCHG_OFFSETS, offChg);
-            ImGui::SetItemTooltip("Show the geometry the clip planes cut away from the offset shells,\n"
-                                  "as a translucent red surface. Needs clip planes set.");
-        }
         ImGui::Unindent();
         }
         ImGui::PopID();
@@ -1216,28 +1341,6 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
 
         ImGui::Indent();
         bool changed = false, released = false;
-        if (is3D) {
-            const char* tetItems = "Band\0" "Layered\0";
-            if (ImGui::Combo("Tet method", &S.tetMethod, tetItems)) {
-                // Band: automatic Steiner cell. Layered: carve by the source SDF.
-                S.tetParam = (S.tetMethod == SEM_TET_LAYERED) ? 1.0f : -1.0f;
-                changed = true;
-            }
-            if (S.tetMethod == SEM_TET_BAND) {
-                ImGui::DragFloat(TetParamLabel(S.tetMethod), &S.tetParam, 0.5f, -1.0f, 1e7f, "%.3f");
-                released |= ImGui::IsItemDeactivatedAfterEdit();
-                ImGui::SetItemTooltip("%s", TetParamHelp(S.tetMethod));
-                ImGui::SameLine();
-                if (ImGui::SmallButton("auto")) { S.tetParam = -1.0f; changed = true; }
-            } else { // SEM_TET_LAYERED: the knob is a use_sdf flag (0/1).
-                bool useSdf = (S.tetParam > 0.5f);
-                if (ImGui::Checkbox(TetParamLabel(S.tetMethod), &useSdf)) {
-                    S.tetParam = useSdf ? 1.0f : 0.0f;
-                    changed = true;
-                }
-                ImGui::SetItemTooltip("%s", TetParamHelp(S.tetMethod));
-            }
-        } else {
         // Only the free grid CDT mesher remains (SEM_STEINER_GRID).
         ImGui::DragFloat(MeshParamLabel(S.meshMethod), &S.meshParam, 0.5f, -1.0f, 5000.0f, "%.3f");
         released |= ImGui::IsItemDeactivatedAfterEdit();
@@ -1249,46 +1352,21 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         released |= ImGui::IsItemDeactivatedAfterEdit();
         ImGui::SetItemTooltip("Minimum spacing from offset lines, in multiples of the grid\n"
                               "spacing. 0 or less => automatic (0.45).");
-        } // end 2D grid mesh UI
-
-        // Max tet edge length filter (3D only), in world units. Sits just above
-        // Apply so the meshing parameters read top to bottom. <= 0 disables the filter.
-        if (is3D) {
-            // Automatic: sqrt(2) times the gap between the last two offset shells,
-            // following the offset settings until the value is edited by hand.
-            if (S.tetMaxEdgeAuto) {
-                const float a = S.AutoTetMaxEdge();
-                if (a != S.tetMaxEdgeLen) { S.tetMaxEdgeLen = a; S.MarkStageDirty(STAGE_MESH); }
-            }
-            if (ImGui::DragFloat("Max edge (world, 0=off)", &S.tetMaxEdgeLen, 0.05f, 0.0f, 0.0f, "%.3f"))
-                S.tetMaxEdgeAuto = false;
-            released |= ImGui::IsItemDeactivatedAfterEdit();
-            ImGui::SetItemTooltip("After meshing, remove any tet with an edge longer than this,\n"
-                                  "measured as a distance in world units.\n"
-                                  "Vertices are kept. 0 or less disables the filter.\n"
-                                  "auto: sqrt(2) x the gap between the last two offsets, updated\n"
-                                  "as the offsets change; editing the value switches it off.");
-            if (S.tetMaxEdgeLen < 0.0f) S.tetMaxEdgeLen = 0.0f;
-            ImGui::SameLine();
-            if (S.tetMaxEdgeAuto) {
-                ImGui::TextDisabled("auto");
-            } else if (ImGui::SmallButton("auto##maxedge")) {
-                S.tetMaxEdgeAuto = true;
-                changed = true;
-            }
-        }
 
         if (changed || released) S.MarkStageDirty(STAGE_MESH);
-        if (!is3D && S.meshAuto) { if (changed || released) S.RecomputeUpToAsync(scene, STAGE_MESH, true); }
+        if (S.meshAuto) { if (changed || released) S.RecomputeUpToAsync(scene, STAGE_MESH, true); }
         else if (ImGui::Button("Apply", {160, 0})) S.RecomputeUpToAsync(scene, STAGE_MESH, false);
         ImGui::Unindent();
         }
         ImGui::PopID();
     }
+    } else {
+        DrawDomainSection(scene, S);
+    }
 
     {
         // The thermal solve is part of this stage: Apply solves the field first
-        // whenever it is stale (a new mesh, or Max inward edited), then extracts.
+        // whenever it is stale (a new domain, or other BC levels), then extracts.
         ImGui::PushID("iso");
         if (ImGui::CollapsingHeader(is3D ? "Isosurface" : "Isoline", ImGuiTreeNodeFlags_DefaultOpen)) {
         if (ImGui::SmallButton("Reset##iso")) S.ResetStage(scene, STAGE_THERMAL);
@@ -1302,203 +1380,65 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         }
 
         ImGui::Indent();
-        // SEM_SolveThermal3D knob (3D only — the 2D SEM_SolveThermal takes no
-        // parameters). max_inward filters the outermost T=0 nodes by the source
-        // signed distance; editing it makes the next Apply re-solve.
         if (is3D) {
-            ImGui::DragFloat("Max inward (0..1)", &S.maxInward, 0.005f, 0.0f, 1.0f, "%.3f");
-            if (ImGui::IsItemDeactivatedAfterEdit()) S.MarkStageDirty(STAGE_THERMAL);
-            ImGui::SetItemTooltip("Thermal solve: the maximum relative depth (fraction of the outer\n"
-                                  "extent) an outermost node may sit inward of the true outer extent\n"
-                                  "and still be kept as a T=0 node. Deeper nodes are dropped.");
-            if (S.maxInward < 0.0f) S.maxInward = 0.0f;
-            if (S.maxInward > 1.0f) S.maxInward = 1.0f;
-
-            const int nl = S.OffsetLayerCount();
-            if (nl > 1) {
-                int shown = (S.activeLayers <= 0 || S.activeLayers > nl) ? nl : S.activeLayers;
-                ImGui::BeginDisabled(S.AsyncRunning());
-                if (ImGui::SliderInt("Offset layers in use", &shown, 1, nl))
-                    S.activeLayers = (shown >= nl) ? 0 : shown;
-                if (ImGui::IsItemDeactivatedAfterEdit()) S.ApplyActiveLayers(scene);
-                ImGui::EndDisabled();
-                ImGui::SetItemTooltip("Solve the thermal field on the first N offset layers only: the band\n"
-                                      "mesh deeper than the N-th offset is dropped and T = 0 is set where\n"
-                                      "the kept part meets it, as if the band had been meshed that deep.\n"
-                                      "Re-solves on release; the stiffness matrix of the mesh is reused,\n"
-                                      "only the fixed nodes change. Fewer layers: a thinner band, the\n"
-                                      "field falls off faster and an isosurface at a given value sits\n"
-                                      "closer to the source. Max inward filters the new T = 0 nodes too.");
-            }
+            ImGui::DragFloat("Smoothing (0..1)", &S.isoValue, 0.005f, 0.0f, 1.0f, "%.3f");
+            if (ImGui::IsItemDeactivatedAfterEdit()) S.MarkStageDirty(STAGE_ISOSURFACE);
+            ImGui::SetItemTooltip("Level of the field the isosurface is taken at: 0 on From, 1 on To\n"
+                                  "(the BC levels under Domain). With the shift on it is moved back\n"
+                                  "onto From, so this sets how much the surface is smoothed, not\n"
+                                  "where it lies. Changing it does not re-solve the field.");
+            if (ImGui::Checkbox("Shift back along the gradient", &S.isoShift))
+                S.MarkStageDirty(STAGE_ISOSURFACE);
+            ImGui::SetItemTooltip("Before taking the isosurface, move every value of the field back down\n"
+                                  "its gradient by smoothing x the gap between the From and To levels\n"
+                                  "(the distance between them): the level then comes out about where\n"
+                                  "From is, smoothed. Off: the plain isosurface, which lies between\n"
+                                  "From and To.");
+            double gap = 0.0;
+            if (S.isoShift && S.IsoShiftGap(gap))
+                ImGui::TextDisabled("Shift: %.3f x gap %.4g = %.4g", S.isoValue, gap, S.isoValue * gap);
+        } else {
+            ImGui::DragFloat("Isoline value (0..1)", &S.isoValue, 0.005f, 0.0f, 1.0f, "%.3f");
+            if (ImGui::IsItemDeactivatedAfterEdit()) S.MarkStageDirty(STAGE_ISOSURFACE);
+            ImGui::SetItemTooltip("Normalized temperature of the extracted isotherm. Changing it does NOT\n"
+                                  "re-solve the thermal field — press Apply to re-extract the isotherm at\n"
+                                  "the new temperature.");
         }
-        ImGui::DragFloat(is3D ? "Isosurface value (0..1)" : "Isoline value (0..1)",
-                         &S.isoValue, 0.005f, 0.0f, 1.0f, "%.3f");
-        if (ImGui::IsItemDeactivatedAfterEdit()) S.MarkStageDirty(STAGE_ISOSURFACE);
-        ImGui::SetItemTooltip("Normalized temperature of the extracted %s. Changing it does NOT\n"
-                              "re-solve the thermal field — press Apply to re-extract the %s at\n"
-                              "the new temperature.",
-                              is3D ? "isosurface" : "isotherm",
-                              is3D ? "isosurface" : "isotherm");
         if (S.isoValue < 0.0f) S.isoValue = 0.0f;
         if (S.isoValue > 1.0f) S.isoValue = 1.0f;
-
-        // Offset-and-remesh mode (3D only). A zero normal extracts the open/closed iso
-        // sheet as-is; a non-zero normal shifts an open sheet back toward the source
-        // and re-triangulates it in the plane with that normal.
-        if (is3D) {
-            ImGui::DragFloat3("Iso base-plane normal", &S.isoAxisN.x, 0.01f, 0.0f, 0.0f, "%.3f");
-            if (ImGui::IsItemDeactivatedAfterEdit()) S.MarkStageDirty(STAGE_ISOSURFACE);
-            ImGui::SetItemTooltip("Projection-plane normal for the iso offset-remesh (any direction,\n"
-                                  "need not be unit). Zero = plain extract (clip planes only).\n"
-                                  "Non-zero: shift an OPEN iso sheet back toward the source and\n"
-                                  "re-triangulate it over the plane with this normal.\n"
-                                  "Requires offsets and an open isosurface.");
-            ImGui::TextUnformatted("Preset:"); ImGui::SameLine();
-            if (ImGui::SmallButton("None##iso")) { S.isoAxisN = { 0.0f, 0.0f, 0.0f }; S.MarkStageDirty(STAGE_ISOSURFACE); } ImGui::SameLine();
-            if (ImGui::SmallButton("X##iso"))    { S.isoAxisN = { 1.0f, 0.0f, 0.0f }; S.MarkStageDirty(STAGE_ISOSURFACE); } ImGui::SameLine();
-            if (ImGui::SmallButton("Y##iso"))    { S.isoAxisN = { 0.0f, 1.0f, 0.0f }; S.MarkStageDirty(STAGE_ISOSURFACE); } ImGui::SameLine();
-            if (ImGui::SmallButton("Z##iso"))    { S.isoAxisN = { 0.0f, 0.0f, 1.0f }; S.MarkStageDirty(STAGE_ISOSURFACE); }
-
-            const bool isoOffsetRemesh = (S.isoAxisN.x != 0.0f || S.isoAxisN.y != 0.0f || S.isoAxisN.z != 0.0f);
-            ImGui::BeginDisabled(!isoOffsetRemesh);
-            // v_min == v_max => ImGui applies no clamp: the shift is a signed
-            // distance in world units, with no range limit.
-            ImGui::DragFloat("Iso offset (world)", &S.isoOffsetValue, 0.05f, 0.0f, 0.0f, "%.3f");
-            if (ImGui::IsItemDeactivatedAfterEdit()) S.MarkStageDirty(STAGE_ISOSURFACE);
-            ImGui::SetItemTooltip("Shift of the iso sheet along its pseudonormals before\n"
-                                  "re-triangulation, as a distance in world units.\n"
-                                  "Positive shifts inward (toward the source),\n"
-                                  "negative outward. Ignored when the axis is None.");
-
-            // Minimum clearance a shifted vertex must keep from the iso before it is
-            // pruned, as the fraction c in [0,1] of Iso offset (absolute clearance =
-            // c * Iso offset).
-            ImGui::DragFloat("Iso min offset (fraction)", &S.isoMinOffsetValue, 0.01f, 0.0f, 1.0f, "%.3f");
-            if (ImGui::IsItemDeactivatedAfterEdit()) S.MarkStageDirty(STAGE_ISOSURFACE);
-            ImGui::SetItemTooltip("Minimum clearance a shifted vertex must keep from the iso before\n"
-                                  "it is pruned, as a fraction c in [0,1] of Iso offset (absolute\n"
-                                  "clearance = c * Iso offset):\n"
-                                  "  c = 1 (min == shift): fold cull - drop every concave fold that\n"
-                                  "    folded the sheet onto itself.\n"
-                                  "  c = 0 (min == 0): signed-crossing cull - keep the folds and drop\n"
-                                  "    only vertices that crossed THROUGH the iso to the wrong side.");
-
-            // Final isotropic remesh of the offset-remeshed sheet — part of the extraction
-            // (SEM_ExtractIsosurface3D runs it after the offset-remesh). Editing these marks
-            // the stage dirty; Apply re-runs it, cheaply re-remeshing the cached offset-remesh
-            // base when only these knobs changed since the last extraction.
-            ImGui::DragFloat("Final remesh target (x sheet edge)", &S.isoFinalTargetMult, 0.02f, 0.0f, 0.0f, "%.3f");
-            if (ImGui::IsItemDeactivatedAfterEdit()) S.MarkStageDirty(STAGE_ISOSURFACE);
-            ImGui::SetItemTooltip("Target triangle edge length for the final remesh, in multiples of the\n"
-                                  "offset-remeshed sheet's own average edge length. Long edges are split\n"
-                                  "toward this size and short ones collapsed. 0 uses the median edge length.");
-            if (S.isoFinalTargetMult < 0.0f) S.isoFinalTargetMult = 0.0f;
-
-            ImGui::DragInt("Final remesh iterations", &S.isoFinalIters, 0.1f, 0, 20);
-            if (ImGui::IsItemDeactivatedAfterEdit()) S.MarkStageDirty(STAGE_ISOSURFACE);
-            ImGui::SetItemTooltip("Number of final-remesh collapse / split / relax sweeps over the\n"
-                                  "offset-remeshed sheet. More iterations even out the distribution\n"
-                                  "further at some cost. 0 skips the final remesh (the raw offset-remesh\n"
-                                  "base is shown).");
-            if (S.isoFinalIters < 0)  S.isoFinalIters = 0;
-            if (S.isoFinalIters > 50) S.isoFinalIters = 50;
-
-            ImGui::EndDisabled();
-
-            // Uneven-winding highlight: colour the minority-oriented triangles pure
-            // red. Applied instantly to the already-extracted surface (no re-extract).
-            bool win = S.isoShowWinding;
-            if (ImGui::Checkbox("Highlight uneven winding", &win))
-                S.SetIsoWinding(scene, win);
-            ImGui::SetItemTooltip("When the isosurface winding is uneven (not every shared edge\n"
-                                  "runs opposite ways in its two triangles), paint the minority-\n"
-                                  "oriented triangles pure red and keep the majority green.\n"
-                                  "Nothing turns red when the winding is uniform.");
-        }
 
         // Apply solves the thermal field when it is stale and extracts the iso sheet
         // from it, both on the worker (long-running, progress-reporting SEM calls).
         if (ImGui::Button(is3D ? "Apply isosurface" : "Apply isoline", {160, 0}))
             S.RecomputeUpToAsync(scene, STAGE_ISOSURFACE, false);
         ImGui::SetItemTooltip(is3D
-            ? "Solve steady-state heat conduction on the tetrahedral band mesh\n"
-              "(source surface T=1, farthest shell T=0) when the field is stale -\n"
-              "a new mesh or an edited Max inward - then extract the isosurface at\n"
-              "the chosen value (applying the offset/remesh axis and shift).\n"
-              "Changing only the value re-extracts without re-solving."
+            ? "Solve steady-state heat conduction on the domain between the BC levels\n"
+              "chosen under Domain (From held at T=0, To at T=1) when the field is\n"
+              "stale - a new domain or other BC levels - then extract the isosurface\n"
+              "at the smoothing above. Changing only the smoothing re-extracts\n"
+              "without re-solving."
             : "Solve steady-state heat conduction on the band mesh (source T=1,\n"
               "farthest offset T=0) when the field is stale, then extract the\n"
               "isotherm at the chosen value.");
 
-        // Mesh colouring by the solved field (only meaningful once it is solved):
-        // unchecked = T-field gradient (blue..red), checked = BC view (blue T=0,
-        // red T=1, light grey everywhere else).
+        // Mesh colouring: checked = the BCs (the fixed nodes only), unchecked = the
+        // solved T field. Until the field is solved for the BC levels as they stand,
+        // the domain shows its BCs either way.
         ImGui::BeginDisabled(!S.ThermalSolved());
         bool bc = S.bcView;
         if (ImGui::Checkbox("BC / T field", &bc)) S.SetBCView(scene, bc);
-        ImGui::SetItemTooltip("Mesh colouring after the solve (show the mesh to see it).\n"
-                              "Off: temperature field as a blue (T=0) to red (T=1) gradient.\n"
-                              "On: only the boundary-condition nodes are tinted — blue for\n"
-                              "T=0, red for T=1 — and every interior node is light grey.");
+        ImGui::SetItemTooltip(is3D
+            ? "How the domain is drawn (show it to see it). On: only the nodes the\n"
+              "BC levels hold fixed and the edges between them - blue T=0, red T=1;\n"
+              "the free nodes and every edge touching one are not drawn. Off: the\n"
+              "solved temperature over every edge, blue (T=0) to red (T=1). Until\n"
+              "the field is solved for the BC levels as they stand, the BCs are\n"
+              "drawn either way."
+            : "Mesh colouring after the solve (show the mesh to see it).\n"
+              "Off: temperature field as a blue (T=0) to red (T=1) gradient.\n"
+              "On: only the boundary-condition nodes are tinted — blue for\n"
+              "T=0, red for T=1 — and every interior node is light grey.");
         ImGui::EndDisabled();
-
-        if (is3D) {
-            // Angle-weighted vertex pseudonormals of the extracted isosurface,
-            // drawn as short cyan segments. Needs an extracted surface.
-            ImGui::BeginDisabled(!S.HasIsolinePath());
-            bool isoNrm = S.IsoNormalsPrim() != nullptr;
-            if (ImGui::Checkbox("Isosurface pseudonormals", &isoNrm))
-                S.ShowIsoPseudonormals(scene, isoNrm, false);
-            ImGui::SetItemTooltip("Draw the angle-weighted vertex pseudonormals of the extracted\n"
-                                  "isosurface as short cyan line segments.");
-            ImGui::EndDisabled();
-
-            // Intermediate stages of an offset-and-remesh extraction. Available
-            // only after extracting with an offset axis; fetched from the cache
-            // on demand (not serialized), so they go stale on the next extraction.
-            ImGui::BeginDisabled(!S.HasIsoProjection());
-            bool srcShown = S.IsoSourcePrim() != nullptr;
-            if (ImGui::Checkbox("Show source isosurface", &srcShown))
-                S.ShowSourceIsosurface3D(scene, srcShown, false);
-            ImGui::SetItemTooltip("Show the original extracted iso sheet, before the offset/remesh\n"
-                                  "stage (oriented outward). Requires an offset-axis extraction.");
-            // Pseudonormals of that orange source iso sheet — the directions the
-            // offset-and-remesh shifted each vertex along. Same gate as above.
-            bool srcNrm = S.IsoSrcNormalsPrim() != nullptr;
-            if (ImGui::Checkbox("Source isosurface pseudonormals", &srcNrm))
-                S.ShowSourceIsoPseudonormals(scene, srcNrm, false);
-            ImGui::SetItemTooltip("Draw the angle-weighted vertex pseudonormals of the pre-offset\n"
-                                  "source isosurface (the orange sheet) as short orange line segments —\n"
-                                  "the directions the offset/remesh shifted each iso vertex along.");
-            bool projShown = S.IsoProjectionPrim() != nullptr;
-            if (ImGui::Checkbox("Show iso projection", &projShown))
-                S.ShowIsosurfaceProjection3D(scene, projShown, false);
-            ImGui::SetItemTooltip("Show the flat base-plane re-meshed projection (with its\n"
-                                  "wireframe edges) built when extracting with an offset axis.");
-
-            // Boundary loops of the source isosurface used as the offset-remesh CDT
-            // constraints (SEM_GetIsosurfaceLoops3D), drawn as a thick magenta
-            // wireframe. Same offset-axis gate as the stages above.
-            bool loopsShown = S.IsoLoopsPrim() != nullptr;
-            if (ImGui::Checkbox("Show isosurface loops", &loopsShown))
-                S.ShowIsosurfaceLoops3D(scene, loopsShown, false);
-            ImGui::SetItemTooltip("Draw the constrained-CDT boundary loops of the source isosurface\n"
-                                  "(the re-triangulation constraints of the offset/remesh) as a thick\n"
-                                  "magenta line wireframe. Requires an offset-axis extraction.");
-            ImGui::EndDisabled();
-
-            // Clip-plane geometry changes logged for the ISOSURFACE restriction and
-            // the final remesh cut: yellow snap segments and the translucent red
-            // clipped-away/dropped-coplanar geometry. Independent of the offset-axis
-            // gate above — a plain (axis = None) extraction still snaps and cuts.
-            bool isoChg = S.ClipChangesShown(SemSessionNS::CLIPCHG_ISO);
-            if (ImGui::Checkbox("Isosurface clip changes", &isoChg))
-                S.ShowClipChanges(scene, SemSessionNS::CLIPCHG_ISO, isoChg);
-            ImGui::SetItemTooltip("Show what the clip planes did to the isosurface (and the final\n"
-                                  "offset-remesh sheet): the snap displacements as short yellow\n"
-                                  "segments and the clipped-away / dropped coplanar geometry as a\n"
-                                  "translucent red surface. Needs clip planes set.");
-        }
         ImGui::Unindent();
         }
         ImGui::PopID();

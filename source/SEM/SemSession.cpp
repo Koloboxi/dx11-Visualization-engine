@@ -15,13 +15,16 @@ SceneNode*  SemSession::OffsetsNode() const {
 Primitive*  SemSession::MeshPrim()    const {
     return (IsBody() && m_half[0]) ? m_half[0]->m_mesh : m_mesh;
 }
+Primitive*  SemSession::GridBoxPrim() const {
+    return (IsBody() && m_half[0]) ? m_half[0]->m_gridBox : m_gridBox;
+}
+bool        SemSession::MeshBuilt()   const {
+    if (IsBody()) return m_half[0] && m_half[0]->MeshBuilt();
+    return dim == 3 ? !m_meshEdges.empty() : (m_mesh != nullptr);
+}
 Primitive*  SemSession::IsolinePrim() const { return m_isoline; }
-Primitive*  SemSession::IsoSourcePrim()     const { return m_isoSource; }
 Primitive*  SemSession::IsoProjectionPrim() const { return m_isoProj; }
 Primitive*  SemSession::SrcNormalsPrim() const { return m_srcNormals; }
-Primitive*  SemSession::IsoNormalsPrim() const { return m_isoNormals; }
-Primitive*  SemSession::IsoSrcNormalsPrim() const { return m_isoSrcNormals; }
-Primitive*  SemSession::IsoLoopsPrim() const { return m_isoLoops; }
 Primitive*  SemSession::SrcRevSurf()  const { return m_srcRevSurf; }
 Primitive*  SemSession::IsoRevSurf()  const { return m_isoRevSurf; }
 void SemSession::StyleLines(Primitive* p, int style) {
@@ -94,10 +97,9 @@ void SemSession::Bind(Scene& scene, Primitive* prim, bool reload) {
     m_srcPath   = prim ? prim->semSourcePath : std::string();
     m_offsets   = nullptr;
     m_mesh      = nullptr;
+    m_gridBox   = nullptr;
+    m_meshPos.clear(); m_meshT.clear(); m_meshEdges.clear();
     m_isoline   = nullptr;
-    m_isoNormals = nullptr;
-    m_isoSrcNormals = nullptr;
-    m_isoLoops = nullptr;
     m_isoData   = CSV3DLoader::CSV3DData();
     m_srcRevSurf = nullptr;
     m_isoRevSurf = nullptr;
@@ -170,10 +172,10 @@ void SemSession::Bind(Scene& scene, Primitive* prim, bool reload) {
 
 void SemSession::Unbind() {
     m_srcPrim = nullptr; m_srcPath.clear();
-    m_offsets = nullptr; m_mesh = nullptr; m_isoline = nullptr;
-    m_isoSource = nullptr; m_isoProj = nullptr; m_isoProjected = false;
-    m_srcNormals = nullptr; m_isoNormals = nullptr; m_isoSrcNormals = nullptr;
-    m_isoLoops = nullptr;
+    m_offsets = nullptr; m_mesh = nullptr; m_isoline = nullptr; m_gridBox = nullptr;
+    m_meshPos.clear(); m_meshT.clear(); m_meshEdges.clear();
+    m_isoProj = nullptr; m_isoProjected = false;
+    m_srcNormals = nullptr;
     m_isoData = CSV3DLoader::CSV3DData();
     m_srcRevSurf = nullptr; m_isoRevSurf = nullptr;
     m_meshPath.clear(); m_isolinePath.clear(); m_resultPath.clear();
@@ -194,14 +196,16 @@ void SemSession::Unbind() {
 void SemSession::Validate(Scene& scene) {
     if (m_srcPrim && !Alive(scene, m_srcPrim)) { Unbind(); return; }
     if (m_offsets && !Alive(scene, m_offsets)) { m_offsets = nullptr; m_offStats = Stats(); }
-    if (m_mesh    && !Alive(scene, m_mesh))    { m_mesh    = nullptr; m_meshStats = Stats(); m_thermalSolved = false; }
+    // A 3D domain lives in the core whatever happens to its drawing; only a 2D mesh
+    // is its primitive.
+    if (m_mesh && !Alive(scene, m_mesh)) {
+        m_mesh = nullptr;
+        if (dim != 3) { m_meshStats = Stats(); m_thermalSolved = false; }
+    }
+    if (m_gridBox && !Alive(scene, m_gridBox)) m_gridBox = nullptr;
     if (m_isoline && !Alive(scene, m_isoline)) { m_isoline = nullptr; }
-    if (m_isoSource && !Alive(scene, m_isoSource)) m_isoSource = nullptr;
     if (m_isoProj    && !Alive(scene, m_isoProj))    m_isoProj    = nullptr;
     if (m_srcNormals && !Alive(scene, m_srcNormals)) m_srcNormals = nullptr;
-    if (m_isoNormals && !Alive(scene, m_isoNormals)) m_isoNormals = nullptr;
-    if (m_isoSrcNormals && !Alive(scene, m_isoSrcNormals)) m_isoSrcNormals = nullptr;
-    if (m_isoLoops && !Alive(scene, m_isoLoops)) m_isoLoops = nullptr;
     if (m_srcRevSurf && !Alive(scene, m_srcRevSurf)) m_srcRevSurf = nullptr;
     if (m_isoRevSurf && !Alive(scene, m_isoRevSurf)) m_isoRevSurf = nullptr;
     // Drop plane nodes whose subtree was removed externally (e.g. tree delete).
@@ -247,7 +251,7 @@ void SemSession::SetSurf3dAlpha(Scene& scene, float a) {
     surf3dAlpha = a;
     for (SemSession* h : m_half) if (h) h->SetSurf3dAlpha(scene, a);
     for (Primitive* p : m_halfPrim) if (Alive(scene, p)) p->SetAlpha(a);
-    for (Primitive* p : { m_srcPrim, m_mesh, m_isoline, m_isoSource, m_isoProj })
+    for (Primitive* p : { m_srcPrim, m_mesh, m_isoline, m_isoProj })
         if (Alive(scene, p)) p->SetAlpha(a);
     // The offsets are a group of shell primitives; apply alpha to each.
     if (Alive(scene, m_offsets)) {

@@ -161,67 +161,6 @@ float MeanTriEdgeLen(const CSV3DLoader::CSV3DData& d) {
     return count ? (float)(total / count) : 1.0f;
 }
 
-std::vector<char> WindingMinorityTris(const CSV3DLoader::CSV3DData& d) {
-    const size_t nT = d.triangles.size();
-    std::vector<char> minority(nT, 0);
-    if (nT == 0) return minority;
-
-    // For each undirected edge, record the triangles using it and which way the
-    // directed edge runs in that triangle (dir = true => low->high). Two triangles
-    // sharing the edge are consistently wound iff their dir values differ.
-    struct Use { int tri; bool dir; };
-    std::map<std::pair<unsigned, unsigned>, std::vector<Use>> edgeMap;
-    for (size_t t = 0; t < nT; ++t) {
-        const unsigned v[3] = { d.triangles[t].x, d.triangles[t].y, d.triangles[t].z };
-        for (int k = 0; k < 3; ++k) {
-            unsigned a = v[k], b = v[(k + 1) % 3];
-            if (a == b) continue;
-            bool dir = a < b;
-            auto key = dir ? std::make_pair(a, b) : std::make_pair(b, a);
-            edgeMap[key].push_back({ (int)t, dir });
-        }
-    }
-
-    // Triangle adjacency graph: neighbour + whether it must be flipped relative to
-    // this triangle to agree (same edge direction in both => one is flipped).
-    struct Adj { int tri; bool flip; };
-    std::vector<std::vector<Adj>> adj(nT);
-    for (const auto& kv : edgeMap) {
-        const auto& us = kv.second;
-        if (us.size() != 2) continue;                // ignore boundary / non-manifold edges
-        bool flip = (us[0].dir == us[1].dir);
-        adj[us[0].tri].push_back({ us[1].tri, flip });
-        adj[us[1].tri].push_back({ us[0].tri, flip });
-    }
-
-    // BFS each connected component, assigning a relative orientation label 0/1;
-    // the smaller label-class in the component is the minority (flagged).
-    std::vector<signed char> label(nT, -1);
-    std::vector<int> stack;
-    for (size_t seed = 0; seed < nT; ++seed) {
-        if (label[seed] != -1) continue;
-        label[seed] = 0;
-        stack.clear();
-        stack.push_back((int)seed);
-        std::vector<int> comp;
-        int count[2] = { 0, 0 };
-        while (!stack.empty()) {
-            int cur = stack.back(); stack.pop_back();
-            comp.push_back(cur);
-            ++count[label[cur]];
-            for (const Adj& a : adj[cur]) {
-                signed char want = a.flip ? (signed char)(1 - label[cur]) : label[cur];
-                if (label[a.tri] == -1) { label[a.tri] = want; stack.push_back(a.tri); }
-            }
-        }
-        // Majority orientation keeps; the smaller class (ties -> label 1, the set
-        // flipped relative to the seed) is painted as the minority.
-        signed char minLabel = (count[1] < count[0]) ? 1 : (count[0] < count[1] ? 0 : 1);
-        for (int t : comp) if (label[t] == minLabel) minority[t] = 1;
-    }
-    return minority;
-}
-
 std::vector<char> NonManifoldTris(const CSV3DLoader::CSV3DData& d) {
     const size_t nT = d.triangles.size();
     std::vector<char> bad(nT, 0);
@@ -448,10 +387,8 @@ int SafeExtractIsoline(double value) {
     __try { return SEM_ExtractIsoline(value); }
     __except (EXCEPTION_EXECUTE_HANDLER) { return -100; }
 }
-int SafeExtractIsosurface3D(double value, SEM_Vec3 axis, double offset_value, double min_offset_value,
-                            double target_len_mult, int iterations) {
-    __try { return SEM_ExtractIsosurface3D(value, axis, offset_value, min_offset_value,
-                                           target_len_mult, iterations); }
+int SafeExtractIsosurface3D(double value) {
+    __try { return SEM_ExtractIsosurface3D(value); }
     __except (EXCEPTION_EXECUTE_HANDLER) { return -100; }
 }
 int SafeApplyBodyTaper3D(double taper_angle_deg, int remesh_iters) {
@@ -463,9 +400,8 @@ int SafeApplyBodyTaperSkirt3D(double taper_angle_deg, int remesh_iters,
     __try { return SEM_ApplyBodyTaperSkirt3D(taper_angle_deg, remesh_iters, skirt_depth, skirt_growth); }
     __except (EXCEPTION_EXECUTE_HANDLER) { return -100; }
 }
-int SafeBuildBodyPreform3D(int source, double draft_angle_deg, double target_volume,
-                           double shift, double grid_step) {
-    __try { return SEM_BuildBodyPreform3D(source, draft_angle_deg, target_volume, shift, grid_step); }
+int SafeBuildBodyPreform3D(int source) {
+    __try { return SEM_BuildBodyPreform3D(source); }
     __except (EXCEPTION_EXECUTE_HANDLER) { return -100; }
 }
 int SafeTaperInPlaneSurface3D(SEM_Plane3D parting, double on_plane_rel_tol,

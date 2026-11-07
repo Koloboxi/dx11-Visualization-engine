@@ -861,6 +861,20 @@ Primitive* Scene::AddRevolutionSurface(const std::vector<XMFLOAT3>& profile, UIN
 	return p;
 }
 
+Primitive* Scene::AddColoredLines(const std::vector<XMFLOAT3>& poses, const std::vector<XMFLOAT4>& cols,
+	const std::string& name, SceneNode* parent)
+{
+	if (poses.size() < 2 || poses.size() % 2 != 0 || cols.size() != poses.size()) return nullptr;
+	Primitive* p = PrimitiveConstructor::ColoredLine(poses, cols, /*asLineList*/ true, NextId());
+	if (!p) return nullptr;
+	p->name = name;
+	this->primitives.push_back(p);
+	(parent ? parent : &root)->AddChild(p);
+	ApplyCurrentLighting(p);
+	m_sortedDirty = true;
+	return p;
+}
+
 Primitive* Scene::AddColoredTriangles(const std::vector<XMFLOAT3>& poses, const std::vector<XMFLOAT4>& cols,
 	const std::string& name, SceneNode* parent)
 {
@@ -971,14 +985,21 @@ SceneNode* Scene::AddGroupNode(const std::string& name, SceneNode* parent)
 	return g;
 }
 
+// Hiding a node hides its whole subtree; showing it shows the node alone, so
+// children keep whatever visibility they had (a child hidden on its own stays
+// hidden, and the ones a hide cascaded to are shown again one by one).
 void Scene::SetNodeVisibleCascade(SceneNode* n, bool show)
 {
 	if (!n) return;
 	n->visible = show;
+	if (show) {
+		m_sortedDirty = true;
+		return;
+	}
 
 	std::function<void(SceneNode*)> rec = [&](SceneNode* m) {
 		for (SceneNode* ch : m->children) {
-			ch->visible = show;
+			ch->visible = false;
 			rec(ch);
 		}
 	};

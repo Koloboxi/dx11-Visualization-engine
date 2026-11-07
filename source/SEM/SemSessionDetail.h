@@ -35,14 +35,6 @@ std::vector<XMFLOAT3> VertexPseudonormals(const CSV3DLoader::CSV3DData& d);
 // Used to size the drawn pseudonormal segments to the model.
 float MeanTriEdgeLen(const CSV3DLoader::CSV3DData& d);
 
-// Per-triangle "minority winding" flags. A consistent orientation is propagated
-// across the triangle adjacency graph (two triangles sharing an edge agree when
-// that edge runs opposite ways in them); within each connected component the
-// smaller orientation class is the minority. Returns true for every triangle
-// that disagrees with its component's majority — i.e. all false when the surface
-// is uniformly wound. data.nodes is unused (topology only).
-std::vector<char> WindingMinorityTris(const CSV3DLoader::CSV3DData& d);
-
 // Per-triangle "non-manifold" flags. A triangle is flagged when it touches a
 // non-manifold edge (an undirected edge shared by three or more triangles) or a
 // non-manifold vertex (a "bowtie": the incident triangle fan splits into more than
@@ -66,16 +58,14 @@ int SafeBuildMesh3D(const SEM_MeshParams3D* params);
 int SafeSolveThermal();
 int SafeSolveThermal3D(float max_inward);
 int SafeExtractIsoline(double value);
-int SafeExtractIsosurface3D(double value, SEM_Vec3 axis, double offset_value, double min_offset_value,
-                            double target_len_mult, int iterations);
+int SafeExtractIsosurface3D(double value);
 // Standalone offset-and-remesh of an open surface passed in as raw arrays (does NOT
 // touch the loaded pipeline cache); the result comes back through `out` (valid until
 // the next standalone call). See SEM_OffsetRemeshInPlaneSurface3D.
 int SafeApplyBodyTaper3D(double taper_angle_deg, int remesh_iters);
 int SafeApplyBodyTaperSkirt3D(double taper_angle_deg, int remesh_iters,
                               double skirt_depth, double skirt_growth);
-int SafeBuildBodyPreform3D(int source, double draft_angle_deg, double target_volume,
-                           double shift, double grid_step);
+int SafeBuildBodyPreform3D(int source);
 int SafeTaperInPlaneSurface3D(SEM_Plane3D parting, double on_plane_rel_tol,
                               double taper_angle_deg, int remesh_iters,
                               const double* xyz, int num_nodes,
