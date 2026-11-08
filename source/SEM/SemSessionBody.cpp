@@ -57,7 +57,7 @@ void SemSession::BindExisting(Scene& scene, int ctx, Primitive* prim,
     sessionMode = SESSION_PIPELINE;
     m_isHalf    = true;
     m_offsets = nullptr; m_mesh = nullptr; m_isoline = nullptr; m_gridBox = nullptr;
-    m_meshPos.clear(); m_meshT.clear(); m_meshEdges.clear();
+    m_meshPos.clear(); m_meshT.clear(); m_meshTets.clear(); m_meshEdges.clear();
     m_isoProj = nullptr; m_isoProjected = false;
     m_srcNormals = nullptr;
     m_meshPath.clear(); m_isolinePath.clear();
@@ -458,12 +458,35 @@ void SemSession::FinishBodyPreform(Scene& scene) {
     double volume = 0.0, land = 0.0;
     int lp = 0, ln = 0, cross = 0, open = 0;
     PreformReport(volume, land, lp, ln, cross, open);
+    bool atCrossing = false;
+    int seamLoops = 0;
+    double seamMin = 0.0, seamMax = 0.0;
+    std::string note;
+    PreformJoint(atCrossing, seamLoops, seamMin, seamMax, note);
+    char joint[96];
+    if (atCrossing) snprintf(joint, sizeof(joint), "joined where the halves cross (%+.3g .. %+.3g off the plane)", seamMin, seamMax);
+    else            snprintf(joint, sizeof(joint), "joined in the parting plane, lands %.4g", land);
     snprintf(status, sizeof(status),
-             "Preform in %.0f ms: volume %.6g, lands %.4g%s%s%s.",
-             m_job.preformMs, volume, land,
+             "Preform in %.0f ms: volume %.6g, %s%s%s%s.",
+             m_job.preformMs, volume, joint,
              open > 0 ? ", NOT closed" : "",
              m_preformPath.empty() ? "" : ", saved ",
              m_preformPath.empty() ? "" : BaseName(m_preformPath).c_str());
+}
+
+bool SemSession::PreformJoint(bool& at_crossing, int& seam_loops, double& seam_min, double& seam_max,
+                              std::string& note) const {
+    at_crossing = false;
+    seam_loops = 0;
+    seam_min = seam_max = 0.0;
+    note.clear();
+    if (!IsBody() || !m_bodySplit) return false;
+    Activate();
+    int at = 0;
+    if (SEM_GetBodyPreformJoint3D(&at, &seam_loops, &seam_min, &seam_max) != 0) return false;
+    at_crossing = (at != 0);
+    note = SEM_GetBodyPreformNote3D();
+    return true;
 }
 
 bool SemSession::PreformReport(double& volume, double& land_area, int& loops_pos, int& loops_neg,

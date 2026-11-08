@@ -369,8 +369,8 @@ bool SemSession::BuildOnPlaneOverlay(Scene& scene, SceneNode* grp,
     return true;
 }
 
-// Build the on-plane overlay for the three pipeline surfaces at once: the source
-// surface, the source isosurface and the final isosurface. Each is fetched from
+// Build the on-plane overlay for the pipeline surfaces at once: the source surface
+// and the extracted isosurface. Each is fetched from
 // the core in turn (every view is copied out before the next SEM_* call), tested
 // against the live clip planes and drawn in its own colour. All share one group
 // node so the single "Show geometry on planes" checkbox toggles them together.
@@ -401,8 +401,8 @@ void SemSession::BuildClipOnPlane(Scene& scene) {
 
     if (sessionMode == SESSION_OFFSET_REMESH) {
         // Standalone offset-remesh: its result lives only in the host copy (m_isoData);
-        // the pipeline iso caches (SEM_GetSourceIsosurface3D / SEM_GetIsosurface3D) are
-        // empty in this mode. Draw the result's on-plane geometry in the final-iso colour.
+        // the pipeline iso cache (SEM_GetSourceIsosurface3D) is empty in this mode.
+        // Draw the result's on-plane geometry in the isosurface colour.
         if (!m_isoData.nodes.empty() && !m_isoData.triangles.empty())
             any |= BuildOnPlaneOverlay(scene, grp, m_isoData, planes, tol, lift,
                                        kOnPlaneIsoFinColor, "isofin");

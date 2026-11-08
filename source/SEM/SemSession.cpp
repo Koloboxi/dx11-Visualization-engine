@@ -98,7 +98,7 @@ void SemSession::Bind(Scene& scene, Primitive* prim, bool reload) {
     m_offsets   = nullptr;
     m_mesh      = nullptr;
     m_gridBox   = nullptr;
-    m_meshPos.clear(); m_meshT.clear(); m_meshEdges.clear();
+    m_meshPos.clear(); m_meshT.clear(); m_meshTets.clear(); m_meshEdges.clear();
     m_isoline   = nullptr;
     m_isoData   = CSV3DLoader::CSV3DData();
     m_srcRevSurf = nullptr;
@@ -173,7 +173,7 @@ void SemSession::Bind(Scene& scene, Primitive* prim, bool reload) {
 void SemSession::Unbind() {
     m_srcPrim = nullptr; m_srcPath.clear();
     m_offsets = nullptr; m_mesh = nullptr; m_isoline = nullptr; m_gridBox = nullptr;
-    m_meshPos.clear(); m_meshT.clear(); m_meshEdges.clear();
+    m_meshPos.clear(); m_meshT.clear(); m_meshTets.clear(); m_meshEdges.clear();
     m_isoProj = nullptr; m_isoProjected = false;
     m_srcNormals = nullptr;
     m_isoData = CSV3DLoader::CSV3DData();

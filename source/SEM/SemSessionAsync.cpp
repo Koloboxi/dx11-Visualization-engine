@@ -792,15 +792,15 @@ void SemSession::ApplyThermalBC(Scene& scene) {
     scene.UpdateLight();
 }
 
-bool SemSession::IsoShiftGap(double& gap) {
+bool SemSession::IsoShiftLevels(double& from_dist, double& to_dist) {
     if (AsyncRunning() || dim != 3) return false;
     SemSession* s = IsBody() ? m_half[0] : this;
     if (!s || !s->HasSource()) return false;
     s->Activate();
-    gap = 0.0;
-    const bool ok = (SEM_GetIsoShift3D(nullptr, &gap) == 0);
+    from_dist = to_dist = 0.0;
+    const bool ok = (SEM_GetIsoShiftLevels3D(&from_dist, &to_dist) == 0);
     Activate();
-    return ok && gap > 0.0;
+    return ok && from_dist != to_dist;
 }
 
 bool SemSession::GridInfo(XMFLOAT3& lo, XMFLOAT3& hi, double& step) {

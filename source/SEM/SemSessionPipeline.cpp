@@ -338,6 +338,7 @@ void SemSession::TakeMeshData(const CSV3DLoader::CSV3DData& data, bool topology)
         m_meshT[i]   = data.nodes[i].T;
     }
     if (!topology) return;
+    m_meshTets = data.tets;
     // Every tet contributes its six edges; sorting the packed pairs dedupes the
     // edges tets share far faster than a node set would.
     m_meshEdges.clear();
@@ -375,20 +376,43 @@ void SemSession::RebuildMeshDisplay(Scene& scene) {
             SEM_GetThermalBCNodes3D(flags.data(), n, &n);
         }
     }
-    const size_t nn = m_meshPos.size();
+    const size_t nn = (std::min)(m_meshPos.size(), bc ? flags.size() : m_meshPos.size());
     std::vector<XMFLOAT3> poses;
     std::vector<XMFLOAT4> cols;
-    poses.reserve(m_meshEdges.size() * 2);
-    cols.reserve(m_meshEdges.size() * 2);
-    for (unsigned long long e : m_meshEdges) {
-        const unsigned a = (unsigned)(e >> 32), b = (unsigned)(e & 0xFFFFFFFFULL);
-        if (a >= nn || b >= nn) continue;
-        if (bc) {
-            // Nodes the BCs leave free are not drawn, nor any edge touching one.
-            if (a >= flags.size() || b >= flags.size() || flags[a] < 0 || flags[b] < 0) continue;
-            poses.push_back(m_meshPos[a]); cols.push_back(flags[a] ? Colors::RED : Colors::BLUE);
-            poses.push_back(m_meshPos[b]); cols.push_back(flags[b] ? Colors::RED : Colors::BLUE);
-        } else {
+    if (bc) {
+        // Only the 2D boundary of each region one BC holds: the edges between its
+        // nodes on the tets it shares with the free nodes, i.e. the BC levels
+        // themselves, not the regions behind them.
+        std::vector<unsigned long long> edges;
+        for (const XMUINT4& t : m_meshTets) {
+            const unsigned q[4] = { t.x, t.y, t.z, t.w };
+            bool touchesFree = false;
+            for (unsigned v : q) touchesFree = touchesFree || (v < nn && flags[v] < 0);
+            if (!touchesFree) continue;
+            for (int i = 0; i < 4; ++i)
+                for (int j = i + 1; j < 4; ++j) {
+                    unsigned a = q[i], b = q[j];
+                    if (a >= nn || b >= nn || a == b || flags[a] < 0 || flags[a] != flags[b]) continue;
+                    if (a > b) std::swap(a, b);
+                    edges.push_back(((unsigned long long)a << 32) | (unsigned long long)b);
+                }
+        }
+        std::sort(edges.begin(), edges.end());
+        edges.erase(std::unique(edges.begin(), edges.end()), edges.end());
+        poses.reserve(edges.size() * 2);
+        cols.reserve(edges.size() * 2);
+        for (unsigned long long e : edges) {
+            const unsigned a = (unsigned)(e >> 32), b = (unsigned)(e & 0xFFFFFFFFULL);
+            const XMFLOAT4& c = flags[a] ? Colors::RED : Colors::BLUE;
+            poses.push_back(m_meshPos[a]); cols.push_back(c);
+            poses.push_back(m_meshPos[b]); cols.push_back(c);
+        }
+    } else {
+        poses.reserve(m_meshEdges.size() * 2);
+        cols.reserve(m_meshEdges.size() * 2);
+        for (unsigned long long e : m_meshEdges) {
+            const unsigned a = (unsigned)(e >> 32), b = (unsigned)(e & 0xFFFFFFFFULL);
+            if (a >= nn || b >= nn) continue;
             poses.push_back(m_meshPos[a]); cols.push_back(Colors::Lerp(Colors::BLUE, Colors::RED, m_meshT[a]));
             poses.push_back(m_meshPos[b]); cols.push_back(Colors::Lerp(Colors::BLUE, Colors::RED, m_meshT[b]));
         }
@@ -496,7 +520,7 @@ void SemSession::DropMesh(Scene& scene) {
     if (Alive(scene, m_mesh)) scene.RemovePrimitive(m_mesh);
     if (Alive(scene, m_gridBox)) scene.RemovePrimitive(m_gridBox);
     m_mesh = nullptr; m_gridBox = nullptr; m_meshStats = Stats(); m_meshPath.clear();
-    m_meshPos.clear(); m_meshT.clear(); m_meshEdges.clear();
+    m_meshPos.clear(); m_meshT.clear(); m_meshTets.clear(); m_meshEdges.clear();
     m_thermalSolved = false;
     DropIsoline(scene);
 }

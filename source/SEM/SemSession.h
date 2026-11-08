@@ -203,7 +203,8 @@ public:
     float skirtGrowth  = 0.3f;
 
     // The preform (stage after the isosurface): the two halves glued back into one
-    // closed body on their own geometry, joined by flat lands in the parting plane.
+    // closed body on their own geometry - where they cross when they run on past the
+    // parting plane (the skirt), by flat lands in the plane otherwise.
     // Which halves it takes:
     enum PreformSource  { PREFORM_FROM_HALVES = 0, PREFORM_FROM_ISOSURFACES = 1 };
     int    preformSource   = PREFORM_FROM_ISOSURFACES;
@@ -268,8 +269,8 @@ public:
                          int& facets_violating, double& min_draft_deg) const;
 
     // Whether the halves the core holds carry a skirt (set by the last split or
-    // taper). With one, the halves' offsets and distances run on the extended
-    // surfaces, while their domains still end on the parting plane.
+    // taper). With one, the halves' offsets, distances, domains and isosurfaces run
+    // on the extended surfaces, out to the far end of the skirt.
     bool SkirtActive() const { return m_skirtActive; }
     // The core's setting and how deep each half's skirt reached.
     bool SkirtState(double& depth, double& reached_pos, double& reached_neg) const;
@@ -287,6 +288,12 @@ public:
     // there is none.
     bool PreformReport(double& volume, double& land_area, int& loops_pos, int& loops_neg,
                        int& crossings, int& open_edges) const;
+    // Where the last preform joined its halves (SEM_GetBodyPreformJoint3D): along
+    // the line where they cross - its loops and how far it runs off the parting
+    // plane - or in the plane, with the core's reason when lands were needed there
+    // anyway (SEM_GetBodyPreformNote3D). False when there is none.
+    bool PreformJoint(bool& at_crossing, int& seam_loops, double& seam_min, double& seam_max,
+                      std::string& note) const;
     Primitive*         PreformPrim() const { return m_preformPrim; }
     const std::string& PreformPath() const { return m_preformPath; }
 
@@ -386,9 +393,10 @@ public:
     // redrawn by them (a body does both halves); the field is re-solved by the next
     // isosurface Apply.
     void ApplyThermalBC(Scene& scene);
-    // The gap the shift scales - the distance between the BC levels - and the box
-    // and step of the grid; false while there is none or a worker runs.
-    bool IsoShiftGap(double& gap);
+    // The offsets of the T = 0 and T = 1 levels the shift works from
+    // (SEM_GetIsoShiftLevels3D), and the box and step of the grid; false while there
+    // is none or a worker runs.
+    bool IsoShiftLevels(double& from_dist, double& to_dist);
     bool GridInfo(XMFLOAT3& lo, XMFLOAT3& hi, double& step);
 
     SceneNode* StagePrim(Stage st) const;
@@ -589,9 +597,10 @@ private:
     CSV3DLoader::CSV3DData m_isoData;
     // The 3D domain mesh as last read from the core, kept so its drawing can be
     // rebuilt (BC / T field, new BC levels) without reading it again: the node
-    // positions and solved T, and the unique edges of its tets (a << 32 | b).
+    // positions and solved T, its tets, and their unique edges (a << 32 | b).
     std::vector<XMFLOAT3>           m_meshPos;
     std::vector<float>              m_meshT;
+    std::vector<XMUINT4>            m_meshTets;
     std::vector<unsigned long long> m_meshEdges;
     Primitive*                      m_gridBox = nullptr;
     bool        m_thermalSolved = false;
@@ -666,8 +675,9 @@ private:
     void RefreshHalfPrims(Scene& scene);
     // Give one half's context the parting plane as its clip plane, oriented so the
     // kept half-space is that half's own side, when it carries no skirt: its source
-    // and offsets are then cut flush at the plane too. (Its domain and isosurface
-    // end on the plane either way - the core sets that up for every half.)
+    // and offsets are then cut flush at the plane too. (The core ends every half's
+    // domain, and its isosurface with it, at the far end of its skirt - on the plane
+    // without one.)
     // Re-applied after a taper, because republishing a half reloads its source and
     // clears its clip planes.
     void PushSplitClipPlane(int side);

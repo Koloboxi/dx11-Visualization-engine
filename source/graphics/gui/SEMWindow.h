@@ -673,9 +673,9 @@ inline void DrawBodySplitSection(Scene& scene, SemSessionNS::SemSession& S) {
             }
             if (S.SkirtActive()) {
                 ImGui::TextDisabled("The halves are extended past this plane (skirt):");
-                ImGui::TextDisabled("their offsets and distances run on half + skirt,");
-                ImGui::TextDisabled("lighter tint = the skirt. Their domains still end");
-                ImGui::TextDisabled("on the plane.");
+                ImGui::TextDisabled("their offsets, domains and isosurfaces run on");
+                ImGui::TextDisabled("half + skirt (lighter tint = the skirt), out to");
+                ImGui::TextDisabled("the far end of the skirt.");
             } else {
                 ImGui::TextDisabled("Both halves carry this plane as a clip plane,");
                 ImGui::TextDisabled("each keeping its own side, so their stages are");
@@ -718,11 +718,11 @@ inline void DrawBodyTaperSection(Scene& scene, SemSessionNS::SemSession& S) {
         ImGui::EndDisabled();
         ImGui::Checkbox("Extend past the parting plane (skirt)", &S.skirtEnabled);
         ImGui::SetItemTooltip("Carry each half's walls on below the parting plane at the draft\n"
-                              "angle. The halves' offsets and distances then run on half + skirt,\n"
-                              "so near the parting line the BC levels follow the drafted walls\n"
-                              "instead of rounding off at the cut; the domain still ends on the\n"
-                              "plane. On by default: Split builds it straight down, Apply taper\n"
-                              "rebuilds it at the draft angle.");
+                              "angle. The halves' offsets, distances, domains and isosurfaces then\n"
+                              "run on half + skirt, out to the far end of the skirt, so near the\n"
+                              "parting line the BC levels and the field follow the drafted walls\n"
+                              "instead of rounding off at the cut. On by default: Split builds it\n"
+                              "straight down, Apply taper rebuilds it at the draft angle.");
         ImGui::BeginDisabled(!S.skirtEnabled);
         ImGui::DragFloat("Skirt depth", &S.skirtDepth, 0.01f, 0.0f, 0.0f, "%.4f");
         if (S.skirtDepth < 0.0f) S.skirtDepth = 0.0f;
@@ -787,8 +787,10 @@ inline void DrawBodyTaperSection(Scene& scene, SemSessionNS::SemSession& S) {
 }
 
 // Body session, last stage: glue the two halves back into one closed body on
-// their own geometry. Both end on the parting plane; the plane closes whatever only
-// one of them covers there (a flat land), so the parting line lies in it.
+// their own geometry. With the skirt on the halves run on past the parting plane
+// and are joined along the line where they actually cross (above the plane in
+// places, below it in others), with no lands; otherwise in the plane, which closes
+// whatever only one of them covers there with a flat land.
 inline void DrawBodyPreformSection(Scene& scene, SemSessionNS::SemSession& S) {
     using namespace SemSessionNS;
     ImGui::PushID("bodypreform");
@@ -797,13 +799,15 @@ inline void DrawBodyPreformSection(Scene& scene, SemSessionNS::SemSession& S) {
         ImGui::TextUnformatted("Halves");
         ImGui::SameLine();
         ImGui::RadioButton("Isosurfaces", &S.preformSource, SemSession::PREFORM_FROM_ISOSURFACES);
-        ImGui::SetItemTooltip("The isosurface each half extracted last. Both end on the parting\n"
-                              "plane, the halves' domains being cut there. Extract it on both\n"
-                              "halves first.");
+        ImGui::SetItemTooltip("The isosurface each half extracted last. With the skirt on they run on\n"
+                              "past the parting plane along the skirts and are joined where they\n"
+                              "cross; without it each is cut at the plane on its own side (the\n"
+                              "isosurfaces themselves are left whole). Extract it on both halves first.");
         ImGui::SameLine();
         ImGui::RadioButton("Split / tapered", &S.preformSource, SemSession::PREFORM_FROM_HALVES);
-        ImGui::SetItemTooltip("The halves as the split cut them, or as the last taper left them\n"
-                              "(without their skirts).");
+        ImGui::SetItemTooltip("The halves as the split cut them, or as the last taper left them.\n"
+                              "Where their outlines differ and the skirt is on, they are joined where\n"
+                              "the half and the other half's skirt cross.");
         if (S.preformSource == SemSession::PREFORM_FROM_ISOSURFACES && !haveIso)
             ImGui::TextDisabled("No isosurface on both halves yet.");
 
@@ -811,10 +815,14 @@ inline void DrawBodyPreformSection(Scene& scene, SemSessionNS::SemSession& S) {
         if (ImGui::Button("Apply preform", {200, 0})) S.ApplyPreform(scene, false);
         ImGui::EndDisabled();
         ImGui::SetItemTooltip("Glue both halves into one closed surface on their own geometry: no\n"
-                              "vertex moves and nothing is resampled. Where only one half reaches\n"
-                              "the parting plane, the plane closes it with a flat land; where the\n"
-                              "two outlines cross, both are split at the crossing, so the seam is\n"
-                              "welded vertex for vertex.");
+                              "vertex moves and nothing is resampled. Where the two outlines are one,\n"
+                              "the halves meet in the parting plane. Where they differ and the skirt\n"
+                              "is on, both halves run on past the plane and are cut along the line\n"
+                              "where they actually cross - the real parting, above the plane in some\n"
+                              "places and below it in others - and the preform is what lies inside\n"
+                              "both: no flat lands. Without the skirt, or if the halves do not cross\n"
+                              "all the way round, the plane closes what only one half reaches with a\n"
+                              "flat land. The seam is welded vertex for vertex either way.");
 
         if (Primitive* pp = S.PreformPrim()) {
             bool vis = pp->visible;
@@ -822,14 +830,34 @@ inline void DrawBodyPreformSection(Scene& scene, SemSessionNS::SemSession& S) {
             if (!S.AsyncRunning()) {
                 double volume = 0.0, land = 0.0;
                 int lp = 0, ln = 0, cross = 0, open = 0;
-                if (S.PreformReport(volume, land, lp, ln, cross, open)) {
-                    ImGui::TextDisabled("Volume %.6g, lands %.4g", volume, land);
-                    ImGui::SetItemTooltip("Lands: the area of the parting plane that closes what only one\n"
-                                          "half reaches.");
-                    ImGui::TextDisabled("Parting loops %d / %d, outline crossings %d", lp, ln, cross);
+                bool atCrossing = false;
+                int seamLoops = 0;
+                double seamMin = 0.0, seamMax = 0.0;
+                std::string note;
+                if (S.PreformReport(volume, land, lp, ln, cross, open) &&
+                    S.PreformJoint(atCrossing, seamLoops, seamMin, seamMax, note)) {
+                    if (atCrossing) {
+                        ImGui::TextDisabled("Volume %.6g, joined where the halves cross", volume);
+                        ImGui::TextDisabled("Seam: %d loop%s, %+.4g .. %+.4g off the parting plane", seamLoops,
+                                            seamLoops == 1 ? "" : "s", seamMin, seamMax);
+                        ImGui::SetItemTooltip("The line along which the two halves were cut and joined, and how\n"
+                                              "far it runs off the parting plane (positive towards the + half).\n"
+                                              "Besides the seam round the part, nearly coinciding walls may cross\n"
+                                              "in a few small loops.");
+                    } else {
+                        ImGui::TextDisabled("Volume %.6g, joined in the parting plane, lands %.4g", volume, land);
+                        ImGui::SetItemTooltip("Lands: the area of the parting plane that closes what only one\n"
+                                              "half reaches.");
+                        ImGui::TextDisabled("Parting loops %d / %d, outline crossings %d", lp, ln, cross);
+                        if (!note.empty()) {
+                            ImGui::PushTextWrapPos(0.0f);
+                            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "%s", note.c_str());
+                            ImGui::PopTextWrapPos();
+                        }
+                    }
                     if (open > 0)
                         ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f),
-                                           "%d edges open: a half has a boundary off the plane.", open);
+                                           "%d edges open: a half has a boundary the stitch does not close.", open);
                 }
             }
             DrawSavedFileRow(scene, S.PreformPath());
@@ -936,10 +964,11 @@ inline void DrawOffsetSpacing(SemSessionNS::SemSession& S, bool& changed, bool& 
     }
 }
 
-// The thermal BCs (3D): the field runs from 0 on one level to 1 on another, chosen
-// among the source and the offsets the grid embeds. A change goes to the core at
-// once and the domain is redrawn by it; the field is re-solved by the next
-// isosurface Apply.
+// The thermal BCs (3D): the field runs between two levels, one picked in each row
+// of radio buttons - the + row among the source and the outer offsets, the - row
+// among the source and the inner ones - with T = 0 on the one chosen below them and
+// T = 1 on the other. A change goes to the core at once and the domain is redrawn by
+// it; the field is re-solved by the next isosurface Apply.
 inline void DrawBcLevelChoice(Scene& scene, SemSessionNS::SemSession& S) {
     int ni = 0;
     const std::vector<double>& lv = S.OffsetLevels(ni);
@@ -948,13 +977,6 @@ inline void DrawBcLevelChoice(Scene& scene, SemSessionNS::SemSession& S) {
         return;
     }
     const int no = (int)lv.size() - 1 - ni;
-    auto label = [&](int k) {
-        char buf[64];
-        if (k == 0)     snprintf(buf, sizeof(buf), "source");
-        else if (k > 0) snprintf(buf, sizeof(buf), "outer %d (%+.4g)", k, lv[(size_t)(k + ni)]);
-        else            snprintf(buf, sizeof(buf), "inner %d (%+.4g)", -k, lv[(size_t)(k + ni)]);
-        return std::string(buf);
-    };
     auto resolve = [&](int k) {
         if (k >= SEM_LEVEL_OUTERMOST) return no;
         if (k <= SEM_LEVEL_INNERMOST) return -ni;
@@ -962,36 +984,81 @@ inline void DrawBcLevelChoice(Scene& scene, SemSessionNS::SemSession& S) {
     };
     // The extreme levels are kept as such, so they follow the offsets.
     auto store = [&](int k) {
-        if (k == no) return (int)SEM_LEVEL_OUTERMOST;
+        if (k == no && no > 0) return (int)SEM_LEVEL_OUTERMOST;
         if (k == -ni && ni > 0) return (int)SEM_LEVEL_INNERMOST;
         return k;
     };
-    bool bcChanged = false;
+    // The levels as set, one per row; a row neither of them falls in has none.
+    constexpr int kNone = 1 << 30;
+    const int rf = resolve(S.bcFrom), rt = resolve(S.bcTo);
+    int up = (std::max)(rf, rt), dn = (std::min)(rf, rt);
+    if (up < 0) up = kNone;
+    if (dn > 0) dn = kNone;
+    bool zeroOnMinus = (rf <= rt);
+    bool changed = false;
+
     ImGui::BeginDisabled(S.AsyncRunning());
-    for (int which = 0; which < 2; ++which) {
-        int& slot = (which == 0) ? S.bcFrom : S.bcTo;
-        const int cur = resolve(slot);
-        if (ImGui::BeginCombo(which == 0 ? "From (T = 0)" : "To (T = 1)", label(cur).c_str())) {
-            for (int k = -ni; k <= no; ++k)
-                if (ImGui::Selectable(label(k).c_str(), k == cur) && k != cur) {
-                    slot = store(k);
-                    bcChanged = true;
-                }
-            ImGui::EndCombo();
+    const ImGuiStyle& st = ImGui::GetStyle();
+    const float x0 = ImGui::GetCursorPosX();
+    const float labelW = (std::max)(ImGui::CalcTextSize("+").x, ImGui::CalcTextSize("-").x) +
+                         st.ItemSpacing.x;
+    auto row = [&](int sgn, int count, int& sel, int other) {
+        ImGui::PushID(sgn);
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(sgn > 0 ? "+" : "-");
+        ImGui::SameLine(x0 + labelW);
+        ImGui::BeginGroup();
+        const float right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+        for (int i = 0; i <= count; ++i) {
+            const int k = sgn * i;
+            char buf[32];
+            if (k == 0) snprintf(buf, sizeof(buf), "source");
+            else        snprintf(buf, sizeof(buf), "%+.4g", lv[(size_t)(k + ni)]);
+            if (i > 0) {
+                const float w = ImGui::GetFrameHeight() + st.ItemInnerSpacing.x + ImGui::CalcTextSize(buf).x;
+                if (ImGui::GetItemRectMax().x + st.ItemSpacing.x + w < right) ImGui::SameLine();
+            }
+            ImGui::PushID(i);
+            // The source in both rows would be no BC at all.
+            ImGui::BeginDisabled(k == 0 && other == 0);
+            if (ImGui::RadioButton(buf, sel == k) && sel != k) { sel = k; changed = true; }
+            ImGui::EndDisabled();
+            if (k == 0) ImGui::SetItemTooltip("The source itself.");
+            else        ImGui::SetItemTooltip("%s offset %d, %+.4g from the source.",
+                                              sgn > 0 ? "Outer" : "Inner", i, lv[(size_t)(k + ni)]);
+            ImGui::PopID();
         }
-        ImGui::SetItemTooltip(which == 0
-            ? "Level the field starts from (T = 0): it and everything beyond it, away\n"
-              "from To, is held at 0. Smoothing 0 gives this level back."
-            : "Level the field reaches (T = 1): it and everything beyond it is held\n"
-              "at 1. The distance between From and To sets how far the shift reaches.");
-    }
+        ImGui::EndGroup();
+        ImGui::PopID();
+    };
+    row(+1, no, up, dn);
+    row(-1, ni, dn, up);
+
+    const char* dirTip = "Which of the two levels holds T = 0 (blue); the other one holds T = 1\n"
+                         "(red). Each level holds everything beyond it, away from the other, at\n"
+                         "its value. A small smoothing takes the isosurface near the T = 0 level,\n"
+                         "so its shape follows that side: T = 0 outside the source fills in\n"
+                         "pockets and concave corners, T = 0 inside rounds off convex edges and\n"
+                         "thin features. The shift brings it back onto the source either way.";
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("T = 0 on the");
+    ImGui::SameLine();
+    if (ImGui::RadioButton("- level", zeroOnMinus) && !zeroOnMinus) { zeroOnMinus = true; changed = true; }
+    ImGui::SetItemTooltip("%s", dirTip);
+    ImGui::SameLine();
+    if (ImGui::RadioButton("+ level", !zeroOnMinus) && zeroOnMinus) { zeroOnMinus = false; changed = true; }
+    ImGui::SetItemTooltip("%s", dirTip);
     ImGui::EndDisabled();
-    if (resolve(S.bcFrom) == resolve(S.bcTo))
-        ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "From and To are the same level.");
-    else if (bcChanged)
+
+    if (up == kNone || dn == kNone || up == dn) {
+        ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "Pick one level in each row.");
+    } else if (changed) {
+        S.bcFrom = store(zeroOnMinus ? dn : up);
+        S.bcTo   = store(zeroOnMinus ? up : dn);
         S.ApplyThermalBC(scene);
+    }
     if (S.MeshBuilt())
-        ImGui::TextDisabled("On the domain: blue = held at 0, red = held at 1.");
+        ImGui::TextDisabled("On the domain: the BC levels, blue = held at 0, red = held at 1.");
 }
 
 // Show or hide the grid box of the domain - of both halves for a body.
@@ -1033,7 +1100,8 @@ inline void DrawDomainSection(Scene& scene, SemSessionNS::SemSession& S) {
         ImGui::SetItemTooltip("The box the thermal problem is solved in, as multiples of the part's\n"
                               "extents along x, y, z, centred on it. It is grown as needed to hold\n"
                               "every offset level with a grid step to spare. The domain of a body\n"
-                              "half ends on the parting plane.");
+                              "half ends at the far end of its skirt (on the parting plane\n"
+                              "without one).");
         ImGui::DragFloat("Grid step", &S.gridStep, 0.05f, 0.0f, 1e6f, "%.3f");
         meshChanged |= ImGui::IsItemDeactivatedAfterEdit();
         ImGui::SetItemTooltip("Spacing of the regular grid, world units. 0 = auto: about 1e5 grid\n"
@@ -1383,20 +1451,26 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         if (is3D) {
             ImGui::DragFloat("Smoothing (0..1)", &S.isoValue, 0.005f, 0.0f, 1.0f, "%.3f");
             if (ImGui::IsItemDeactivatedAfterEdit()) S.MarkStageDirty(STAGE_ISOSURFACE);
-            ImGui::SetItemTooltip("Level of the field the isosurface is taken at: 0 on From, 1 on To\n"
-                                  "(the BC levels under Domain). With the shift on it is moved back\n"
-                                  "onto From, so this sets how much the surface is smoothed, not\n"
-                                  "where it lies. Changing it does not re-solve the field.");
+            ImGui::SetItemTooltip("Level of the field the isosurface is taken at: 0 on the T = 0 level,\n"
+                                  "1 on the T = 1 level (the BCs under Domain). With the shift on it\n"
+                                  "is moved back onto the source, whichever levels hold the BCs, so\n"
+                                  "this sets how much the surface is smoothed, not where it lies.\n"
+                                  "Changing it does not re-solve the field.");
             if (ImGui::Checkbox("Shift back along the gradient", &S.isoShift))
                 S.MarkStageDirty(STAGE_ISOSURFACE);
-            ImGui::SetItemTooltip("Before taking the isosurface, move every value of the field back down\n"
-                                  "its gradient by smoothing x the gap between the From and To levels\n"
-                                  "(the distance between them): the level then comes out about where\n"
-                                  "From is, smoothed. Off: the plain isosurface, which lies between\n"
-                                  "From and To.");
-            double gap = 0.0;
-            if (S.isoShift && S.IsoShiftGap(gap))
-                ImGui::TextDisabled("Shift: %.3f x gap %.4g = %.4g", S.isoValue, gap, S.isoValue * gap);
+            ImGui::SetItemTooltip("Before taking the isosurface, move the field along its gradient by\n"
+                                  "the distance the level lies from the source: d0 + smoothing x (d1 - d0),\n"
+                                  "d0 and d1 being the offsets of the T = 0 and T = 1 levels (inner ones\n"
+                                  "negative). The level then comes out about where the source is,\n"
+                                  "smoothed: moved back by smoothing x gap when T = 0 is on the source,\n"
+                                  "and out again by an inner level's depth when T = 0 is on that level.\n"
+                                  "Off: the plain isosurface, which lies between the two levels.");
+            double d0 = 0.0, d1 = 0.0;
+            if (S.isoShift && S.IsoShiftLevels(d0, d1)) {
+                const double at = d0 + (double)S.isoValue * (d1 - d0);
+                ImGui::TextDisabled("Shift: level at %+.4g %s %.3f x %.4g = %+.4g, back onto the source",
+                                    d0, (d1 >= d0) ? "+" : "-", S.isoValue, std::abs(d1 - d0), at);
+            }
         } else {
             ImGui::DragFloat("Isoline value (0..1)", &S.isoValue, 0.005f, 0.0f, 1.0f, "%.3f");
             if (ImGui::IsItemDeactivatedAfterEdit()) S.MarkStageDirty(STAGE_ISOSURFACE);
@@ -1413,7 +1487,7 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
             S.RecomputeUpToAsync(scene, STAGE_ISOSURFACE, false);
         ImGui::SetItemTooltip(is3D
             ? "Solve steady-state heat conduction on the domain between the BC levels\n"
-              "chosen under Domain (From held at T=0, To at T=1) when the field is\n"
+              "chosen under Domain (one held at T=0, the other at T=1) when the field is\n"
               "stale - a new domain or other BC levels - then extract the isosurface\n"
               "at the smoothing above. Changing only the smoothing re-extracts\n"
               "without re-solving."

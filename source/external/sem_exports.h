@@ -318,9 +318,11 @@ enum SEM_LevelSentinel {
 //                     distance from the source (folds of an offset are dropped),
 //                     grid points too close to them are left out, then all of it
 //                     is tetrahedralized (Delaunay). Clip planes cut the box flush,
-//                     and so does the parting plane of a body half (its domain ends
-//                     on it even when the half carries a skirt past it); the box is
-//                     measured on what lies on the kept side. For an open source
+//                     and so does the far end of a body half: the plane parallel to
+//                     the parting plane through the end of the half's skirt (the
+//                     parting plane itself without a skirt), so the domain spans the
+//                     skirt and the field at the parting line is an interior one;
+//                     the box is measured on what lies on the kept side. For an open source
 //                     the domain ends on the prism its normals sweep from its free
 //                     edges. No offset shell is meshed as a surface - the levels
 //                     exist as nodes only. The thermal BCs are then chosen among
@@ -386,25 +388,32 @@ SEM_API int SEM_GetThermalBC3D(int* from_level, int* to_level,
 // still filled).
 SEM_API int SEM_GetThermalBCNodes3D(signed char* out, int max, int* count);
 
-// Shift the field back along its gradient before an isosurface is extracted (on
-// by default). The field rises from 0 at the BC level `from` to 1 at `to`, so the
-// level `value` lies about value * gap away from `from`, the gap being the distance
-// between the two levels, |d_to - d_from|; with the shift each node takes the field
-// from the end of the field line traced up the gradient from it for value * gap,
-// which brings that level back onto `from` - `value` then sets how much the
-// isosurface is smoothed, not where it lies.
+// Shift the field along its gradient before an isosurface is extracted (on by
+// default). The field rises from 0 at the BC level `from` to 1 at `to`, so the
+// level `value` lies about D = d_from + value * (d_to - d_from) from the source
+// (d = a level's signed distance, inner levels negative); with the shift each node
+// takes the field from the point its field line reaches D further away from the
+// source (nearer to it for a negative D), which brings that level back onto the
+// SOURCE whichever levels hold the BCs - an inner `from` shifts it back outward.
+// `value` then sets how much the isosurface is smoothed, not where it lies.
 // Applies to SEM_TET_GRID meshes only (a legacy band ends on the source, where the
 // shifted level would lie). Persisted in the session.
 SEM_API int SEM_SetIsoShift3D(int enabled);
 
-// The shift setting, and the gap the shift uses: that of the last solve's levels,
-// or of the levels as set before a solve (null to skip).
+// The shift setting, and the gap between the BC levels, |d_to - d_from|: that of
+// the last solve's levels, or of the levels as set before a solve (null to skip).
 SEM_API int SEM_GetIsoShift3D(int* enabled, double* gap);
+
+// The signed distances from the source of the BC levels the shift works from,
+// d_from and d_to - the last solve's, or the levels' as set before a solve (null to
+// skip). The level `value` is shifted by -(d_from + value * (d_to - d_from)).
+SEM_API int SEM_GetIsoShiftLevels3D(double* from_dist, double* to_dist);
 
 // Extract the iso surface at the given level set of the normalized field (value in
 // [0,1]: 0 at the BC level `from`, 1 at `to`; with SEM_SetIsoShift3D on, the amount
-// of smoothing - the shift returns the level onto `from`). It is cut flush at the
-// clip planes and at a body half's parting plane, given a light isotropic remesh
+// of smoothing - the shift returns the level onto the source). It is cut flush at the
+// clip planes and where a body half's domain ends (the far end of its skirt - it is
+// not cut at the parting plane), given a light isotropic remesh
 // (boundary vertices in those planes slide within them), oriented with its normals
 // pointing from the inner level to the outer one, kept as a Surface (read it back
 // with SEM_GetSourceIsosurface3D, including its vertex normals) and written to
@@ -750,8 +759,10 @@ SEM_API double SEM_GetBodyTaperAngle3D(void);
 // half, so their offsets, mesh, thermal solve and isosurface run on the extended
 // surface - near the parting line the field is then an interior one, and the
 // isosurface follows the drafted wall there instead of meeting the plane square on.
-// Such halves must NOT be clipped at the parting plane (that would cut the skirt
-// off again); cut or glue the results afterwards (SEM_BuildBodyPreform3D).
+// A half's GRID domain, and its isosurface with it, ends at the far end of its skirt
+// (the plane parallel to the parting plane through the skirt's deepest point);
+// SEM_BuildBodyPreform3D joins such halves where they cross. Such halves must NOT
+// be clipped at the parting plane (that would cut the skirt off again).
 //
 // depth > 0: every skirt goes that far below the plane; depth < 0: each half's
 // skirt goes down to the OTHER half's height ("to the far side of the other half");
@@ -798,19 +809,28 @@ SEM_API int SEM_MeasureBodyDraft3D(int side, double taper_angle_deg,
 enum SEM_PreformSource { SEM_PREFORM_FROM_HALVES = 0, SEM_PREFORM_FROM_ISOSURFACES = 1 };
 
 // Glue the two halves back into ONE closed body - the preform - on their own
-// geometry: no vertex of either half moves and nothing is resampled. Each half has
-// to end on the parting plane (an isosurface of a half does: its domain is cut
-// there), and the loops it leaves in the plane bound its footprint. The plane joins
-// the halves: where only one half's footprint reaches, it is closed by a flat land
-// in the plane facing away from that half; where both reach, the halves meet and
-// nothing is added. Where the two outlines cross, both are split at the crossing,
-// so the seam is welded vertex for vertex. A boundary loop of a half that does not
-// lie in the plane is left open (reported as open edges).
+// geometry: no vertex of either half moves and nothing is resampled.
+//
+// In the parting plane: each half ending on the plane (the split / tapered halves
+// do; an isosurface is cut there, on its half's side, the extracted isosurface itself
+// staying whole), the loops each half leaves in the plane bound its footprint.
+// Where both footprints reach, the halves meet and nothing is added; where the two
+// outlines cross, both are split at the crossing, so the seam is welded vertex for
+// vertex.
+//
+// Where the outlines differ that would take flat lands. With the skirt on
+// (SEM_SetBodySkirt3D) the halves run on past the plane - the isosurfaces along
+// their skirts, the halves with them - and are joined where they actually cross
+// instead: both are cut along the line where they meet, which lies above the plane
+// in some places and below it in others, and the preform is what lies inside both,
+// with no lands. That falls back to the plane (see SEM_GetBodyPreformNote3D) when
+// the halves do not cross all the way round within their skirts, e.g. a wall with
+// no draft. A boundary loop of a half that is not closed by the stitch (a clip
+// plane's cut) is left open (reported as open edges).
 //
 // Written to <stem>_preform.csv3d in the body's working dir. Honours
 // SEM_RequestCancel (returns SEM_RC_CANCELLED). Moving the plane, re-splitting or
-// re-tapering discards the preform. Negative when a half has no boundary loop in
-// the plane or the lands cannot be triangulated.
+// re-tapering discards the preform. Negative when neither stitch succeeds.
 SEM_API int SEM_BuildBodyPreform3D(int source);
 
 // The last preform. See SEM_MeshView for the lifetime/layout contract.
@@ -818,13 +838,28 @@ SEM_API int SEM_GetBodyPreform3D(SEM_MeshView* out);
 
 // What the last preform came out as:
 //   volume     - its enclosed volume, measured on the output mesh;
-//   land_area  - area of the flat lands the plane added;
-//   loops_pos, loops_neg - boundary loops each half left in the plane;
-//   crossings  - points where the two outlines cross (each split both halves);
+//   land_area  - area of the flat lands the plane added (0 when joined at the
+//                crossing);
+//   loops_pos, loops_neg - boundary loops each half left in the plane (joined at
+//                the crossing: the loops of the seam, both);
+//   crossings  - points where the two outlines cross in the plane (each split both
+//                halves);
 //   open_edges - edges of the output with one triangle (0 = closed).
 // Any argument may be null.
 SEM_API int SEM_GetBodyPreformReport3D(double* volume, double* land_area, int* loops_pos,
                                        int* loops_neg, int* crossings, int* open_edges);
+
+// Where the last preform joined its halves: at_crossing = 1 along the line where
+// they cross (then seam_loops is its loop count and seam_min / seam_max how far it
+// runs off the parting plane, signed towards the positive half), 0 in the parting
+// plane (the others 0). Any argument may be null.
+SEM_API int SEM_GetBodyPreformJoint3D(int* at_crossing, int* seam_loops, double* seam_min,
+                                      double* seam_max);
+
+// Why the last preform was joined in the parting plane with flat lands although
+// they were needed - no skirt, or the halves not crossing all the way round - or ""
+// when it was not (or there is none). Valid until the next call on this thread.
+SEM_API const char* SEM_GetBodyPreformNote3D(void);
 
 
 // ===========================================================================
