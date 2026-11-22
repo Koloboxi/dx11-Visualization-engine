@@ -20,8 +20,9 @@
 // at a time (parallel workspaces are not implemented yet).
 namespace MainMenuWindow {
 
-// A unique source stem and the session folders saved under it (%TEMP%/sem).
-struct StemGroup { std::string stem; std::vector<std::string> dirs; };
+// A unique source stem and the session folders saved under it, and whether each
+// still holds a session (Windows' temp cleanup empties the old ones under %TEMP%).
+struct StemGroup { std::string stem; std::vector<std::string> dirs; std::vector<char> usable; };
 
 inline bool AllDigits(const std::string& s) {
     if (s.empty()) return false;
@@ -34,32 +35,35 @@ inline std::string BaseName(const std::string& p) {
     return s != std::string::npos ? p.substr(s + 1) : p;
 }
 
-// Group every "<stem>_<N>" session folder under %TEMP%/sem by its source stem.
+// Group every "<stem>_<N>" session folder under the session roots by its source stem.
 inline std::vector<StemGroup> EnumerateSessions() {
     namespace fs = std::filesystem;
     std::vector<StemGroup> groups;
-    const std::string root = SemSessionNS::SemSession::SessionRoot();
-    if (root.empty()) return groups;
 
     std::map<std::string, std::vector<std::pair<int, std::string>>> byStem;
-    std::error_code ec;
-    for (const auto& e : fs::directory_iterator(root, ec)) {
-        if (ec) break;
-        if (!e.is_directory()) continue;
-        const std::string name = e.path().filename().string();
-        auto us = name.find_last_of('_');
-        if (us == std::string::npos || us == 0) continue;
-        const std::string stem = name.substr(0, us);
-        const std::string num  = name.substr(us + 1);
-        if (!AllDigits(num)) continue;
-        byStem[stem].emplace_back(std::stoi(num), e.path().string());
+    for (const std::string& root : SemSessionNS::SemSession::SessionRoots()) {
+        std::error_code ec;
+        for (const auto& e : fs::directory_iterator(root, ec)) {
+            if (ec) break;
+            if (!e.is_directory()) continue;
+            const std::string name = e.path().filename().string();
+            auto us = name.find_last_of('_');
+            if (us == std::string::npos || us == 0) continue;
+            const std::string stem = name.substr(0, us);
+            const std::string num  = name.substr(us + 1);
+            if (!AllDigits(num)) continue;
+            byStem[stem].emplace_back(std::stoi(num), e.path().string());
+        }
     }
     for (auto& kv : byStem) {
         std::sort(kv.second.begin(), kv.second.end(),
                   [](const auto& a, const auto& b) { return a.first < b.first; });
         StemGroup g;
         g.stem = kv.first;
-        for (auto& p : kv.second) g.dirs.push_back(p.second);
+        for (auto& p : kv.second) {
+            g.dirs.push_back(p.second);
+            g.usable.push_back(SemSessionNS::SemSession::SessionFolderUsable(p.second) ? 1 : 0);
+        }
         groups.push_back(std::move(g));
     }
     return groups;
@@ -114,6 +118,9 @@ inline void SelectClick(std::set<int>& sel, int& last, int i) {
 
 inline void OpenSemSession(Scene& scene, const std::string& stem, const std::string& dir) {
     namespace fs = std::filesystem;
+    // An emptied folder has nothing to reopen: the reload would leave a setup with
+    // no source in its core.
+    if (!SemSessionNS::SemSession::SessionFolderUsable(dir)) return;
     // The session folder keeps a copy of the source (SEM writes it on import), so a
     // reopen is self-contained; fall back to the Data tree for legacy sessions.
     std::string src = (fs::path(dir) / (stem + ".csv3d")).string();
@@ -255,15 +262,31 @@ inline void Draw(Scene& scene, LuaUpdaterEditor& lua, float topInset) {
             ImGui::TextDisabled("Sessions");
             ImGui::Separator();
             const auto& dirs = groups[selStem].dirs;
+            const std::string legacy = SemSessionNS::SemSession::LegacySessionRoot();
             for (int i = 0; i < (int)dirs.size(); ++i) {
-                if (ImGui::Selectable(BaseName(dirs[i]).c_str(), sessSel.count(i) > 0,
+                const bool usable = i < (int)groups[selStem].usable.size() && groups[selStem].usable[i];
+                const bool old = !legacy.empty() && dirs[i].rfind(legacy, 0) == 0;
+                std::string label = BaseName(dirs[i]);
+                if (!usable) label += "  (files deleted)";
+                else if (old) label += "  (in %TEMP%)";
+                if (!usable) ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+                if (ImGui::Selectable((label + "##" + std::to_string(i)).c_str(), sessSel.count(i) > 0,
                                       ImGuiSelectableFlags_AllowDoubleClick)) {
                     if (ImGui::IsMouseDoubleClicked(0)) {
-                        if (guardOpen()) { OpenSemSession(scene, groups[selStem].stem, dirs[i]); page = 0; }
+                        if (usable && guardOpen()) { OpenSemSession(scene, groups[selStem].stem, dirs[i]); page = 0; }
                     } else {
                         SelectClick(sessSel, sessLast, i);
                     }
                 }
+                if (!usable) ImGui::PopStyleColor();
+                if (!usable)
+                    ImGui::SetItemTooltip("Its files are gone - Windows' temporary-file cleanup empties\n"
+                                          "%%TEMP%%, where older builds kept their sessions. Only the empty\n"
+                                          "folders are left; Delete removes them.");
+                else if (old)
+                    ImGui::SetItemTooltip("Kept under %%TEMP%%\\sem by an older build: Windows' temporary-file\n"
+                                          "cleanup may delete it. New sessions are kept under\n"
+                                          "%%LOCALAPPDATA%%\\SEM\\sessions.");
             }
             ImGui::EndChild();
         }

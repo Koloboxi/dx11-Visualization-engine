@@ -174,6 +174,7 @@ void SemWorkspace::Sync(Scene& scene) {
         // A body setup has no worker of its own; this polls its two halves and
         // hands the turn from the first to the second.
         s->PollBodyStage(scene);
+        s->RefreshPendingDomain(scene);
     }
     Active().Activate();
 }

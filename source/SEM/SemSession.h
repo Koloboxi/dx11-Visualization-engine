@@ -28,6 +28,20 @@ struct Stats {
     int  boundary = 0;
 };
 
+// The surface a body was parted along, as the viewer needs it (to tint each half's
+// skirt): the plane, or a broken parting line - a profile in a sketch plane swept
+// along that plane's normal. Heights are taken along the + half's draw direction.
+struct PartingShape {
+    bool     profile = false;
+    XMFLOAT4 plane   = XMFLOAT4(0.0f, 0.0f, 1.0f, 0.0f);   // unit normal toward the + half, d
+    XMFLOAT3 along   = XMFLOAT3(1.0f, 0.0f, 0.0f);         // the profile's own axis
+    XMFLOAT3 up      = XMFLOAT3(0.0f, 0.0f, 1.0f);         // the draw direction
+    std::vector<XMFLOAT2> pts;                              // (along, up), along increasing
+    // Height of p above the surface (> 0 on the + side). Past its ends the profile
+    // carries on level, as the core takes it.
+    float Height(const XMFLOAT3& p) const;
+};
+
 class SemSession {
 public:
     // 2 = contour pipeline (SEM_LoadCSV3D, SEM_*); 3 = triangle-surface pipeline
@@ -129,9 +143,18 @@ public:
     // along x, y, z, and the grid step in world units (0 = auto).
     XMFLOAT3 gridBoxScale = { 1.5f, 1.5f, 1.5f };
     float    gridStep     = 0.0f;
+    struct IsoRemeshSettings {
+        bool rmAdaptive = false;
+        float rmTargetMult = 1.0f, rmMinMult = 0.3f, rmMaxDevMult = 0.05f;
+        float rmFeatureDeg = 40.0f;
+        int rmIters = 3, rmAdaptiveIters = 8;
+    } isoRemesh;
+    float DisplayGridStep();
+    float gridStepPreview = 0.0f;
     // Thermal BC levels (SEM_SetThermalBC3D): the field runs from 0 on bcFrom to 1
     // on bcTo. Level 0 is the source, k > 0 the k-th outer offset, k < 0 the k-th
-    // inner one; SEM_LEVEL_OUTERMOST / INNERMOST follow the extreme levels.
+    // inner one; SEM_LEVEL_OUTERMOST / INNERMOST follow the extreme levels and
+    // SEM_LEVEL_BOX is the faces of the grid box.
     int   bcFrom = 0;
     int   bcTo   = SEM_LEVEL_OUTERMOST;
     // Shift the field back along its gradient before the isosurface is taken
@@ -201,6 +224,8 @@ public:
     bool  skirtEnabled = true;
     float skirtDepth   = 0.0f;
     float skirtGrowth  = 0.3f;
+    int skirtMethod = SEM_SKIRT_COLUMNS;
+    bool skirtThermal = false;
 
     // The preform (stage after the isosurface): the two halves glued back into one
     // closed body on their own geometry - where they cross when they run on past the
@@ -228,6 +253,50 @@ public:
     bool UsesPartingPlane() const {
         return IsBody() || sessionMode == SESSION_TAPER || sessionMode == SESSION_REMESH;
     }
+
+    // ---- What a body is parted along -------------------------------------
+    // The plane (the rectangle above), or a broken parting line: a polyline sketched
+    // in a side view - the sketch plane - and swept straight across it along that
+    // plane's normal (SEM_SetBodyPartingPolyline3D). Up in the sketch is the draw
+    // direction of the + half, so the line must run one way across the view (never
+    // straight up, never back); past its ends it carries on level.
+    enum PartingKind { PARTING_PLANE = 0, PARTING_POLYLINE = 1 };
+    int partingKind = PARTING_PLANE;
+    // 0 = XZ (front: along X, up Z, swept along Y), 1 = YZ (side: along Y, up Z, swept
+    // along X), 2 = XY (top: along X, up Y, swept along Z).
+    enum SketchPlane { SKETCH_XZ = 0, SKETCH_YZ = 1, SKETCH_XY = 2 };
+    int sketchPlane = SKETCH_XZ;
+    // The polyline, in the sketch plane's (along, up) coordinates.
+    std::vector<XMFLOAT2> sketchPts;
+
+    // The world axes of a sketch plane: along (screen right), up (screen up, the
+    // draw direction) and the normal the line is swept along.
+    static void SketchAxes(int plane, XMFLOAT3& along, XMFLOAT3& up, XMFLOAT3& normal);
+    // A sketch point in the world: on the sketch plane, through the source's middle.
+    XMFLOAT3 SketchToWorld(const XMFLOAT2& q) const;
+    XMFLOAT2 WorldToSketch(const XMFLOAT3& p) const;
+    // Whether the polyline can part the body; `why` says why not.
+    bool SketchValid(std::string* why = nullptr) const;
+    // Drawing it with the mouse: Begin turns the camera to look straight at the
+    // sketch plane (up = the draw direction) and starts a new line; points come in
+    // through AddSketchPoint (in order, one way across the view); End keeps the line
+    // or puts the previous one back.
+    bool SketchDrawing() const { return m_sketchDrawing; }
+    void BeginSketch(Scene& scene);
+    void EndSketch(Scene& scene, bool keep);
+    bool AddSketchPoint(Scene& scene, const XMFLOAT2& q, std::string* why = nullptr);
+    void UndoSketchPoint(Scene& scene);
+    void ClearSketch(Scene& scene);
+    void SetSketchPlane(Scene& scene, int plane);
+    // Turn the camera to look straight at the sketch plane.
+    void LookAtSketchPlane(Scene& scene) const;
+    // The line and the surface it sweeps, drawn in the scene (rebuilt from the
+    // points; called whenever they change). Dropped in the plane mode.
+    void RefreshSketchPrims(Scene& scene);
+    void SetPartingKind(Scene& scene, int kind);
+    // Whether the current split was made along a broken line (the halves then
+    // always carry a skirt, and the split-plane overlays do not apply).
+    bool SplitAlongProfile() const { return m_splitProfile; }
 
     // A body session additionally picks WHICH of its two jobs the window drives:
     // the split-and-stages chain, or a plain remesh of the closed surface. It is
@@ -354,12 +423,20 @@ public:
     // SEM afterwards. Called when the setup is closed.
     void Release();
 
-    // Session folders group pipeline products per source under %TEMP%/sem/, one
-    // folder <stem>_<N> per state. Static so the import UI can enumerate/allocate
-    // sessions before a source is bound.
+    // Session folders group pipeline products per source, one folder <stem>_<N> per
+    // state, under %LOCALAPPDATA%/SEM/sessions. Sessions of older builds live under
+    // %TEMP%/sem, which Windows' temporary-file cleanup empties (it deletes the files
+    // and leaves the folders), so new ones go to the first root; both are listed.
+    // Static so the import UI can enumerate/allocate sessions before a source is
+    // bound.
     static std::string SessionRoot();
+    static std::string LegacySessionRoot();
+    static std::vector<std::string> SessionRoots();
     static std::vector<std::string> ListSessions(const std::string& srcPath);
     static std::string NewSessionDir(const std::string& srcPath);
+    // Whether a session folder still holds a session to reopen (a 3D manifest, or
+    // the stage files of a 2D one) - false for one whose files were deleted.
+    static bool SessionFolderUsable(const std::string& dir);
 
     void LoadSessionStages(Scene& scene);
 
@@ -480,6 +557,12 @@ public:
     double ThermalTimeMs() const { return m_thermalMs; }
     double IsoTimeMs()     const { return m_isoMs; }
     double TotalTimeMs()   const;
+    double StageTimeMs(Stage stage) const;
+    bool StageInUse(Stage stage) const;
+    double SplitTimeMs() const { return m_splitMs; }
+    double TaperTimeMs() const { return m_taperMs; }
+    double PreformTimeMs() const { return m_preformMs; }
+    bool TaperInUse() const { return m_taperCurrent; }
 
     void DropSrcRev(Scene& scene);
     void DropIsoRev(Scene& scene);
@@ -570,6 +653,7 @@ public:
     // The same for any surface: next to the source, else the session folder.
     std::string SaveNextToSource(const char* tag, const CSV3DLoader::CSV3DData& data);
     void PollAsync(Scene& scene);
+    void RefreshPendingDomain(Scene& scene);
     void CancelAsync();
     bool AsyncCancelRequested() const;
 
@@ -602,6 +686,9 @@ private:
     std::vector<float>              m_meshT;
     std::vector<XMUINT4>            m_meshTets;
     std::vector<unsigned long long> m_meshEdges;
+    bool m_meshDisplayDirty = false;
+    bool m_meshDrawBC = true;
+    bool m_freeNodesVisible = true;
     Primitive*                      m_gridBox = nullptr;
     bool        m_thermalSolved = false;
     Stats m_srcStats, m_offStats, m_meshStats;
@@ -629,6 +716,8 @@ private:
     double m_meshMs    = -1.0;
     double m_thermalMs = -1.0;
     double m_isoMs     = -1.0;
+    double m_splitMs = -1.0, m_taperMs = -1.0, m_preformMs = -1.0;
+    bool m_taperCurrent = false;
 
     // Per-stage staleness, indexed by Stage. Bind resets all to true.
     bool        m_dirty[5] = { true, true, true, true, true };
@@ -650,8 +739,32 @@ private:
     // the positive side), and whether its skirt is tinted apart.
     bool           m_halfStyled = false;
     int            m_halfSide   = 0;
-    XMFLOAT4       m_halfPlane  = XMFLOAT4(0.0f, 0.0f, 1.0f, 0.0f);
+    PartingShape   m_halfShape;
     bool           m_halfSkirt  = false;
+    // The surface the current split was made along (body), and whether it was a
+    // broken line.
+    PartingShape   m_splitShape;
+    bool           m_splitProfile = false;
+    // The polyline tool: drawing, the line it replaces (put back on cancel), and the
+    // scene group holding the drawn line and its swept surface.
+    bool           m_sketchDrawing = false;
+    std::vector<XMFLOAT2> m_sketchBackup;
+    SceneNode*     m_sketchGroup = nullptr;
+    void DropSketchPrims(Scene& scene);
+    // The source's bounding box, read once (the sketch needs it every frame).
+    mutable bool     m_boxValid = false;
+    mutable XMFLOAT3 m_boxLo = XMFLOAT3(0, 0, 0), m_boxHi = XMFLOAT3(0, 0, 0);
+    bool SourceBox(XMFLOAT3& lo, XMFLOAT3& hi) const;
+    // The parting surface as it stands in the UI: the plane rectangle, or the sketch.
+    PartingShape CurrentPartingShape() const;
+    // After SEM_LoadSession3D: the scene side of a reopened session - the stages the
+    // core holds (offsets, domain, field, isosurface), or for a body its parting
+    // surface, settings, halves (each with its own stages) and preform.
+    void RestoreStagesFromCore(Scene& scene);
+    // Returns a note for the status line ("" when there is nothing to add).
+    std::string RestoreBodyFromCore(Scene& scene);
+    // Show a preform the core holds (no file is written).
+    void ShowPreformData(Scene& scene, const CSV3DLoader::CSV3DData& data);
     ClipPlaneNode* m_splitNode  = nullptr;   // the parting plane's visual rectangle
     SceneNode*     m_splitGroup = nullptr;
     Primitive*     m_halfPrim[2] = { nullptr, nullptr };   // 0 = positive side
@@ -669,7 +782,7 @@ private:
     // the far side of the parting plane are tinted lighter, so the extension reads
     // apart from the half itself.
     Primitive* AddHalfSurface(Scene& scene, CSV3DLoader::CSV3DData data, const std::string& name,
-                              SceneNode* parent, int side, const XMFLOAT4& plane, bool skirt);
+                              SceneNode* parent, int side, const PartingShape& shape, bool skirt);
     // Re-read both halves from their contexts (what their pipelines actually run
     // on) and rebuild their primitives and stage state.
     void RefreshHalfPrims(Scene& scene);
@@ -738,6 +851,7 @@ private:
         int                 tpRemeshIters = 2;
         // The body taper's skirt, as SEM_ApplyBodyTaperSkirt3D takes it.
         double              skDepth = 0.0, skGrowth = 0.0;
+        int                 skMode = SEM_SKIRT_COLUMNS;
         double              rmTargetMult = 1.0;
         int                 rmIters = 3;
         bool                rmAdaptive = false;
@@ -765,6 +879,7 @@ private:
         int                 innerNum = 0;
         SEM_Vec3            gridBoxScale = { 1.5, 1.5, 1.5 };
         double              gridStep = 0.0;
+        SEM_IsoRemeshParams3D isoRemesh{};
         int                 bcFrom = 0, bcTo = SEM_LEVEL_OUTERMOST;
         bool                isoShift = true;
 
@@ -773,6 +888,7 @@ private:
         std::string         expOffsets, expMesh, expIso, expIsoRemesh;
         // Worker outputs (read by the main thread after join()).
         std::string         offsetsPath, meshPath, isoPath, error;
+        std::vector<unsigned long long> meshEdges;
         // Isosurface geometry copied off the SEM cache on the worker thread (so the
         // main thread neither re-reads a file nor races the cache lifetime).
         CSV3DLoader::CSV3DData isoDisplayData;
@@ -853,7 +969,9 @@ private:
     // mesh (and its edges when `topology` is set); RebuildMeshDisplay redraws it in
     // the current mode (bcView, or the BCs while the field is stale), keeping the
     // primitive's visibility; RebuildGridBox redraws the grid box.
-    void TakeMeshData(const CSV3DLoader::CSV3DData& data, bool topology);
+    void TakeMeshData(const SEM_MeshView& mesh, std::vector<unsigned long long> edges);
+    void TakeMeshTemperatures(const SEM_MeshView& mesh);
+    void CreateMeshDisplay(Scene& scene, bool show);
     void RebuildMeshDisplay(Scene& scene);
     void RebuildGridBox(Scene& scene);
 

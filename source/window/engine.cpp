@@ -56,7 +56,8 @@ void Engine::Update()
 		if (me.GetType() == MouseEvent::LPress)
 			this->gfx.scene.idPassNeeded = true;
 
-		if (me.GetType() == MouseEvent::EventType::RAW_MOVE && this->mouse.IsRightDown()) {
+		if (me.GetType() == MouseEvent::EventType::RAW_MOVE && this->mouse.IsRightDown() &&
+			!this->gfx.scene.sceneToolActive) {
 			XMMATRIX rotMatrix = XMMatrixRotationAxis(this->gfx.scene.camera.GetUpwardVector(), -0.003f * me.GetPosX());
 			rotMatrix *= XMMatrixRotationAxis(this->gfx.scene.camera.GetRightVector(), 0.003f * me.GetPosY());
 

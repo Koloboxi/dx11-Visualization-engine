@@ -80,17 +80,6 @@ void SemSession::RecomputeUpToAsync(Scene& scene, Stage to, bool silent) {
 
     bool ran = false;
 
-    // Subdivide runs synchronously: it is quick, reports no progress and only
-    // updates the SEM cache (no scene work). It must precede the offsets.
-    if (m_dirty[STAGE_SUBDIVIDE]) {
-        if (!ApplySubdivide(scene, silent)) return;
-        m_dirty[STAGE_SUBDIVIDE] = false;
-        ran = true;
-        // The cached source geometry changed; recreate the displayed source so it
-        // matches what the offsets/mesh will be built from.
-        RebuildSourcePrim(scene);
-    }
-
     // Plan the heavy stages exactly as RecomputeUpTo would execute them. The
     // thermal solve and the isosurface extraction are now distinct stages: each
     // is a separate progress-reporting SEM call run on the worker.
@@ -172,6 +161,9 @@ void SemSession::RecomputeUpToAsync(Scene& scene, Stage to, bool silent) {
     m_job.innerGrading  = (double)innerGrading;
     m_job.gridBoxScale  = SEM_Vec3{ gridBoxScale.x, gridBoxScale.y, gridBoxScale.z };
     m_job.gridStep      = (double)gridStep;
+    const auto& rm = isoRemesh;
+    m_job.isoRemesh = {rm.rmAdaptive ? rm.rmAdaptiveIters : rm.rmIters, rm.rmAdaptive,
+                       rm.rmTargetMult, rm.rmMinMult, rm.rmMaxDevMult, rm.rmFeatureDeg};
     m_job.bcFrom        = bcFrom;
     m_job.bcTo          = bcTo;
     m_job.isoShift      = isoShift;
@@ -352,19 +344,30 @@ void SemSession::PollAsync(Scene& scene) {
     SEM_ClearCancel();
 
     const bool cancelled = m_job.cancelled.load();
+    gridStepPreview = 0.0f;
     // A genuine failure aborts; a cancellation still applies whatever stages
     // finished before the stop (their paths are set, the skipped ones are empty).
     if (!m_job.ok.load() && !cancelled) {
+        if (m_job.runOffsets) MarkStageDirty(STAGE_OFFSETS);
+        else if (m_job.runMesh) MarkStageDirty(STAGE_MESH);
+        else if (m_job.runThermal) MarkStageDirty(STAGE_THERMAL);
+        else if (m_job.runIso) MarkStageDirty(STAGE_ISOSURFACE);
         Report(scene, false, m_job.error.empty() ? "3D pipeline failed." : m_job.error);
         return;
     }
 
+    // A body half hidden altogether - the half and everything it carries (domain,
+    // grid box, isosurface) - keeps everything this run brings hidden as well, so a
+    // stage run on both halves does not bring back the one put away.
+    const bool keepHidden = m_isHalf && Alive(scene, m_srcPrim) && SubtreeHidden(m_srcPrim);
+
     // Record the measured durations of whichever stages this run computed; stages
     // that did not run keep their previous time so the total accumulates.
-    if (m_job.offsetsMs >= 0.0) m_offsetsMs = m_job.offsetsMs;
-    if (m_job.meshMs    >= 0.0) m_meshMs    = m_job.meshMs;
+    if (!m_job.offsetsPath.empty()) m_offsetsMs = m_job.offsetsMs;
+    if (!m_job.meshPath.empty()) m_meshMs = m_job.meshMs;
     if (m_job.thermalMs >= 0.0) m_thermalMs = m_job.thermalMs;
-    if (m_job.isoMs     >= 0.0) m_isoMs     = m_job.isoMs;
+    if (!m_job.isoPath.empty() || (!cancelled && (m_job.runStandalone || m_job.runTaper || m_job.runRemesh)))
+        m_isoMs = m_job.isoMs;
 
     // Did the thermal solve actually complete this run? (Planned but skipped by a
     // cancellation leaves thermalMs < 0, so don't trust runThermal alone.)
@@ -381,16 +384,14 @@ void SemSession::PollAsync(Scene& scene) {
     // in - with the solved T when this run also solved. It is drawn by its BCs until
     // the field is solved for them (RebuildMeshDisplay), with its grid box.
     if (!m_job.meshPath.empty()) {
-        CSV3DLoader::CSV3DData data;
-        if (FetchMeshData(scene, true, data)) {
+        SEM_MeshView mesh{};
+        if (SEM_GetMesh3D(&mesh) == 0) {
             DropMesh(scene);
-            TakeMeshData(data, true);
+            TakeMeshData(mesh, std::move(m_job.meshEdges));
             m_meshPath = m_job.meshPath;
-            m_meshStats = ComputeStatsData(data);
-            if (solvedThisRun) m_thermalSolved = true;
-            RebuildMeshDisplay(scene);
+            m_thermalSolved = solvedThisRun;
+            CreateMeshDisplay(scene, m_job.meshVisible && !keepHidden);
             RebuildGridBox(scene);
-            if (m_mesh && Alive(scene, m_mesh)) scene.SetNodeVisibleCascade(m_mesh, m_job.meshVisible);
         }
     }
     else if (solvedThisRun) {
@@ -399,8 +400,9 @@ void SemSession::PollAsync(Scene& scene) {
         // this run's visibility intent (shown when Thermal was the pressed stage,
         // hidden when the isosurface was).
         m_thermalSolved = true;
+        if (Alive(scene, m_mesh) && !keepHidden)
+            scene.SetNodeVisibleCascade(m_mesh, m_job.meshVisible);
         ReloadMeshColored(scene);
-        if (m_mesh && Alive(scene, m_mesh)) scene.SetNodeVisibleCascade(m_mesh, m_job.meshVisible);
     }
 
     // Isosurface (SEM_GetSourceIsosurface3D), or a standalone result.
@@ -468,6 +470,7 @@ void SemSession::PollAsync(Scene& scene) {
     // The offset/isosurface/remesh clip-change logs are regenerated by a pipeline
     // run; rebuild whichever category overlays are shown.
     RefreshClipChanges(scene);
+    if (keepHidden && Alive(scene, m_srcPrim)) scene.SetNodeVisibleCascade(m_srcPrim, false);
     scene.UpdateLight();
     if (cancelled) {
         snprintf(status, sizeof(status), "Cancelled.");
@@ -579,6 +582,10 @@ void SemSession::PipelineWorkerBody() {
                                     "Try a larger volume or a looser quality bound.");
         if (rc == SEM_RC_CANCELLED) return stageCancelled(m_job.meshMs);
         if (rc != 0) return Fail("SEM_BuildMesh3D failed (" + std::to_string(rc) + ")");
+        SEM_MeshView mesh{};
+        if (SEM_GetMesh3D(&mesh) != 0) return Fail("Could not read the domain topology.");
+        m_job.meshEdges = CollectTetEdges(mesh);
+        m_job.meshMs = t.GetMillisecondsElapsed();
         m_job.meshPath = m_job.expMesh;
         ++idx;
     }
@@ -609,7 +616,7 @@ void SemSession::PipelineWorkerBody() {
         if (v > 1.0) v = 1.0;
         Timer t; t.Restart();
         SEM_SetIsoShift3D(m_job.isoShift ? 1 : 0);
-        int rc = SafeExtractIsosurface3D(v);
+        int rc = SafeExtractIsosurface3D(v, &m_job.isoRemesh);
         m_job.isoMs = t.GetMillisecondsElapsed();
         if (rc == -100) return Fail("Isosurface extraction crashed (access violation caught).");
         if (rc == SEM_RC_CANCELLED) return stageCancelled(m_job.isoMs);
@@ -713,8 +720,8 @@ void SemSession::PipelineWorkerBody() {
         m_job.stageKind.store(7);
         m_job.progressStage.store(idx);
         Timer t; t.Restart();
-        const int rc = SafeApplyBodyTaperSkirt3D(m_job.tpAngle, m_job.tpRemeshIters,
-                                                 m_job.skDepth, m_job.skGrowth);
+        const int rc = SafeApplyBodyTaperSkirtMode3D(m_job.tpAngle, m_job.tpRemeshIters,
+                                                     m_job.skDepth, m_job.skGrowth, m_job.skMode);
         m_job.taperMs = t.GetMillisecondsElapsed();
         if (rc == -100) return Fail("Body taper crashed (access violation caught).");
         if (rc == SEM_RC_CANCELLED) return stageCancelled(m_job.taperMs);
@@ -801,6 +808,20 @@ bool SemSession::IsoShiftLevels(double& from_dist, double& to_dist) {
     const bool ok = (SEM_GetIsoShiftLevels3D(&from_dist, &to_dist) == 0);
     Activate();
     return ok && from_dist != to_dist;
+}
+
+float SemSession::DisplayGridStep() {
+    if (gridStep > 0.0f) return gridStep;
+    if (gridStepPreview > 0.0f || AsyncRunning() || dim != 3 || !HasSource())
+        return gridStepPreview;
+    SemSession* s = IsBody() ? m_half[0] : this;
+    if (!s) return 0.0f;
+    s->Activate();
+    double step = 0.0;
+    const int rc = SEM_PreviewGridStep3D({gridBoxScale.x, gridBoxScale.y, gridBoxScale.z}, &step);
+    Activate();
+    if (rc == 0 && step > 0.0) gridStepPreview = (float)step;
+    return gridStepPreview;
 }
 
 bool SemSession::GridInfo(XMFLOAT3& lo, XMFLOAT3& hi, double& step) {

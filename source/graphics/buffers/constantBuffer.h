@@ -15,7 +15,9 @@ struct CB_GS_geometryshader
 {
 	float AspectRatio;
 	float Thickness = 0.001f;
-	float pad[2]    = { 0, 0 };
+	// Render target size in pixels: the dot shader sizes its discs in pixels.
+	float ViewportW = 1.0f;
+	float ViewportH = 1.0f;
 };
 
 // Global section / clip-plane state, bound once per frame on VS slot b1.

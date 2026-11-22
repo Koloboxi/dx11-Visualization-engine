@@ -11,6 +11,7 @@
     <FxCompile Include="source\graphics\shaders\vertexshader.hlsl" />
     <FxCompile Include="source\graphics\shaders\geometryshaderthickness.hlsl" />
     <FxCompile Include="source\graphics\shaders\geometryshaderpoints.hlsl" />
+    <FxCompile Include="source\graphics\shaders\geometryshaderdots.hlsl" />
     <FxCompile Include="source\graphics\shaders\pixelshaderoutline.hlsl" />
     <FxCompile Include="source\graphics\shaders\vertexshaderFSQuad.hlsl" />
     <FxCompile Include="source\graphics\shaders\pixelshaderoutlinemerge.hlsl" />

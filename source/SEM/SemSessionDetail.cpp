@@ -21,6 +21,25 @@ std::string Stem(const std::string& path) {
     return (dot != std::string::npos) ? file.substr(0, dot) : file;
 }
 
+std::vector<unsigned long long> CollectTetEdges(const SEM_MeshView& mesh) {
+    std::vector<unsigned long long> edges;
+    edges.reserve((size_t)mesh.num_tets * 6);
+    for (int t = 0; t < mesh.num_tets; ++t) {
+        const int* v = mesh.tets + 4 * (size_t)t;
+        for (int i = 0; i < 4; ++i)
+            for (int j = i + 1; j < 4; ++j) {
+                int a = v[i], b = v[j];
+                if (a == b || a < 0 || b < 0 || a >= mesh.num_nodes || b >= mesh.num_nodes) continue;
+                if (a > b) std::swap(a, b);
+                edges.push_back(((unsigned long long)a << 32) | (unsigned)b);
+            }
+    }
+    std::sort(edges.begin(), edges.end());
+    // Keep only the unique entries and their actual storage in the session.
+    const auto end = std::unique(edges.begin(), edges.end());
+    return std::vector<unsigned long long>(edges.begin(), end);
+}
+
 Stats ComputeStatsData(const CSV3DLoader::CSV3DData& d) {
     Stats s;
     if (d.nodes.empty()) return s;
@@ -227,6 +246,13 @@ std::vector<char> NonManifoldTris(const CSV3DLoader::CSV3DData& d) {
     return bad;
 }
 
+bool SubtreeHidden(const SceneNode* n) {
+    if (!n || n->visible) return false;
+    for (const SceneNode* ch : n->children)
+        if (!SubtreeHidden(ch)) return false;
+    return true;
+}
+
 bool SourceBBox(const std::string& path, XMFLOAT3& lo, XMFLOAT3& hi) {
     CSV3DLoader::CSV3DData d;
     if (!CSV3DLoader::Load(path, d) || d.nodes.empty()) return false;
@@ -387,17 +413,17 @@ int SafeExtractIsoline(double value) {
     __try { return SEM_ExtractIsoline(value); }
     __except (EXCEPTION_EXECUTE_HANDLER) { return -100; }
 }
-int SafeExtractIsosurface3D(double value) {
-    __try { return SEM_ExtractIsosurface3D(value); }
+int SafeExtractIsosurface3D(double value, const SEM_IsoRemeshParams3D* params) {
+    __try { return SEM_ExtractIsosurfaceRemesh3D(value, params); }
     __except (EXCEPTION_EXECUTE_HANDLER) { return -100; }
 }
 int SafeApplyBodyTaper3D(double taper_angle_deg, int remesh_iters) {
     __try { return SEM_ApplyBodyTaper3D(taper_angle_deg, remesh_iters); }
     __except (EXCEPTION_EXECUTE_HANDLER) { return -100; }
 }
-int SafeApplyBodyTaperSkirt3D(double taper_angle_deg, int remesh_iters,
-                              double skirt_depth, double skirt_growth) {
-    __try { return SEM_ApplyBodyTaperSkirt3D(taper_angle_deg, remesh_iters, skirt_depth, skirt_growth); }
+int SafeApplyBodyTaperSkirtMode3D(double taper_angle_deg, int remesh_iters,
+                                  double skirt_depth, double skirt_growth, int mode) {
+    __try { return SEM_ApplyBodyTaperSkirtMode3D(taper_angle_deg, remesh_iters, skirt_depth, skirt_growth, mode); }
     __except (EXCEPTION_EXECUTE_HANDLER) { return -100; }
 }
 int SafeBuildBodyPreform3D(int source) {

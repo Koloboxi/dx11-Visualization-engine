@@ -25,6 +25,9 @@ public:
 	Primitive(ID3D11Device* device, ID3D11DeviceContext* deviceContext);
 	HRESULT SetVertexIndexBuffers(Vertex* vertexData, UINT vertexNumVertices, DWORD* indexData, UINT indexNumVertices, UCHAR dim);
 
+    bool SetIndexedLines(std::vector<Vertex>&& vertices, std::vector<DWORD>&& indices);
+    bool UpdateLineTemperatures(const std::vector<float>& temperature, const XMFLOAT4& low, const XMFLOAT4& high);
+
 	bool IsPrimitive() const override { return true; }
 
 	UINT id{};
@@ -37,6 +40,11 @@ public:
 	// Index into Scene::lineStyles selecting the thickness used for this primitive
 	// when it is a thick line (dim==1). Ignored for surfaces/points. 0 = "Default".
 	int lineStyle = 0;
+
+	// How a point primitive (dim==0) is drawn: POINTSTYLE_RING, a ring marker sized
+	// with the view, or POINTSTYLE_DOT, a small filled disc of a few pixels.
+	enum PointStyle { POINTSTYLE_RING = 0, POINTSTYLE_DOT = 1 };
+	int pointStyle = POINTSTYLE_RING;
 
 	std::string semSourcePath;
 	// SEM pipeline "session" folder this source serializes into

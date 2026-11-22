@@ -17,6 +17,7 @@ HRESULT Primitive::SetVertexIndexBuffers(Vertex* vertexData, UINT vertexNumVerti
 {
 	HRESULT hr;
 	hr = this->vertexBuffer.Initialize(this->device, vertexData, vertexNumVertices);
+	if (FAILED(hr)) return hr;
 	if (indexData) {
 		hr = this->indexBuffer.Initialize(this->device, indexData, indexNumVertices);
 	}
@@ -25,8 +26,35 @@ HRESULT Primitive::SetVertexIndexBuffers(Vertex* vertexData, UINT vertexNumVerti
 	return hr;
 }
 
+bool Primitive::SetIndexedLines(std::vector<Vertex>&& vertices, std::vector<DWORD>&& indices)
+{
+    dimension = 1;
+    SetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_LINELIST);
+    if (!vertices.empty() && !indices.empty() &&
+        SUCCEEDED(SetVertexIndexBuffers(vertices.data(), (UINT)vertices.size(),
+                                        indices.data(), (UINT)indices.size(), 1))) return true;
+
+    vertexBuffer.Clear();
+    indexBuffer.Clear();
+    return vertices.empty() || indices.empty();
+}
+
+bool Primitive::UpdateLineTemperatures(const std::vector<float>& temperature,
+                                        const XMFLOAT4& low, const XMFLOAT4& high)
+{
+    if (dimension != 1 || temperature.size() != GetVertexCount()) return false;
+    return SUCCEEDED(vertexBuffer.EditVertices(deviceContext, [&](auto& vertices) {
+        for (size_t i = 0; i < vertices.size(); ++i) {
+            const float t = std::clamp(temperature[i], 0.0f, 1.0f);
+            vertices[i].color = {low.x + (high.x - low.x) * t, low.y + (high.y - low.y) * t,
+                                 low.z + (high.z - low.z) * t, low.w + (high.w - low.w) * t};
+        }
+    }));
+}
+
 void Primitive::Draw(const XMMATRIX& viewMatrix, const XMMATRIX& projectionMatrix)
 {
+    if (!vertexBuffer.GetBufferSize()) return;
 	this->cb_vs_vertexshader.data.view = XMMatrixTranspose(viewMatrix);
 	this->cb_vs_vertexshader.data.world = XMMatrixTranspose(this->worldMatrix);
 	this->cb_vs_vertexshader.data.projection = XMMatrixTranspose(projectionMatrix);
@@ -43,9 +71,7 @@ void Primitive::Draw(const XMMATRIX& viewMatrix, const XMMATRIX& projectionMatri
 	UINT offset = 0;
 	this->deviceContext->IASetPrimitiveTopology(this->primitiveTopology);
 
-	const bool isLine  = (this->primitiveTopology == D3D10_PRIMITIVE_TOPOLOGY_LINESTRIP);
-	const bool isPoint = (this->primitiveTopology == D3D10_PRIMITIVE_TOPOLOGY_POINTLIST);
-	const bool isMesh  = !isLine && !isPoint;
+    const bool isMesh = dimension == 2;
 
 	VertexBuffer<Vertex>* activeBuffer =
 		(isMesh && !this->smoothShade && this->vertexBufferFaces.GetBufferSize() > 0)
@@ -54,7 +80,7 @@ void Primitive::Draw(const XMMATRIX& viewMatrix, const XMMATRIX& projectionMatri
 
 	this->deviceContext->IASetVertexBuffers(0, 1, activeBuffer->GetAddressOf(), activeBuffer->GetStridePtr(), &offset);
 
-	if (isMesh && this->smoothShade && this->indexBuffer.GetBufferSize() > 0) {
+	if ((!isMesh || this->smoothShade) && this->indexBuffer.GetBufferSize() > 0) {
 		this->deviceContext->IASetIndexBuffer(this->indexBuffer.Get(), DXGI_FORMAT::DXGI_FORMAT_R32_UINT, 0);
 		this->deviceContext->DrawIndexed(this->indexBuffer.GetBufferSize(), 0, 0);
 	}
@@ -229,7 +255,7 @@ void Primitive::SetLighting(const float ambient, const float intensity, const fl
 void Primitive::SetSmoothShading(const bool sh)
 {
 	this->smoothShade = sh;
-	if (this->smoothShade) return;
+	if (this->smoothShade || dimension != 2) return;
 	if (this->vertexBufferFaces.GetBufferSize()) return;
 
 	if (!this->indexBuffer.GetBufferSize()) return;

@@ -288,10 +288,12 @@ SEM_API int SEM_ComputeInnerOffsets3D(double first_gap, int num_offsets, double 
 SEM_API int SEM_GetOffsetLevels3D(int* num_inner, int* num_outer, double* dists, int max);
 
 // Stand-ins for "the outermost" and "the deepest" level in SEM_SetThermalBC3D,
-// resolved against the levels at each solve.
+// resolved against the levels at each solve, and for the box: the faces of the
+// SEM_TET_GRID box, a level beyond every offset (see SEM_SolveThermal3D).
 enum SEM_LevelSentinel {
     SEM_LEVEL_OUTERMOST = 1000000,
-    SEM_LEVEL_INNERMOST = -1000000
+    SEM_LEVEL_INNERMOST = -1000000,
+    SEM_LEVEL_BOX       = 2000000
 };
 
 // Tetrahedralization variant for SEM_BuildMesh3D:
@@ -326,7 +328,7 @@ enum SEM_LevelSentinel {
 //                     the domain ends on the prism its normals sweep from its free
 //                     edges. No offset shell is meshed as a surface - the levels
 //                     exist as nodes only. The thermal BCs are then chosen among
-//                     the levels (SEM_SetThermalBC3D).
+//                     the levels and the faces of the box (SEM_SetThermalBC3D).
 enum SEM_TetMethod {
     SEM_TET_BAND    = 0,
     SEM_TET_LAYERED = 1,
@@ -360,7 +362,11 @@ SEM_API int SEM_BuildMesh3D(const SEM_MeshParams3D* params);
 //     holds T = 0, every node on `to` and past it T = 1, by the node's signed
 //     distance to the source - the levels are the regions the offsets bound, not
 //     the offsets' own (possibly folded) points. The box faces, clip planes and
-//     the ends of an open source's prism are insulated.
+//     the ends of an open source's prism are insulated - unless SEM_LEVEL_BOX is
+//     one of the levels: then the nodes on the faces of the box hold that level's
+//     value, the box lying beyond every offset level. A face that a clip or domain
+//     plane square to its axis lies on (the box was clamped at the plane) or cuts
+//     off is no box face: the domain ends on that plane, which stays insulated.
 //   SEM_TET_BAND / LAYERED: the source nodes hold T = 0 and the outermost-offset
 //     nodes T = 1, whatever the BC levels; max_inward in [0,1] drops outermost
 //     nodes lying inward of the true outer extent by more than that fraction
@@ -371,9 +377,10 @@ SEM_API int SEM_BuildMesh3D(const SEM_MeshParams3D* params);
 SEM_API int SEM_SolveThermal3D(float max_inward);
 
 // Choose the BC levels (see SEM_GetOffsetLevels3D; SEM_LEVEL_OUTERMOST /
-// SEM_LEVEL_INNERMOST follow the extreme levels). Out-of-range levels are clamped
-// at the solve. Takes effect at the next SEM_SolveThermal3D. Default: from the
-// source (0) to the outermost offset. Persisted in the session.
+// SEM_LEVEL_INNERMOST follow the extreme levels, SEM_LEVEL_BOX is the faces of the
+// grid box). Out-of-range levels are clamped at the solve. Takes effect at the next
+// SEM_SolveThermal3D. Default: from the source (0) to the outermost offset.
+// Persisted in the session.
 SEM_API int SEM_SetThermalBC3D(int from_level, int to_level);
 
 // The BC levels as set, and as the last solve resolved them (null to skip).
@@ -388,6 +395,11 @@ SEM_API int SEM_GetThermalBC3D(int* from_level, int* to_level,
 // still filled).
 SEM_API int SEM_GetThermalBCNodes3D(signed char* out, int max, int* count);
 
+// Triangular faces of the selected SDF levels (0 or 1) in a cut GRID domain.
+// Triangle indices refer to the domain's nodes. A box level returns no faces;
+// its display can use the fixed-node flags. Returns -2 for an uncut domain.
+SEM_API int SEM_GetThermalBCFaces3D(int value, const int** tris, int* num_tris);
+
 // Shift the field along its gradient before an isosurface is extracted (on by
 // default). The field rises from 0 at the BC level `from` to 1 at `to`, so the
 // level `value` lies about D = d_from + value * (d_to - d_from) from the source
@@ -395,18 +407,24 @@ SEM_API int SEM_GetThermalBCNodes3D(signed char* out, int max, int* count);
 // takes the field from the point its field line reaches D further away from the
 // source (nearer to it for a negative D), which brings that level back onto the
 // SOURCE whichever levels hold the BCs - an inner `from` shifts it back outward.
-// `value` then sets how much the isosurface is smoothed, not where it lies.
+// `value` then sets how much the isosurface is smoothed, not where it lies. The box
+// level (SEM_LEVEL_BOX) counts at the mean distance of its nodes from the source; the
+// gap to it varies over the box, so there the shift brings the level back onto the
+// source on average only.
 // Applies to SEM_TET_GRID meshes only (a legacy band ends on the source, where the
 // shifted level would lie). Persisted in the session.
 SEM_API int SEM_SetIsoShift3D(int enabled);
 
 // The shift setting, and the gap between the BC levels, |d_to - d_from|: that of
 // the last solve's levels, or of the levels as set before a solve (null to skip).
+// Negative (gap 0) when, before a solve, a level is the box and no grid mesh is built.
 SEM_API int SEM_GetIsoShift3D(int* enabled, double* gap);
 
 // The signed distances from the source of the BC levels the shift works from,
 // d_from and d_to - the last solve's, or the levels' as set before a solve (null to
-// skip). The level `value` is shifted by -(d_from + value * (d_to - d_from)).
+// skip); the box's is the mean distance of its nodes. The level `value` is shifted
+// by -(d_from + value * (d_to - d_from)). Negative when, before a solve, a level is
+// the box and no grid mesh is built.
 SEM_API int SEM_GetIsoShiftLevels3D(double* from_dist, double* to_dist);
 
 // Extract the iso surface at the given level set of the normalized field (value in
@@ -419,6 +437,17 @@ SEM_API int SEM_GetIsoShiftLevels3D(double* from_dist, double* to_dist);
 // with SEM_GetSourceIsosurface3D, including its vertex normals) and written to
 // <stem>_isosurface3d.csv3d. Negative on failure.
 SEM_API int SEM_ExtractIsosurface3D(double value);
+
+// Extraction with a configurable final remesh. Lengths are multiples of the
+// extracted surface's mean edge. Zero iterations skips the remesh.
+struct SEM_IsoRemeshParams3D {
+    int iterations;
+    int adaptive;
+    double target_len_mult, min_len_mult, max_dev_mult, feature_angle_deg;
+};
+SEM_API int SEM_ExtractIsosurfaceRemesh3D(double value, const SEM_IsoRemeshParams3D* params);
+// Auto step for the current source and available offset levels.
+SEM_API int SEM_PreviewGridStep3D(SEM_Vec3 box_scale, double* step);
 
 // --- Reload a whole serialized session into the cache -----------------------
 
@@ -433,6 +462,14 @@ SEM_API int SEM_ExtractIsosurface3D(double value);
 // missing/unparseable or a stage file is inconsistent with it. Read the restored
 // arguments back with SEM_GetPipelineArgs3D / SEM_GetOffsetGaps3D /
 // SEM_GetClipPlanes3D.
+//
+// A closed source makes the context a body (SEM_GetContextKind), and the body's own
+// state comes back with it: the parting plane or profile, the split mode, the taper
+// angle and skirt setting, and - when the session was split - both halves (as split,
+// as tapered, and with their skirts) and the two half contexts, created here and
+// each loaded from its own session in the half_pos / half_neg sub-folder (read their
+// ids with SEM_GetBodyHalfContexts3D; the caller owns them, as after a split), plus
+// the preform when one was built. A split whose files are missing loads as not split.
 SEM_API int SEM_LoadSession3D(const char* dir);
 
 // Which pipeline stages the 3D cache currently holds (bitmask in
@@ -636,6 +673,34 @@ SEM_API double SEM_GetBodyVolume3D(void);
 SEM_API int SEM_SetBodySplitPlane3D(SEM_Plane3D plane, double on_plane_rel_tol);
 SEM_API int SEM_GetBodySplitPlane3D(SEM_Plane3D* out_plane, double* out_rel_tol);
 
+// A broken (stepped) parting line instead of the plane: a profile polyline drawn in
+// a sketch plane that contains the draw direction, swept along that sketch plane's
+// normal into the parting surface - an extruded polyline.
+//   draw  - the positive half's draw direction, the profile's "up" (need not be unit);
+//   sweep - the direction the profile is swept along, the sketch plane's normal
+//           (only its part square to `draw` is used);
+//   pts   - the profile's `count` >= 2 vertices in world coordinates (their part along
+//           `sweep` is ignored). Across the sweep they must run one way, either way:
+//           no vertex straight above another, no doubling back.
+// Past its first and last vertex the profile carries on level. The split (in either
+// mode of SEM_SetBodySplitMode3D), the taper, the skirt and the preform then work
+// about this surface, heights being taken along `draw` from it. The halves always
+// carry a skirt here (a depth of 0 counts as "down to the other half", see
+// SEM_SetBodySkirt3D), which ends level, square to `draw`, past the whole parting line
+// - every column runs from its own point of the line down to there - so each half's
+// domain still ends on a plane; the preform is joined where the halves cross.
+// SEM_GetBodySplitPlane3D then reports the plane square to `draw` through the middle
+// of the parting line's height (the profile's until a split). Setting a plane again
+// returns to the plane. Invalidates a previous split, taper and preform. Negative for
+// fewer than two points (-2), a bad tolerance (-3), a zero or parallel draw/sweep (-4)
+// or a profile that does not run one way (-5).
+SEM_API int SEM_SetBodyPartingPolyline3D(SEM_Vec3 draw, SEM_Vec3 sweep, const SEM_Vec3* pts,
+                                         int count, double on_plane_rel_tol);
+// The profile as set; *count = 0 in the plane mode. `draw` comes back unit, `sweep`
+// unit and square to it, `pts` (room for `max`) as they were given.
+SEM_API int SEM_GetBodyPartingPolyline3D(SEM_Vec3* draw, SEM_Vec3* sweep, SEM_Vec3* pts,
+                                         int max, int* count);
+
 // How SEM_SplitBody3D divides the body between the two dies:
 //   SEM_SPLIT_PLANE         - a plain plane cut: each half is exactly what lies on
 //                             its side of the plane. A pocket that crosses the plane
@@ -789,9 +854,23 @@ SEM_API int SEM_SetBodySkirt3D(double depth);
 SEM_API int SEM_ApplyBodyTaperSkirt3D(double taper_angle_deg, int remesh_iters,
                                       double skirt_depth, double skirt_growth);
 
+enum SEM_SkirtMode3D {
+    SEM_SKIRT_COLUMNS = 0,
+    SEM_SKIRT_CONES = 1,
+    SEM_SKIRT_CONES_THERMAL = 2
+};
+// Select the skirt construction when applying draft. Both cone modes use
+// the same envelope heights. THERMAL samples planar harmonic contours.
+SEM_API int SEM_ApplyBodyTaperSkirtMode3D(double taper_angle_deg, int remesh_iters,
+                                         double skirt_depth, double skirt_growth, int mode);
+SEM_API int SEM_GetBodySkirtMode3D(int* mode);
+
 // The skirt setting, and how deep each half's skirt actually reached (the least
 // over its boundary loops; 0 before a split or with the skirt off).
 SEM_API int SEM_GetBodySkirt3D(double* depth, double* reached_pos, double* reached_neg);
+// The skirt setting as stored: the depth (as SEM_SetBodySkirt3D takes it) and the
+// growth (SEM_ApplyBodyTaperSkirt3D). Either may be null.
+SEM_API int SEM_GetBodySkirtSettings3D(double* depth, double* growth);
 
 // One half as its dependent context holds it: half + skirt (just the half with the
 // skirt off). side >= 0 selects the positive half. See SEM_MeshView.

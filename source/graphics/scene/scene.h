@@ -81,6 +81,16 @@ public:
 	bool blockMousePick = false;
 	bool blockMouseWheel = false;
 	bool controllerSelected = false;
+	// A tool owns the left button in the 3D view (the SEM parting-line sketch): no
+	// picking, no double-click unstaging and no right-drag rotation, so the view the
+	// tool set stays put. Panning and zooming still work.
+	bool sceneToolActive = false;
+
+	// Client pixel (px, py) to the point of the plane (xyz = normal, w = d) the view
+	// ray through it hits; false when the ray runs along the plane.
+	bool ScreenToPlane(float px, float py, const XMFLOAT4& plane, XMFLOAT3& out) const;
+	// A world point to client pixels.
+	XMFLOAT2 WorldToScreen(const XMFLOAT3& p) const;
 
 	bool rsSolid = true;
 	bool rsWireframe = false;
@@ -200,6 +210,8 @@ public:
 	// Null when there is nothing to draw.
 	Primitive* AddColoredLines(const std::vector<XMFLOAT3>& poses, const std::vector<XMFLOAT4>& cols,
 		const std::string& name, SceneNode* parent);
+    // A named line-list node can appear in the scene tree before its GPU data is needed.
+    Primitive* AddLineListNode(const std::string& name, SceneNode* parent);
 	Primitive* AddColoredTriangles(const std::vector<XMFLOAT3>& poses, const std::vector<XMFLOAT4>& cols,
 		const std::string& name, SceneNode* parent = nullptr);
 
@@ -276,6 +288,7 @@ private:
 
 	std::wstring shadersPath;
 	GeometryShader geometryshaderpoints;
+	GeometryShader geometryshaderdots;      // Primitive::POINTSTYLE_DOT
 	GeometryShader geometryshaderthickness;
 
 	VertexShader* vsMain;
@@ -353,6 +366,7 @@ private:
 	void SetOutlineResources();
 
 	void DrawGrid();
+    std::unique_ptr<Primitive> m_gridLines[2], m_axisLines;
 
 	const std::vector<Primitive*>& GetPrimitivesSorted() const;
 

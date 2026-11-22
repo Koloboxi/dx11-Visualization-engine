@@ -58,6 +58,8 @@ void Graphics::OnResize(int newWidth, int newHeight)
 		this->InitializeResources();
 
 		this->cb_gs_geometryshader.data.AspectRatio = (float)this->windowWidth / (float)this->windowHeight;
+		this->cb_gs_geometryshader.data.ViewportW = (float)this->windowWidth;
+		this->cb_gs_geometryshader.data.ViewportH = (float)this->windowHeight;
 		this->cb_gs_geometryshader.ApplyChanges();
 		this->deviceContext->GSSetConstantBuffers(0, 1, this->cb_gs_geometryshader.GetAddressOf());
 
@@ -267,6 +269,8 @@ bool Graphics::InitializeShaders()
 
 	this->cb_gs_geometryshader.Initialize(this->device.Get(), this->deviceContext.Get());
 	this->cb_gs_geometryshader.data.AspectRatio = (float)this->windowWidth / (float)this->windowHeight;
+	this->cb_gs_geometryshader.data.ViewportW = (float)this->windowWidth;
+	this->cb_gs_geometryshader.data.ViewportH = (float)this->windowHeight;
 	this->cb_gs_geometryshader.ApplyChanges();
 	this->deviceContext->GSSetConstantBuffers(0, 1, this->cb_gs_geometryshader.GetAddressOf());
 

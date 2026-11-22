@@ -47,13 +47,48 @@ bool        SemSession::ThermalSolved() const {
 bool        SemSession::HasIsolinePath() const { return !m_isolinePath.empty(); }
 bool        SemSession::HasIsoProjection() const { return m_isoProjected; }
 
+double SemSession::StageTimeMs(Stage stage) const {
+    if (IsBody()) {
+        double ms = -1.0;
+        for (const SemSession* h : m_half) {
+            if (!h) continue;
+            const double t = h->StageTimeMs(stage);
+            if (t >= 0.0) ms = (std::max)(0.0, ms) + t;
+        }
+        if (ms >= 0.0) return ms;
+    }
+    switch (stage) {
+    case STAGE_OFFSETS: return m_offsetsMs;
+    case STAGE_MESH: return m_meshMs;
+    case STAGE_THERMAL: return m_thermalMs;
+    case STAGE_ISOSURFACE: return m_isoMs;
+    default: return -1.0;
+    }
+}
+
+bool SemSession::StageInUse(Stage stage) const {
+    if (IsBody()) {
+        for (const SemSession* h : m_half)
+            if (h && h->StageInUse(stage)) return true;
+        return false;
+    }
+    if (m_dirty[stage]) return false;
+    switch (stage) {
+    case STAGE_OFFSETS: return m_offsetsReady || m_offsets != nullptr;
+    case STAGE_MESH: return MeshBuilt();
+    case STAGE_THERMAL: return m_thermalSolved;
+    case STAGE_ISOSURFACE: return m_isoline != nullptr;
+    default: return false;
+    }
+}
+
 double SemSession::TotalTimeMs() const {
-    double t = 0.0;
-    if (m_offsetsMs >= 0.0) t += m_offsetsMs;
-    if (m_meshMs    >= 0.0) t += m_meshMs;
-    if (m_thermalMs >= 0.0) t += m_thermalMs;
-    if (m_isoMs     >= 0.0) t += m_isoMs;
-    return t;
+    double ms = 0.0;
+    for (Stage stage : {STAGE_OFFSETS, STAGE_MESH, STAGE_THERMAL, STAGE_ISOSURFACE})
+        ms += (std::max)(0.0, StageTimeMs(stage));
+    for (double t : {m_splitMs, m_taperMs, m_preformMs})
+        ms += (std::max)(0.0, t);
+    return ms;
 }
 
 const Stats& SemSession::SrcStats()  const { return m_srcStats; }
@@ -123,6 +158,14 @@ void SemSession::Bind(Scene& scene, Primitive* prim, bool reload) {
     m_offsetsMs = m_meshMs = m_thermalMs = m_isoMs = -1.0;
     DropHalves(scene);
     RemoveSplitPlane(scene);
+    // The parting line belonged to the previous source.
+    DropSketchPrims(scene);
+    m_sketchDrawing = false;
+    m_sketchBackup.clear();
+    sketchPts.clear();
+    partingKind    = PARTING_PLANE;
+    m_splitProfile = false;
+    m_boxValid     = false;
     // A fresh source clears the SEM core cache, so every stage must be recomputed.
     m_dirty[0] = m_dirty[1] = m_dirty[2] = m_dirty[3] = m_dirty[4] = true;
     if (!m_srcPath.empty()) {
@@ -190,6 +233,8 @@ void SemSession::Unbind() {
     for (int c = 0; c < CLIPCHG_COUNT; ++c) { m_clipChangeGroup[c] = nullptr; m_clipChangesShown[c] = false; }
     m_srcRebuildPending = false;
     m_srcStats = m_offStats = m_meshStats = Stats();
+    m_sketchGroup   = nullptr;
+    m_sketchDrawing = false;
     snprintf(status, sizeof(status), "Ready");
 }
 
@@ -216,6 +261,7 @@ void SemSession::Validate(Scene& scene) {
     if (m_clipGroup && !Alive(scene, m_clipGroup)) m_clipGroup = nullptr;
     if (m_splitNode && !Alive(scene, m_splitNode)) m_splitNode = nullptr;
     if (m_splitGroup && !Alive(scene, m_splitGroup)) m_splitGroup = nullptr;
+    if (m_sketchGroup && !Alive(scene, m_sketchGroup)) m_sketchGroup = nullptr;
     if (m_splitOnPlaneGroup && !Alive(scene, m_splitOnPlaneGroup)) {
         m_splitOnPlaneGroup = nullptr; m_splitOnPlaneShown = false;
     }
@@ -341,7 +387,7 @@ void SemSession::RebuildSourcePrim(Scene& scene) {
 
     // A body half keeps its own tint (and skirt shading) across the rebuild.
     Primitive* fresh = (m_isHalf && m_halfStyled)
-        ? AddHalfSurface(scene, data, old->name, parent, m_halfSide, m_halfPlane, m_halfSkirt)
+        ? AddHalfSurface(scene, data, old->name, parent, m_halfSide, m_halfShape, m_halfSkirt)
         : scene.AddFromCSV3DData(data, old->name, parent, nullptr, Colors::BLUE, Colors::RED);
     if (!fresh) {                                  // rebuild failed: undo the detach
         for (SceneNode* ch : keep) old->AddChild(ch);

@@ -59,11 +59,43 @@ bool SemSession::RevealFile(const std::string& path) {
     return (INT_PTR)h > 32;
 }
 
-std::string SemSession::SessionRoot() {
+std::string SemSession::LegacySessionRoot() {
     std::error_code ec;
     auto tmp = fs::temp_directory_path(ec);
     if (ec) return std::string();
     return (tmp / "sem").string();
+}
+
+std::string SemSession::SessionRoot() {
+    char buf[MAX_PATH] = {};
+    const DWORD n = GetEnvironmentVariableA("LOCALAPPDATA", buf, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return LegacySessionRoot();
+    const fs::path root = fs::path(buf) / "SEM" / "sessions";
+    std::error_code ec;
+    fs::create_directories(root, ec);
+    if (ec) return LegacySessionRoot();
+    return root.string();
+}
+
+std::vector<std::string> SemSession::SessionRoots() {
+    std::vector<std::string> roots;
+    const std::string cur = SessionRoot(), old = LegacySessionRoot();
+    if (!cur.empty()) roots.push_back(cur);
+    std::error_code ec;
+    if (!old.empty() && old != cur && !(fs::exists(cur, ec) && fs::equivalent(cur, old, ec)))
+        roots.push_back(old);
+    return roots;
+}
+
+bool SemSession::SessionFolderUsable(const std::string& dir) {
+    std::error_code ec;
+    if (fs::exists(fs::path(dir) / "session3d.txt", ec)) return true;
+    // A 2D session has no manifest: its stage files are the session.
+    for (const auto& e : fs::directory_iterator(dir, ec)) {
+        if (ec) break;
+        if (e.is_regular_file(ec) && e.path().extension() == ".csv3d") return true;
+    }
+    return false;
 }
 
 // Parse the trailing _<N> of a session folder name "<stem>_<N>". Returns 0 (not
@@ -81,17 +113,20 @@ static int SessionIndex(const std::string& folderName, const std::string& stem) 
 
 std::vector<std::string> SemSession::ListSessions(const std::string& srcPath) {
     std::vector<std::string> dirs;
-    const std::string root = SessionRoot();
-    if (root.empty() || srcPath.empty()) return dirs;
+    if (srcPath.empty()) return dirs;
     const std::string stem = Stem(srcPath);
 
+    // Only folders that still hold a session: Windows' temp cleanup leaves the old
+    // ones under %TEMP% as empty shells.
     std::vector<std::pair<int, std::string>> found;
-    std::error_code ec;
-    for (const auto& e : fs::directory_iterator(root, ec)) {
-        if (ec) break;
-        if (!e.is_directory()) continue;
-        int n = SessionIndex(e.path().filename().string(), stem);
-        if (n > 0) found.emplace_back(n, e.path().string());
+    for (const std::string& root : SessionRoots()) {
+        std::error_code ec;
+        for (const auto& e : fs::directory_iterator(root, ec)) {
+            if (ec) break;
+            if (!e.is_directory()) continue;
+            int n = SessionIndex(e.path().filename().string(), stem);
+            if (n > 0 && SessionFolderUsable(e.path().string())) found.emplace_back(n, e.path().string());
+        }
     }
     std::sort(found.begin(), found.end(),
               [](const auto& a, const auto& b) { return a.first < b.first; });
@@ -103,12 +138,15 @@ std::string SemSession::NewSessionDir(const std::string& srcPath) {
     const std::string root = SessionRoot();
     if (root.empty() || srcPath.empty()) return std::string();
     const std::string stem = Stem(srcPath);
+    // Numbered past the old root's folders too, so a name never means two sessions.
     int maxN = 0;
-    std::error_code ec;
-    for (const auto& e : fs::directory_iterator(root, ec)) {
-        if (ec) break;
-        if (!e.is_directory()) continue;
-        maxN = std::max(maxN, SessionIndex(e.path().filename().string(), stem));
+    for (const std::string& r : SessionRoots()) {
+        std::error_code ec;
+        for (const auto& e : fs::directory_iterator(r, ec)) {
+            if (ec) break;
+            if (!e.is_directory()) continue;
+            maxN = std::max(maxN, SessionIndex(e.path().filename().string(), stem));
+        }
     }
     return (fs::path(root) / (stem + "_" + std::to_string(maxN + 1))).string();
 }
@@ -199,13 +237,13 @@ bool SemSession::ImportMesh(Scene& scene, const std::string& path) {
     DropMesh(scene);
     if (dim == 3) {
         // The domain as the core holds it, drawn like a freshly built one.
-        CSV3DLoader::CSV3DData data;
-        if (!FetchMeshData(scene, false, data)) return false;
-        TakeMeshData(data, true);
-        m_meshPath  = path;
-        m_meshStats = ComputeStatsData(data);
+        SEM_MeshView mesh{};
+        const int rc = SEM_GetMesh3D(&mesh);
+        if (!CheckRc(scene, false, "SEM_GetMesh3D", rc, {})) return false;
+        TakeMeshData(mesh, CollectTetEdges(mesh));
+        m_meshPath = path;
         m_dirty[STAGE_THERMAL] = true;
-        RebuildMeshDisplay(scene);
+        CreateMeshDisplay(scene, true);
         RebuildGridBox(scene);
     } else {
         m_mesh = scene.AddFromCSV3D(path, "mesh_" + Stem(m_srcPath), AttachParent(),
@@ -281,6 +319,19 @@ void SemSession::LoadSessionStages3D(Scene& scene) {
         return;
     }
 
+    // Bind skipped the source load for a reopened session, so only now does the
+    // core know what it is: a closed source made the context a body.
+    if (SEM_GetContextKind() == SEM_CTX_BODY) sessionMode = SESSION_BODY;
+    else if (sessionMode == SESSION_BODY)     sessionMode = SESSION_PIPELINE;
+
+    std::string note;
+    if (IsBody()) note = RestoreBodyFromCore(scene);
+    else          RestoreStagesFromCore(scene);
+    snprintf(status, sizeof(status), "Loaded session: %s%s%s", BaseName(m_workDir).c_str(),
+             note.empty() ? "" : ". ", note.c_str());
+}
+
+void SemSession::RestoreStagesFromCore(Scene& scene) {
     // Pull the restored knobs into the UI so the session is editable from where it
     // left off, and learn which stages the cache holds.
     ApplyPipelineArgs3D();
@@ -300,8 +351,9 @@ void SemSession::LoadSessionStages3D(Scene& scene) {
         ImportMesh(scene, meshPath);
 
     // Clip-plane rectangles from the restored core state (the core already holds
-    // the planes; this only recreates the editable visuals).
-    LoadClipPlanesFromState(scene);
+    // the planes; this only recreates the editable visuals). A body half's only clip
+    // plane is the parting plane, which its body owns and draws.
+    if (!m_isHalf) LoadClipPlanesFromState(scene);
 
     // The solved field colours the domain; then the extracted isosurface.
     if ((a.stages_present & SEM_STAGE_THERMAL) && MeshBuilt()) {
@@ -320,9 +372,6 @@ void SemSession::LoadSessionStages3D(Scene& scene) {
         m_isolinePath = isoPath;
         m_dirty[STAGE_ISOSURFACE] = false;
     }
-
-    snprintf(status, sizeof(status), "Loaded session: %s",
-             BaseName(m_workDir).c_str());
 }
 
 // Copy the SEM core's restored 3D pipeline arguments (SEM_GetPipelineArgs3D) back

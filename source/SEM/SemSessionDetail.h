@@ -11,6 +11,7 @@ namespace detail {
 std::string BaseName(const std::string& path);
 std::string Stem(const std::string& path);
 
+std::vector<unsigned long long> CollectTetEdges(const SEM_MeshView& mesh);
 Stats ComputeStatsData(const CSV3DLoader::CSV3DData& d);
 Stats ComputeStats(const std::string& path);
 
@@ -44,6 +45,9 @@ float MeanTriEdgeLen(const CSV3DLoader::CSV3DData& d);
 // only).
 std::vector<char> NonManifoldTris(const CSV3DLoader::CSV3DData& d);
 
+// Whether `n` and everything under it is hidden (false for null).
+bool SubtreeHidden(const SceneNode* n);
+
 bool SourceBBox(const std::string& path, XMFLOAT3& lo, XMFLOAT3& hi);
 bool OrderedContourFromCSV3D(const std::string& path, std::vector<XMFLOAT3>& out);
 bool IsOpenContourOnYAxis(const std::string& path);
@@ -58,13 +62,13 @@ int SafeBuildMesh3D(const SEM_MeshParams3D* params);
 int SafeSolveThermal();
 int SafeSolveThermal3D(float max_inward);
 int SafeExtractIsoline(double value);
-int SafeExtractIsosurface3D(double value);
+int SafeExtractIsosurface3D(double value, const SEM_IsoRemeshParams3D* params = nullptr);
 // Standalone offset-and-remesh of an open surface passed in as raw arrays (does NOT
 // touch the loaded pipeline cache); the result comes back through `out` (valid until
 // the next standalone call). See SEM_OffsetRemeshInPlaneSurface3D.
 int SafeApplyBodyTaper3D(double taper_angle_deg, int remesh_iters);
-int SafeApplyBodyTaperSkirt3D(double taper_angle_deg, int remesh_iters,
-                              double skirt_depth, double skirt_growth);
+int SafeApplyBodyTaperSkirtMode3D(double taper_angle_deg, int remesh_iters,
+                                  double skirt_depth, double skirt_growth, int mode);
 int SafeBuildBodyPreform3D(int source);
 int SafeTaperInPlaneSurface3D(SEM_Plane3D parting, double on_plane_rel_tol,
                               double taper_angle_deg, int remesh_iters,

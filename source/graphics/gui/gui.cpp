@@ -58,7 +58,8 @@ void Graphics::Gui()
     TransformWindow::Draw(scene, blockMousePick);
     ConsoleWindow::Draw(scene, luaEditor, blockMousePick, blockMouseWheel);
 
-    if (scene.stagingEnabled && ImGui::IsMouseDoubleClicked(0) && !ImGui::GetIO().WantCaptureMouse)
+    if (scene.stagingEnabled && ImGui::IsMouseDoubleClicked(0) && !ImGui::GetIO().WantCaptureMouse &&
+        !scene.sceneToolActive)
         scene.ClearStaged();
 
     VectorPick::Process(scene, luaEditor);

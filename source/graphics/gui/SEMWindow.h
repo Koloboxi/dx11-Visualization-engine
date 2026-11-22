@@ -399,10 +399,31 @@ inline void DrawResultFileRow(Scene& scene, SemSessionNS::SemSession& S) {
 // Standalone offset-remesh mode (SESSION_OFFSET_REMESH): offset-and-remesh the
 // imported surface directly via SEM_OffsetRemeshInPlaneSurface3D, applying the clip
 // planes set above. No offsets / mesh / thermal stages run. 3D only.
+inline bool TimedStageHeader(const char* label, double ms, bool inUse,
+                             ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_DefaultOpen) {
+    const bool open = ImGui::CollapsingHeader(label, flags);
+    if (ms >= 0.0 && ImGui::IsItemVisible()) {
+        char time[32];
+        snprintf(time, sizeof(time), "%.2f s", ms / 1000.0);
+        const ImVec2 lo = ImGui::GetItemRectMin(), hi = ImGui::GetItemRectMax();
+        const ImVec2 size = ImGui::CalcTextSize(time);
+        const float x = hi.x - ImGui::GetStyle().FramePadding.x - size.x;
+        if (x > lo.x + ImGui::GetFrameHeight() + ImGui::CalcTextSize(label).x)
+            ImGui::GetWindowDrawList()->AddText(ImVec2(x, (lo.y + hi.y - size.y) * 0.5f),
+                ImGui::GetColorU32(inUse ? ImGuiCol_Text : ImGuiCol_TextDisabled), time);
+    }
+    return open;
+}
+
+inline double CombinedStageMs(double a, double b) {
+    if (a < 0.0 && b < 0.0) return -1.0;
+    return (std::max)(0.0, a) + (std::max)(0.0, b);
+}
+
 inline void DrawStandaloneRemeshSection(Scene& scene, SemSessionNS::SemSession& S) {
     using namespace SemSessionNS;
     ImGui::PushID("standalone_remesh");
-    if (ImGui::CollapsingHeader("Standalone offset-remesh", ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (TimedStageHeader("Standalone offset-remesh", S.IsoTimeMs(), !S.ResultPath().empty())) {
         ImGui::Indent();
         ImGui::TextWrapped("Offset-and-remesh the imported surface directly, applying the "
                            "clip planes above. The offsets / mesh / thermal pipeline is skipped.");
@@ -507,7 +528,7 @@ inline bool DrawPartingPlaneControls(Scene& scene, SemSessionNS::SemSession& S,
 // boundary lies in.
 inline void DrawStandaloneTaperSection(Scene& scene, SemSessionNS::SemSession& S) {
     ImGui::PushID("sotaper");
-    if (ImGui::CollapsingHeader("Standalone taper", ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (TimedStageHeader("Standalone taper", S.IsoTimeMs(), !S.ResultPath().empty())) {
         ImGui::TextWrapped("Add draft to the imported open surface about a parting plane its "
                            "boundary lies in. Anything poking through to the far side of the "
                            "plane is cut away first. Material is only added: the top of each "
@@ -549,7 +570,8 @@ inline void DrawStandaloneTaperSection(Scene& scene, SemSessionNS::SemSession& S
 // The knobs both standalone remesh sections share: the plain isotropic remesh, or
 // its adaptive variant that sizes the triangles by the curvature and keeps sharp
 // edges. Adaptive has knobs of its own and its own sweep count.
-inline void DrawRemeshKnobs(SemSessionNS::SemSession& S) {
+template<class Settings>
+inline void DrawRemeshKnobs(Settings& S) {
     ImGui::Checkbox("Adaptive", &S.rmAdaptive);
     ImGui::SetItemTooltip("Plain: one edge length everywhere, and creases get rounded off.\n"
                           "Adaptive: edges shrink where the surface is curved, so a facet\n"
@@ -593,7 +615,7 @@ inline void DrawAdaptiveRemeshReport(SemSessionNS::SemSession& S) {
 // Standalone isotropic remesh: triangulation only, the shape is preserved.
 inline void DrawStandaloneRemeshPlainSection(Scene& scene, SemSessionNS::SemSession& S) {
     ImGui::PushID("soremesh");
-    if (ImGui::CollapsingHeader("Standalone remesh", ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (TimedStageHeader("Standalone remesh", S.IsoTimeMs(), !S.ResultPath().empty())) {
         ImGui::TextWrapped("Re-triangulate the imported surface into near-equilateral "
                            "triangles of a uniform size. Relaxation projects back onto the "
                            "input, so the SHAPE is preserved and only the triangulation "
@@ -619,7 +641,7 @@ inline void DrawStandaloneRemeshPlainSection(Scene& scene, SemSessionNS::SemSess
 // can be opened as its own setup and split THERE. Hence: before the split.
 inline void DrawBodyRemeshSection(Scene& scene, SemSessionNS::SemSession& S) {
     ImGui::PushID("bodyremesh");
-    if (ImGui::CollapsingHeader("Standalone remesh")) {
+    if (TimedStageHeader("Standalone remesh", S.IsoTimeMs(), !S.ResultPath().empty(), 0)) {
         ImGui::TextWrapped("Re-triangulate the CLOSED surface into near-equilateral triangles of "
                            "a uniform size. Relaxation projects back onto the input, so the shape "
                            "is preserved and only the triangulation changes - the usual first "
@@ -642,22 +664,173 @@ inline void DrawBodyRemeshSection(Scene& scene, SemSessionNS::SemSession& S) {
     ImGui::PopID();
 }
 
+// The broken parting line: which side view it is drawn in, drawing it with the
+// mouse, and its points as numbers.
+inline void DrawPartingSketchControls(Scene& scene, SemSessionNS::SemSession& S) {
+    using namespace SemSessionNS;
+    static const char* kPlanes[] = { "XZ - front (along X, up Z)", "YZ - side (along Y, up Z)",
+                                     "XY - top (along X, up Y)" };
+    int plane = S.sketchPlane;
+    if (ImGui::Combo("Sketch plane", &plane, kPlanes, 3)) S.SetSketchPlane(scene, plane);
+    ImGui::SetItemTooltip("The view the parting line is drawn in. Up in it is the draw direction\n"
+                          "of the + half; the line is swept straight across the view, along the\n"
+                          "plane's normal, into the parting surface. Changing it clears the line.");
+
+    if (!S.SketchDrawing()) {
+        if (ImGui::Button("Draw", {96, 0})) S.BeginSketch(scene);
+        ImGui::SetItemTooltip("Turn the view to look straight at the sketch plane and draw a new\n"
+                              "line: click its points one way across the view (left to right or\n"
+                              "right to left; never straight up, never back). Shift keeps the new\n"
+                              "segment level, Backspace takes the last point back, double-click or\n"
+                              "Enter finishes, Esc cancels. Pan and zoom work as usual.");
+        ImGui::SameLine();
+        if (ImGui::Button("View", {64, 0})) S.LookAtSketchPlane(scene);
+        ImGui::SetItemTooltip("Look straight at the sketch plane.");
+        ImGui::SameLine();
+        ImGui::BeginDisabled(S.sketchPts.empty());
+        if (ImGui::Button("Clear", {64, 0})) S.ClearSketch(scene);
+        ImGui::EndDisabled();
+    } else {
+        ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.15f, 1.0f), "Drawing: %d point%s", (int)S.sketchPts.size(),
+                           S.sketchPts.size() == 1 ? "" : "s");
+        if (ImGui::Button("Finish", {96, 0})) S.EndSketch(scene, true);
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", {64, 0})) S.EndSketch(scene, false);
+        ImGui::SameLine();
+        ImGui::BeginDisabled(S.sketchPts.empty());
+        if (ImGui::Button("Undo", {64, 0})) S.UndoSketchPoint(scene);
+        ImGui::EndDisabled();
+    }
+
+    // The points as numbers, editable: (along, up) in the sketch plane.
+    static const char* kAlong[] = { "x", "y", "x" };
+    static const char* kUp[]    = { "z", "z", "y" };
+    const int sp = (S.sketchPlane >= 0 && S.sketchPlane < 3) ? S.sketchPlane : 0;
+    if (!S.sketchPts.empty() &&
+        ImGui::TreeNodeEx("##pts", ImGuiTreeNodeFlags_None, "Points (%s, %s): %d", kAlong[sp], kUp[sp],
+                          (int)S.sketchPts.size())) {
+        int erase = -1;
+        bool edited = false;
+        for (int i = 0; i < (int)S.sketchPts.size(); ++i) {
+            ImGui::PushID(i);
+            ImGui::SetNextItemWidth(160.0f);
+            edited |= ImGui::InputFloat2("##p", &S.sketchPts[i].x, "%.3f");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("x")) erase = i;
+            ImGui::PopID();
+        }
+        if (erase >= 0) { S.sketchPts.erase(S.sketchPts.begin() + erase); edited = true; }
+        if (edited) S.RefreshSketchPrims(scene);
+        ImGui::TreePop();
+    }
+    std::string why;
+    if (!S.SketchDrawing() && !S.SketchValid(&why))
+        ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "Parting line: %s.", why.c_str());
+
+    float tol = S.splitPlaneTol;
+    if (ImGui::DragFloat("On-surface tol", &tol, 0.001f, 0.0f, 1.0f, "%.3f")) S.splitPlaneTol = tol;
+    ImGui::SetItemTooltip("Vertices within this fraction of the mean edge length are moved\n"
+                          "onto the parting surface (along the draw direction) first. 0 = exact.");
+}
+
+// The parting-line tool, run every frame while it draws: clicks in the 3D view put
+// points on the sketch plane, and the line, the rubber band to the cursor and a
+// hint are drawn over the scene. Picking and right-drag rotation stay off.
+inline void ProcessSketchTool(Scene& scene, SemSessionNS::SemSession& S, bool& blockMousePick) {
+    using namespace SemSessionNS;
+    scene.sceneToolActive = S.SketchDrawing();
+    if (!S.SketchDrawing()) return;
+    blockMousePick = true;
+
+    XMFLOAT3 along, up, normal;
+    SemSession::SketchAxes(S.sketchPlane, along, up, normal);
+    const XMFLOAT3 o = S.SketchToWorld(XMFLOAT2(0.0f, 0.0f));
+    const XMFLOAT4 plane(normal.x, normal.y, normal.z,
+                         -(normal.x * o.x + normal.y * o.y + normal.z * o.z));
+    ImGuiIO& io = ImGui::GetIO();
+    const bool inView = !io.WantCaptureMouse;
+
+    // Where the cursor is on the sketch plane, Shift keeping the segment level.
+    bool haveCursor = false;
+    XMFLOAT2 cur(0.0f, 0.0f);
+    XMFLOAT3 hit;
+    if (inView && scene.ScreenToPlane(io.MousePos.x, io.MousePos.y, plane, hit)) {
+        cur = S.WorldToSketch(hit);
+        if (io.KeyShift && !S.sketchPts.empty()) cur.y = S.sketchPts.back().y;
+        haveCursor = true;
+    }
+
+    static std::string s_hint;
+    if (inView && haveCursor && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+        std::string why;
+        if (!S.AddSketchPoint(scene, cur, &why)) s_hint = why;
+        else s_hint.clear();
+    }
+    if (inView && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) S.EndSketch(scene, true);
+    if (!io.WantTextInput) {
+        if (ImGui::IsKeyPressed(ImGuiKey_Backspace, false)) S.UndoSketchPoint(scene);
+        if (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false))
+            S.EndSketch(scene, true);
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) S.EndSketch(scene, false);
+    }
+    if (!S.SketchDrawing()) { s_hint.clear(); return; }
+
+    // The overlay, under every window.
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
+    const ImU32 lineCol = IM_COL32(242, 110, 30, 255), bandCol = IM_COL32(242, 110, 30, 150);
+    std::vector<ImVec2> px;
+    for (const XMFLOAT2& q : S.sketchPts) {
+        const XMFLOAT2 s = scene.WorldToScreen(S.SketchToWorld(q));
+        px.push_back(ImVec2(s.x, s.y));
+    }
+    for (size_t k = 1; k < px.size(); ++k) dl->AddLine(px[k - 1], px[k], lineCol, 2.5f);
+    for (const ImVec2& p : px) dl->AddCircleFilled(p, 4.0f, lineCol);
+    if (haveCursor) {
+        const XMFLOAT2 s = scene.WorldToScreen(S.SketchToWorld(cur));
+        const ImVec2 c(s.x, s.y);
+        if (!px.empty()) dl->AddLine(px.back(), c, bandCol, 1.5f);
+        dl->AddCircle(c, 5.0f, bandCol, 12, 1.5f);
+        char buf[96];
+        snprintf(buf, sizeof(buf), "(%.3f, %.3f)", cur.x, cur.y);
+        dl->AddText(ImVec2(c.x + 10.0f, c.y + 8.0f), IM_COL32(40, 40, 40, 255), buf);
+        if (!s_hint.empty()) dl->AddText(ImVec2(c.x + 10.0f, c.y + 24.0f), IM_COL32(200, 60, 20, 255), s_hint.c_str());
+    }
+}
+
 // Body session (closed source): the parting plane and the split. The closed
 // surface is only hidden once the split succeeds, and the two halves become its
 // children, each in its own colour.
 inline void DrawBodySplitSection(Scene& scene, SemSessionNS::SemSession& S) {
     using namespace SemSessionNS;
     ImGui::PushID("bodysplit");
-    if (ImGui::CollapsingHeader("Body / split plane", ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (TimedStageHeader("Body / parting", S.SplitTimeMs(), S.BodySplit())) {
         const double vol = S.BodyVolume();
         if (vol >= 0.0) ImGui::TextDisabled("Closed body, volume %.4g", vol);
         else            ImGui::TextDisabled("Closed body (no volume cached)");
 
-        if (DrawPartingPlaneControls(scene, S, "Add parting plane")) {
+        int kind = S.partingKind;
+        bool kindChanged = ImGui::RadioButton("Plane", &kind, SemSession::PARTING_PLANE);
+        ImGui::SameLine();
+        kindChanged |= ImGui::RadioButton("Broken line", &kind, SemSession::PARTING_POLYLINE);
+        ImGui::SetItemTooltip("Plane: split along a plane (the rectangle).\n"
+                              "Broken line: split along a stepped parting line drawn as a polyline\n"
+                              "in a side view and swept straight across the body. The halves then\n"
+                              "always get a skirt down to a level plane past the whole line, and the\n"
+                              "preform is joined where they cross.");
+        if (kindChanged) S.SetPartingKind(scene, kind);
+
+        bool canSplit = false;
+        if (S.partingKind == SemSession::PARTING_PLANE) {
+            canSplit = DrawPartingPlaneControls(scene, S, "Add parting plane");
+        } else {
+            DrawPartingSketchControls(scene, S);
+            canSplit = S.SketchValid() || S.SketchDrawing();
+        }
+        if (canSplit) {
             if (ImGui::Button(S.BodySplit() ? "Split again" : "Split", {200, 0}))
                 S.ApplySplit(scene, false);
-            ImGui::SetItemTooltip("Cut the body along the plane into two open halves, hide the\n"
-                                  "closed surface and add a half under it per side. Each half\n"
+            ImGui::SetItemTooltip("Cut the body along the parting surface into two open halves, hide\n"
+                                  "the closed surface and add a half under it per side. Each half\n"
                                   "gets its own SEM cache; the stages below then run on both.");
         }
 
@@ -671,7 +844,12 @@ inline void DrawBodySplitSection(Scene& scene, SemSessionNS::SemSession& S) {
                     scene.SetNodeVisibleCascade(hp, vis);
                 ImGui::PopID();
             }
-            if (S.SkirtActive()) {
+            if (S.SplitAlongProfile()) {
+                ImGui::TextDisabled("Split along the broken line. The halves are");
+                ImGui::TextDisabled("extended past it (skirt) down to a level plane");
+                ImGui::TextDisabled("beyond the whole line; their stages run on");
+                ImGui::TextDisabled("half + skirt (lighter tint = the skirt).");
+            } else if (S.SkirtActive()) {
                 ImGui::TextDisabled("The halves are extended past this plane (skirt):");
                 ImGui::TextDisabled("their offsets, domains and isosurfaces run on");
                 ImGui::TextDisabled("half + skirt (lighter tint = the skirt), out to");
@@ -681,12 +859,14 @@ inline void DrawBodySplitSection(Scene& scene, SemSessionNS::SemSession& S) {
                 ImGui::TextDisabled("each keeping its own side, so their stages are");
                 ImGui::TextDisabled("cut flush at it instead of crossing over.");
             }
-            bool onPlane = S.SplitOnPlaneShown();
-            if (ImGui::Checkbox("Show geometry on split-plane", &onPlane))
-                S.ShowSplitOnPlane(scene, onPlane);
-            ImGui::SetItemTooltip("Draw the geometry of both halves that lies exactly on the\n"
-                                  "parting plane: the cut outline, plus any face the snap\n"
-                                  "flattened onto it. Each half in its own colour.");
+            if (!S.SplitAlongProfile()) {
+                bool onPlane = S.SplitOnPlaneShown();
+                if (ImGui::Checkbox("Show geometry on split-plane", &onPlane))
+                    S.ShowSplitOnPlane(scene, onPlane);
+                ImGui::SetItemTooltip("Draw the geometry of both halves that lies exactly on the\n"
+                                      "parting plane: the cut outline, plus any face the snap\n"
+                                      "flattened onto it. Each half in its own colour.");
+            }
         }
     }
     ImGui::PopID();
@@ -695,7 +875,7 @@ inline void DrawBodySplitSection(Scene& scene, SemSessionNS::SemSession& S) {
 // Body session: the draft taper of both halves.
 inline void DrawBodyTaperSection(Scene& scene, SemSessionNS::SemSession& S) {
     ImGui::PushID("bodytaper");
-    if (ImGui::CollapsingHeader("Taper (draft)", ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (TimedStageHeader("Taper (draft)", S.TaperTimeMs(), S.BodySplit() && S.TaperInUse())) {
         ImGui::BeginDisabled(!S.BodySplit());
         float ang = S.taperAngle;
         if (ImGui::DragFloat("Draft angle", &ang, 0.1f, 0.0f, 89.0f, "%.2f deg"))
@@ -714,9 +894,14 @@ inline void DrawBodyTaperSection(Scene& scene, SemSessionNS::SemSession& S) {
                               "re-measured after the sweeps.");
 
         // The skirt is the default mode and the split already builds it, so its
-        // controls stay live before the split too.
+        // controls stay live before the split too. Off a broken parting line it is
+        // always built: the halves' domains can only end on a level plane past it.
         ImGui::EndDisabled();
+        const bool brokenLine = (S.partingKind == SemSessionNS::SemSession::PARTING_POLYLINE);
+        if (brokenLine) S.skirtEnabled = true;
+        ImGui::BeginDisabled(brokenLine);
         ImGui::Checkbox("Extend past the parting plane (skirt)", &S.skirtEnabled);
+        ImGui::EndDisabled();
         ImGui::SetItemTooltip("Carry each half's walls on below the parting plane at the draft\n"
                               "angle. The halves' offsets, distances, domains and isosurfaces then\n"
                               "run on half + skirt, out to the far end of the skirt, so near the\n"
@@ -724,15 +909,24 @@ inline void DrawBodyTaperSection(Scene& scene, SemSessionNS::SemSession& S) {
                               "instead of rounding off at the cut. On by default: Split builds it\n"
                               "straight down, Apply taper rebuilds it at the draft angle.");
         ImGui::BeginDisabled(!S.skirtEnabled);
+        ImGui::Combo("Skirt method", &S.skirtMethod, "Columns\0Cone envelope\0");
+        if (S.skirtMethod == SEM_SKIRT_CONES) {
+            ImGui::Checkbox("2D thermal contours", &S.skirtThermal);
+            ImGui::SetItemTooltip("Sample interior vertices along contours of a 2D harmonic field.\n"
+                                  "Their heights still come from the same cone envelope.");
+        }
         ImGui::DragFloat("Skirt depth", &S.skirtDepth, 0.01f, 0.0f, 0.0f, "%.4f");
         if (S.skirtDepth < 0.0f) S.skirtDepth = 0.0f;
         ImGui::SetItemTooltip("How far below the plane each skirt goes. 0 = down to the other\n"
                               "half's height, i.e. through the whole other half. It should also\n"
                               "be a few times the total offset, so the free edge of the skirt\n"
-                              "stays clear of the parting line.");
+                              "stays clear of the parting line. Off a broken line it is measured\n"
+                              "from the line's lowest point (for the - half: its highest).");
         ImGui::DragFloat("Skirt thinning", &S.skirtGrowth, 0.01f, 0.0f, 1.0f, "%.2f");
         S.skirtGrowth = (std::min)(1.0f, (std::max)(0.0f, S.skirtGrowth));
-        ImGui::SetItemTooltip("How fast the skirt gets sparser away from the parting line.\n"
+        if (S.skirtMethod == SEM_SKIRT_CONES)
+            ImGui::SetItemTooltip("Coarsen planar sampling toward the lower rim.");
+        else ImGui::SetItemTooltip("How fast the skirt gets sparser away from the parting line.\n"
                               "0: rings one outline edge h apart, each with every outline vertex.\n"
                               "Above 0 each gap is h + thinning * (depth so far) - 0.5 puts the\n"
                               "rings at h, 2.5h, 4.75h, ... - and every ring keeps only the\n"
@@ -747,40 +941,6 @@ inline void DrawBodyTaperSection(Scene& scene, SemSessionNS::SemSession& S) {
                               "applying another angle rebuilds the halves instead of stacking\n"
                               "a second draft on them. Their pipeline stages are dropped,\n"
                               "because their source geometry changed.");
-        if (S.BodySplit() && S.SkirtActive() != S.skirtEnabled)
-            ImGui::TextDisabled(S.skirtEnabled ? "Skirt not built yet - Apply taper."
-                                               : "Skirt still on - Apply taper to drop it.");
-
-        // The readouts below ask the core about the halves, so they must not run
-        // while the taper worker is rewriting them in the same context.
-        if (S.SkirtActive() && S.BodySplit() && !S.AsyncRunning()) {
-            double d = 0.0, rp = 0.0, rn = 0.0;
-            if (S.SkirtState(d, rp, rn))
-                ImGui::TextDisabled("Skirt reached: + half %.4g, - half %.4g", rp, rn);
-            ImGui::SetItemTooltip("The least depth over each half's boundary loops. A loop whose\n"
-                                  "rings cannot be kept from folding over (a hole of the outline\n"
-                                  "closing up) stops early.");
-        }
-        if (S.BodySplit() && !S.AsyncRunning()) {
-            for (int side = 0; side < 2; ++side) {
-                const int sgn = (side == 0) ? +1 : -1;
-                int moved = 0, bad = 0;
-                double worst = 0.0, growth = 0.0;
-                if (S.TaperReport(sgn, moved, bad, worst, growth) && moved > 0)
-                    ImGui::TextDisabled("%s half: moved %d, outline +%.4f",
-                                        side == 0 ? "+" : "-", moved, growth);
-                // Measured live, so it reads the same way before and after a taper.
-                int badNow = 0; double worstNow = 0.0;
-                if (S.MeasureDraftNow(sgn, (double)S.taperAngle, badNow, worstNow))
-                    ImGui::TextDisabled("%s half now: %d facets short, min draft %.2f deg",
-                                        side == 0 ? "+" : "-", badNow, worstNow);
-            }
-            ImGui::TextWrapped("'facets short' is the independent per-facet check over the WHOLE "
-                               "half. A negative min draft is an undercut (the facet faces away "
-                               "from the draw direction). The taper only drafts walls against the "
-                               "outer parting outline, so interior walls and overhangs are "
-                               "reported here but not corrected.");
-        }
         ImGui::EndDisabled();
     }
     ImGui::PopID();
@@ -794,7 +954,7 @@ inline void DrawBodyTaperSection(Scene& scene, SemSessionNS::SemSession& S) {
 inline void DrawBodyPreformSection(Scene& scene, SemSessionNS::SemSession& S) {
     using namespace SemSessionNS;
     ImGui::PushID("bodypreform");
-    if (ImGui::CollapsingHeader("Preform (glue halves)", ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (TimedStageHeader("Preform (glue halves)", S.PreformTimeMs(), S.PreformPrim() != nullptr)) {
         const bool haveIso = S.HalvesHaveIsosurfaces();
         ImGui::TextUnformatted("Halves");
         ImGui::SameLine();
@@ -965,10 +1125,10 @@ inline void DrawOffsetSpacing(SemSessionNS::SemSession& S, bool& changed, bool& 
 }
 
 // The thermal BCs (3D): the field runs between two levels, one picked in each row
-// of radio buttons - the + row among the source and the outer offsets, the - row
-// among the source and the inner ones - with T = 0 on the one chosen below them and
-// T = 1 on the other. A change goes to the core at once and the domain is redrawn by
-// it; the field is re-solved by the next isosurface Apply.
+// of radio buttons - the + row among the source, the outer offsets and the faces of
+// the grid box, the - row among the source and the inner offsets - with T = 0 on the
+// one chosen below them and T = 1 on the other. A change goes to the core at once
+// and the domain is redrawn by it; the field is re-solved by the next isosurface Apply.
 inline void DrawBcLevelChoice(Scene& scene, SemSessionNS::SemSession& S) {
     int ni = 0;
     const std::vector<double>& lv = S.OffsetLevels(ni);
@@ -977,13 +1137,17 @@ inline void DrawBcLevelChoice(Scene& scene, SemSessionNS::SemSession& S) {
         return;
     }
     const int no = (int)lv.size() - 1 - ni;
+    // The box sits one past the outermost offset in the + row.
+    const int box = no + 1;
     auto resolve = [&](int k) {
+        if (k == SEM_LEVEL_BOX) return box;
         if (k >= SEM_LEVEL_OUTERMOST) return no;
         if (k <= SEM_LEVEL_INNERMOST) return -ni;
         return (std::max)(-ni, (std::min)(no, k));
     };
     // The extreme levels are kept as such, so they follow the offsets.
     auto store = [&](int k) {
+        if (k == box) return (int)SEM_LEVEL_BOX;
         if (k == no && no > 0) return (int)SEM_LEVEL_OUTERMOST;
         if (k == -ni && ni > 0) return (int)SEM_LEVEL_INNERMOST;
         return k;
@@ -1009,11 +1173,15 @@ inline void DrawBcLevelChoice(Scene& scene, SemSessionNS::SemSession& S) {
         ImGui::SameLine(x0 + labelW);
         ImGui::BeginGroup();
         const float right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
-        for (int i = 0; i <= count; ++i) {
+        // The + row ends with the box.
+        const int last = (sgn > 0) ? count + 1 : count;
+        for (int i = 0; i <= last; ++i) {
             const int k = sgn * i;
+            const bool isBox = (sgn > 0 && k == box);
             char buf[32];
-            if (k == 0) snprintf(buf, sizeof(buf), "source");
-            else        snprintf(buf, sizeof(buf), "%+.4g", lv[(size_t)(k + ni)]);
+            if (k == 0)     snprintf(buf, sizeof(buf), "source");
+            else if (isBox) snprintf(buf, sizeof(buf), "box");
+            else            snprintf(buf, sizeof(buf), "%+.4g", lv[(size_t)(k + ni)]);
             if (i > 0) {
                 const float w = ImGui::GetFrameHeight() + st.ItemInnerSpacing.x + ImGui::CalcTextSize(buf).x;
                 if (ImGui::GetItemRectMax().x + st.ItemSpacing.x + w < right) ImGui::SameLine();
@@ -1023,9 +1191,14 @@ inline void DrawBcLevelChoice(Scene& scene, SemSessionNS::SemSession& S) {
             ImGui::BeginDisabled(k == 0 && other == 0);
             if (ImGui::RadioButton(buf, sel == k) && sel != k) { sel = k; changed = true; }
             ImGui::EndDisabled();
-            if (k == 0) ImGui::SetItemTooltip("The source itself.");
-            else        ImGui::SetItemTooltip("%s offset %d, %+.4g from the source.",
-                                              sgn > 0 ? "Outer" : "Inner", i, lv[(size_t)(k + ni)]);
+            if (k == 0)     ImGui::SetItemTooltip("The source itself.");
+            else if (isBox) ImGui::SetItemTooltip("The faces of the grid box, beyond every offset level: their\n"
+                                                  "nodes hold this level's value. A face on a clip plane or on\n"
+                                                  "the end of a body half's domain stays insulated. For the\n"
+                                                  "shift the box counts at the mean distance of its nodes from\n"
+                                                  "the source.");
+            else            ImGui::SetItemTooltip("%s offset %d, %+.4g from the source.",
+                                                  sgn > 0 ? "Outer" : "Inner", i, lv[(size_t)(k + ni)]);
             ImGui::PopID();
         }
         ImGui::EndGroup();
@@ -1058,7 +1231,8 @@ inline void DrawBcLevelChoice(Scene& scene, SemSessionNS::SemSession& S) {
         S.ApplyThermalBC(scene);
     }
     if (S.MeshBuilt())
-        ImGui::TextDisabled("On the domain: the BC levels, blue = held at 0, red = held at 1.");
+        ImGui::TextDisabled("On the domain: the BC levels, blue = held at 0, red = held at 1;\n"
+                            "the free nodes as grey dots.");
 }
 
 // Show or hide the grid box of the domain - of both halves for a body.
@@ -1085,14 +1259,8 @@ inline void DrawGridBoxToggle(Scene& scene, SemSessionNS::SemSession& S) {
 inline void DrawDomainSection(Scene& scene, SemSessionNS::SemSession& S) {
     using namespace SemSessionNS;
     ImGui::PushID("domain");
-    if (ImGui::CollapsingHeader("Domain", ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (TimedStageHeader("Domain", CombinedStageMs(S.StageTimeMs(STAGE_OFFSETS), S.StageTimeMs(STAGE_MESH)), S.StageInUse(STAGE_MESH))) {
         if (ImGui::SmallButton("Reset##domain")) S.ResetStage(scene, STAGE_OFFSETS);
-        const double offMs = S.OffsetsTimeMs(), meshMs = S.MeshTimeMs();
-        if (offMs >= 0.0 || meshMs >= 0.0) {
-            ImGui::SameLine();
-            ImGui::TextDisabled("%.0f ms", (std::max)(0.0, offMs) + (std::max)(0.0, meshMs));
-        }
-
         ImGui::Indent();
         bool meshChanged = false, offChanged = false, offReleased = false;
         ImGui::DragFloat3("Box (x part extents)", &S.gridBoxScale.x, 0.01f, 1.0f, 20.0f, "%.2f");
@@ -1102,39 +1270,54 @@ inline void DrawDomainSection(Scene& scene, SemSessionNS::SemSession& S) {
                               "every offset level with a grid step to spare. The domain of a body\n"
                               "half ends at the far end of its skirt (on the parting plane\n"
                               "without one).");
-        ImGui::DragFloat("Grid step", &S.gridStep, 0.05f, 0.0f, 1e6f, "%.3f");
+        if (meshChanged) S.gridStepPreview = 0.0f;
+        float gridStep = S.DisplayGridStep();
+        if (ImGui::DragFloat("Grid step", &gridStep, 0.05f, 0.0f, 1e6f, "%.5g"))
+            S.gridStep = gridStep;
         meshChanged |= ImGui::IsItemDeactivatedAfterEdit();
-        ImGui::SetItemTooltip("Spacing of the regular grid, world units. 0 = auto: about 1e5 grid\n"
+        ImGui::SetItemTooltip("Spacing of the regular grid, world units. Auto estimates about 1e5 grid\n"
                               "points in the box. The offset levels are sampled at half the step,\n"
                               "and grid points closer to them than that are left out.");
         ImGui::SameLine();
-        if (ImGui::SmallButton("auto")) { S.gridStep = 0.0f; meshChanged = true; }
+        if (ImGui::SmallButton("auto")) { S.gridStep = S.gridStepPreview = 0.0f; meshChanged = true; }
         S.gridBoxScale.x = (std::max)(1.0f, S.gridBoxScale.x);
         S.gridBoxScale.y = (std::max)(1.0f, S.gridBoxScale.y);
         S.gridBoxScale.z = (std::max)(1.0f, S.gridBoxScale.z);
         if (S.gridStep < 0.0f) S.gridStep = 0.0f;
 
         ImGui::Separator();
-        ImGui::TextDisabled("Offset levels, embedded in the grid as nodes");
-        DrawOffsetSpacing(S, offChanged, offReleased);
-        offChanged |= ImGui::Checkbox("Inward offsets", &S.innerEnabled);
-        ImGui::SetItemTooltip("Also offset the part into its material. The grid embeds these levels\n"
-                              "too, and the thermal BCs can then be set on them.");
-        ImGui::BeginDisabled(!S.innerEnabled);
-        ImGui::DragFloat("Inner first gap", &S.innerFirstGap, 0.05f, 0.0f, 1000.0f, "%.3f");
-        offReleased |= ImGui::IsItemDeactivatedAfterEdit();
-        ImGui::SetItemTooltip("Depth of the first inner offset, world units. Successive gaps scale\n"
-                              "by Inner grading.");
-        ImGui::DragInt("Inner offsets", &S.innerNum, 0.2f, 1, 100);
-        offReleased |= ImGui::IsItemDeactivatedAfterEdit();
-        ImGui::DragFloat("Inner grading", &S.innerGrading, 0.01f, 0.05f, 20.0f, "%.3f");
-        offReleased |= ImGui::IsItemDeactivatedAfterEdit();
-        ImGui::EndDisabled();
-        if (S.innerFirstGap <= 0.0f) S.innerFirstGap = 0.001f;
-        if (S.innerNum < 1) S.innerNum = 1;
-        if (S.innerGrading <= 0.0f) S.innerGrading = 1.0f;
+        ImGui::TextDisabled("Domain is cut at every SDF level");
+        if (ImGui::BeginTable("offset_columns", 2, ImGuiTableFlags_SizingStretchSame)) {
+            ImGui::TableNextColumn();
+            ImGui::PushItemWidth(-ImGui::GetFontSize() * 9.0f);
+            DrawOffsetSpacing(S, offChanged, offReleased);
+            ImGui::PopItemWidth();
+            ImGui::TableNextColumn();
+            ImGui::PushItemWidth(-ImGui::GetFontSize() * 9.0f);
+            offChanged |= ImGui::Checkbox("Inward offsets", &S.innerEnabled);
+            ImGui::SetItemTooltip("Also offset the part into its material. The grid embeds these levels\n"
+                                  "too, and the thermal BCs can then be set on them.");
+            ImGui::BeginDisabled(!S.innerEnabled);
+            ImGui::DragFloat("Inner first gap", &S.innerFirstGap, 0.05f, 0.0f, 1000.0f, "%.3f");
+            offReleased |= ImGui::IsItemDeactivatedAfterEdit();
+            ImGui::SetItemTooltip("Depth of the first inner offset, world units. Successive gaps scale\n"
+                                  "by Inner grading.");
+            ImGui::DragInt("Inner offsets", &S.innerNum, 0.2f, 1, 100);
+            offReleased |= ImGui::IsItemDeactivatedAfterEdit();
+            ImGui::DragFloat("Inner grading", &S.innerGrading, 0.01f, 0.05f, 20.0f, "%.3f");
+            offReleased |= ImGui::IsItemDeactivatedAfterEdit();
+            ImGui::EndDisabled();
+            if (S.innerFirstGap <= 0.0f) S.innerFirstGap = 0.001f;
+            if (S.innerNum < 1) S.innerNum = 1;
+            if (S.innerGrading <= 0.0f) S.innerGrading = 1.0f;
+            ImGui::PopItemWidth();
+            ImGui::EndTable();
+        }
 
-        if (offChanged || offReleased) S.MarkStageDirty(STAGE_OFFSETS);
+        if (offChanged || offReleased) {
+            S.gridStepPreview = 0.0f;
+            S.MarkStageDirty(STAGE_OFFSETS);
+        }
         if (meshChanged) S.MarkStageDirty(STAGE_MESH);
         if (ImGui::Button("Apply domain", {160, 0})) S.RecomputeUpToAsync(scene, STAGE_MESH, false);
         ImGui::SetItemTooltip("Compute the offset levels when they changed, then mesh the box as\n"
@@ -1173,6 +1356,9 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
     // context) right here, and the rest of the frame must draw that setup.
     DrawSetupTabs(scene);
     SemSession& S = Session();
+
+    // The parting-line tool, while the active setup draws one.
+    ProcessSketchTool(scene, S, blockMousePick);
 
     if (!S.HasSource()) {
         if (S.SourcePrim()) ImGui::TextDisabled("Staged primitive is not a SEM contour.");
@@ -1333,12 +1519,6 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
 
     // Disabled "<n> ms" tag shown next to a stage header once it has been
     // computed (ms < 0 => not yet measured, nothing drawn).
-    auto stageTime = [&](double ms) {
-        if (ms < 0.0) return;
-        ImGui::SameLine();
-        ImGui::TextDisabled("%.0f ms", ms);
-    };
-
     // Standalone mode replaces the whole pipeline-stage stack with a single
     // offset-remesh section; the source + clip-plane sections above stay shared.
     if (S.BodyRemeshMode()) {
@@ -1357,36 +1537,11 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         ImGui::BeginDisabled(!S.BodySplit());
     }
 
-    {
-        ImGui::PushID("sub");
-        if (ImGui::CollapsingHeader("Subdivide", ImGuiTreeNodeFlags_DefaultOpen)) {
-        if (!is3D) ImGui::Checkbox("Auto-apply", &S.subAuto);
-
-        ImGui::Indent();
-        bool changed = false, released = false;
-        changed |= ImGui::RadioButton("Clear",    &S.subMode, 0); ImGui::SameLine();
-        changed |= ImGui::RadioButton("Adaptive", &S.subMode, 1); ImGui::SameLine();
-        changed |= ImGui::RadioButton("Fixed N",  &S.subMode, 2);
-        if (S.subMode == 2) {
-            ImGui::DragInt("Parts per edge", &S.subN, 0.1f, 1, 100);
-            released |= ImGui::IsItemDeactivatedAfterEdit();
-        }
-        if (S.subN < 1) S.subN = 1;
-
-        if (changed || released) S.MarkStageDirty(STAGE_SUBDIVIDE);
-        if (!is3D && S.subAuto) { if (changed || released) S.RecomputeUpToAsync(scene, STAGE_SUBDIVIDE, true); }
-        else if (ImGui::Button("Apply", {160, 0})) S.RecomputeUpToAsync(scene, STAGE_SUBDIVIDE, false);
-        ImGui::Unindent();
-        }
-        ImGui::PopID();
-    }
-
     if (!is3D) {
     {
         ImGui::PushID("off");
-        if (ImGui::CollapsingHeader("Offsets", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (TimedStageHeader("Offsets", S.StageTimeMs(STAGE_OFFSETS), S.StageInUse(STAGE_OFFSETS))) {
         if (ImGui::SmallButton("Reset##off")) S.ResetStage(scene, STAGE_OFFSETS);
-        stageTime(S.OffsetsTimeMs());
         autoTag(&S.offAuto);
 
         ImGui::Indent();
@@ -1402,9 +1557,8 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
 
     {
         ImGui::PushID("mesh");
-        if (ImGui::CollapsingHeader("Mesh", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (TimedStageHeader("Mesh", S.StageTimeMs(STAGE_MESH), S.StageInUse(STAGE_MESH))) {
         if (ImGui::SmallButton("Reset##mesh")) S.ResetStage(scene, STAGE_MESH);
-        stageTime(S.MeshTimeMs());
         autoTag(&S.meshAuto);
 
         ImGui::Indent();
@@ -1436,17 +1590,10 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         // The thermal solve is part of this stage: Apply solves the field first
         // whenever it is stale (a new domain, or other BC levels), then extracts.
         ImGui::PushID("iso");
-        if (ImGui::CollapsingHeader(is3D ? "Isosurface" : "Isoline", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (TimedStageHeader(is3D ? "Isosurface" : "Isoline",
+            CombinedStageMs(S.StageTimeMs(STAGE_THERMAL), S.StageTimeMs(STAGE_ISOSURFACE)),
+            S.StageInUse(STAGE_ISOSURFACE))) {
         if (ImGui::SmallButton("Reset##iso")) S.ResetStage(scene, STAGE_THERMAL);
-        if (S.ThermalTimeMs() >= 0.0) {
-            ImGui::SameLine();
-            ImGui::TextDisabled("solve %.0f ms", S.ThermalTimeMs());
-        }
-        if (S.IsoTimeMs() >= 0.0) {
-            ImGui::SameLine();
-            ImGui::TextDisabled("extract %.0f ms", S.IsoTimeMs());
-        }
-
         ImGui::Indent();
         if (is3D) {
             ImGui::DragFloat("Smoothing (0..1)", &S.isoValue, 0.005f, 0.0f, 1.0f, "%.3f");
@@ -1471,6 +1618,17 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
                 ImGui::TextDisabled("Shift: level at %+.4g %s %.3f x %.4g = %+.4g, back onto the source",
                                     d0, (d1 >= d0) ? "+" : "-", S.isoValue, std::abs(d1 - d0), at);
             }
+            ImGui::SeparatorText("Remesh");
+            ImGui::PushID("iso_remesh");
+            const auto previous = S.isoRemesh;
+            DrawRemeshKnobs(S.isoRemesh);
+            const auto& rm = S.isoRemesh;
+            if (previous.rmAdaptive != rm.rmAdaptive || previous.rmTargetMult != rm.rmTargetMult ||
+                previous.rmMinMult != rm.rmMinMult || previous.rmMaxDevMult != rm.rmMaxDevMult ||
+                previous.rmFeatureDeg != rm.rmFeatureDeg || previous.rmIters != rm.rmIters ||
+                previous.rmAdaptiveIters != rm.rmAdaptiveIters)
+                S.MarkStageDirty(STAGE_ISOSURFACE);
+            ImGui::PopID();
         } else {
             ImGui::DragFloat("Isoline value (0..1)", &S.isoValue, 0.005f, 0.0f, 1.0f, "%.3f");
             if (ImGui::IsItemDeactivatedAfterEdit()) S.MarkStageDirty(STAGE_ISOSURFACE);
@@ -1502,11 +1660,11 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
         bool bc = S.bcView;
         if (ImGui::Checkbox("BC / T field", &bc)) S.SetBCView(scene, bc);
         ImGui::SetItemTooltip(is3D
-            ? "How the domain is drawn (show it to see it). On: only the nodes the\n"
-              "BC levels hold fixed and the edges between them - blue T=0, red T=1;\n"
-              "the free nodes and every edge touching one are not drawn. Off: the\n"
-              "solved temperature over every edge, blue (T=0) to red (T=1). Until\n"
-              "the field is solved for the BC levels as they stand, the BCs are\n"
+            ? "How the domain is drawn (show it to see it). On: the BC levels as the\n"
+              "edges between the nodes they hold fixed - blue T=0, red T=1 - and the\n"
+              "free nodes as small see-through grey dots, with no edge touching one.\n"
+              "Off: the solved temperature over every edge, blue (T=0) to red (T=1).\n"
+              "Until the field is solved for the BC levels as they stand, the BCs are\n"
               "drawn either way."
             : "Mesh colouring after the solve (show the mesh to see it).\n"
               "Off: temperature field as a blue (T=0) to red (T=1) gradient.\n"
@@ -1528,9 +1686,7 @@ inline void Draw(Scene& scene, bool& blockMousePick) {
     ImGui::EndDisabled();
 
     ImGui::Separator();
-    // Cumulative compute time across the offsets, mesh and thermal stages. Always
-    // shown; it grows as each stage is computed (0 ms until the first compute).
-    ImGui::TextDisabled("Total compute: %.0f ms", S.TotalTimeMs());
+    ImGui::TextDisabled("Total compute: %.2f s", S.TotalTimeMs() / 1000.0);
     ImGui::TextDisabled("%s", S.status);
 
     ImGui::PopItemWidth();

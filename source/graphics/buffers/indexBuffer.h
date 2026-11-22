@@ -31,6 +31,12 @@ public:
 		return bufferSize;
 	}
 
+    void Clear() {
+        buffer.Reset();
+        bufferSize = 0;
+        std::vector<DWORD>().swap(data);
+    }
+
 	std::vector<DWORD> GetData()const {
 		return this->data;
 	}

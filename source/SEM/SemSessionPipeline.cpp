@@ -16,12 +16,6 @@ void SemSession::RecomputeUpTo(Scene& scene, Stage to, bool silent) {
     if (!HasSource() || dim == 3) return;
     bool ran = false;
 
-    if (m_dirty[STAGE_SUBDIVIDE]) {
-        if (!ApplySubdivide(scene, silent)) return;
-        m_dirty[STAGE_SUBDIVIDE] = false;
-        ran = true;
-    }
-
     // Visibility rule for a cascaded run: only the stage whose Apply was pressed
     // (== `to`) is shown; the prerequisite stages this call had to (re)build to
     // reach it are created hidden. The user reveals them with the tree eye.
@@ -102,7 +96,7 @@ void SemSession::ResetStage(Scene& scene, Stage st) {
     else if (st == STAGE_MESH)       { DropMesh(scene);
                                        m_dirty[STAGE_MESH] = m_dirty[STAGE_THERMAL] =
                                        m_dirty[STAGE_ISOSURFACE] = true; }
-    else if (st == STAGE_THERMAL)    { DropIsoline(scene); m_thermalSolved = false; m_isoMs = -1.0;
+    else if (st == STAGE_THERMAL)    { DropIsoline(scene); m_thermalSolved = false;
                                        m_dirty[STAGE_THERMAL] = m_dirty[STAGE_ISOSURFACE] = true; }
     else if (st == STAGE_ISOSURFACE) { DropIsoline(scene);
                                        m_dirty[STAGE_ISOSURFACE] = true; }
@@ -329,99 +323,161 @@ void SemSession::SetBCView(Scene& scene, bool on) {
     }
 }
 
-void SemSession::TakeMeshData(const CSV3DLoader::CSV3DData& data, bool topology) {
-    const size_t nn = data.nodes.size();
-    m_meshPos.resize(nn);
-    m_meshT.resize(nn);
-    for (size_t i = 0; i < nn; ++i) {
-        m_meshPos[i] = data.nodes[i].pos;
-        m_meshT[i]   = data.nodes[i].T;
+void SemSession::TakeMeshTemperatures(const SEM_MeshView& mesh) {
+    m_meshT.resize(mesh.num_nodes);
+    if (mesh.T) std::copy_n(mesh.T, mesh.num_nodes, m_meshT.begin());
+    else std::fill(m_meshT.begin(), m_meshT.end(), 0.0f);
+}
+
+void SemSession::TakeMeshData(const SEM_MeshView& mesh, std::vector<unsigned long long> edges) {
+    TakeMeshTemperatures(mesh);
+    m_meshPos.resize(mesh.num_nodes);
+    for (int i = 0; i < mesh.num_nodes; ++i) {
+        const double* p = mesh.coords + 3 * (size_t)i;
+        m_meshPos[i] = {(float)p[0], (float)p[1], (float)p[2]};
     }
-    if (!topology) return;
-    m_meshTets = data.tets;
-    // Every tet contributes its six edges; sorting the packed pairs dedupes the
-    // edges tets share far faster than a node set would.
-    m_meshEdges.clear();
-    m_meshEdges.reserve(data.tets.size() * 6);
-    auto add = [&](unsigned a, unsigned b) {
-        if (a == b || a >= nn || b >= nn) return;
-        if (a > b) std::swap(a, b);
-        m_meshEdges.push_back(((unsigned long long)a << 32) | (unsigned long long)b);
-    };
-    for (const auto& t : data.tets) {
-        add(t.x, t.y); add(t.x, t.z); add(t.x, t.w);
-        add(t.y, t.z); add(t.y, t.w); add(t.z, t.w);
+    m_meshTets.resize(mesh.num_tets);
+    for (int t = 0; t < mesh.num_tets; ++t) {
+        const int* v = mesh.tets + 4 * (size_t)t;
+        m_meshTets[t] = {(unsigned)v[0], (unsigned)v[1], (unsigned)v[2], (unsigned)v[3]};
     }
-    std::sort(m_meshEdges.begin(), m_meshEdges.end());
-    m_meshEdges.erase(std::unique(m_meshEdges.begin(), m_meshEdges.end()), m_meshEdges.end());
+    m_meshEdges = std::move(edges);
+    m_meshStats = Stats{};
+    m_meshStats.valid = mesh.num_nodes > 0;
+    m_meshStats.verts = mesh.num_nodes;
+    m_meshStats.edges = (int)m_meshEdges.size();
+}
+
+void SemSession::CreateMeshDisplay(Scene& scene, bool show) {
+    if (m_meshEdges.empty() || m_meshPos.empty()) return;
+    m_mesh = scene.AddLineListNode("mesh_" + Stem(m_srcPath), AttachParent());
+    m_mesh->lineStyle = LINESTYLE_HAIRLINE;
+    m_mesh->visible = show;
+    m_freeNodesVisible = true;
+    m_meshDrawBC = true;
+    ConfigureSurface3D(m_mesh);
+    m_meshDisplayDirty = true;
+}
+
+void SemSession::RefreshPendingDomain(Scene& scene) {
+    if (AsyncRunning()) return;
+    if (IsBody()) {
+        for (SemSession* h : m_half)
+            if (h) h->RefreshPendingDomain(scene);
+    } else if (m_meshDisplayDirty && Alive(scene, m_mesh) && m_mesh->visible) {
+        Activate();
+        RebuildMeshDisplay(scene);
+    }
 }
 
 void SemSession::RebuildMeshDisplay(Scene& scene) {
-    if (dim != 3 || IsBody()) return;
-    const bool wasVisible = Alive(scene, m_mesh) ? m_mesh->visible : true;
-    if (Alive(scene, m_mesh)) scene.RemovePrimitive(m_mesh);
-    m_mesh = nullptr;
+    if (dim != 3 || IsBody() || !Alive(scene, m_mesh)) return;
     if (m_meshEdges.empty() || m_meshPos.empty()) return;
+    m_meshDisplayDirty = true;
+    if (!m_mesh->visible) return;
 
-    // The BCs while the field is not solved for the levels as they stand, else as
-    // the BC/T choice says.
     const bool bc = bcView || !m_thermalSolved || m_dirty[STAGE_THERMAL];
-    std::vector<signed char> flags;
-    if (bc) {
-        SEM_SetThermalBC3D(bcFrom, bcTo);
-        int n = 0;
-        SEM_GetThermalBCNodes3D(nullptr, 0, &n);
-        if (n > 0) {
-            flags.assign((size_t)n, -1);
-            SEM_GetThermalBCNodes3D(flags.data(), n, &n);
-        }
+    if (!bc && !m_meshDrawBC &&
+        m_mesh->UpdateLineTemperatures(m_meshT, Colors::BLUE, Colors::RED)) {
+        m_meshDisplayDirty = false;
+        return;
     }
-    const size_t nn = (std::min)(m_meshPos.size(), bc ? flags.size() : m_meshPos.size());
-    std::vector<XMFLOAT3> poses;
-    std::vector<XMFLOAT4> cols;
+
+    std::vector<signed char> flags;
+    std::vector<DWORD> indices;
     if (bc) {
-        // Only the 2D boundary of each region one BC holds: the edges between its
-        // nodes on the tets it shares with the free nodes, i.e. the BC levels
-        // themselves, not the regions behind them.
+        flags.resize(m_meshPos.size(), -1);
+        if (SEM_GetThermalBCNodes3D(flags.data(), (int)flags.size(), nullptr) != 0)
+            std::fill(flags.begin(), flags.end(), -1);
+
+        // A cut domain supplies the actual level facets. Older sessions
+        // and the box level still use the fixed-node boundary display.
+        const int* triangles = nullptr;
+        int faceCount = 0;
         std::vector<unsigned long long> edges;
-        for (const XMUINT4& t : m_meshTets) {
-            const unsigned q[4] = { t.x, t.y, t.z, t.w };
-            bool touchesFree = false;
-            for (unsigned v : q) touchesFree = touchesFree || (v < nn && flags[v] < 0);
-            if (!touchesFree) continue;
-            for (int i = 0; i < 4; ++i)
-                for (int j = i + 1; j < 4; ++j) {
-                    unsigned a = q[i], b = q[j];
-                    if (a >= nn || b >= nn || a == b || flags[a] < 0 || flags[a] != flags[b]) continue;
-                    if (a > b) std::swap(a, b);
-                    edges.push_back(((unsigned long long)a << 32) | (unsigned long long)b);
-                }
+        auto add = [&](unsigned a, unsigned b) {
+            if (a == b) return;
+            if (a > b) std::swap(a,b);
+            edges.push_back(((unsigned long long)a << 32) | b);
+        };
+        bool fallback[2] = {true, true};
+        const int levels[2] = {bcFrom, bcTo};
+        for (int side = 0; side < 2; ++side) {
+            if (levels[side] == SEM_LEVEL_BOX ||
+                SEM_GetThermalBCFaces3D(side, &triangles, &faceCount) != 0) continue;
+            fallback[side] = false;
+            for (int i = 0; i < faceCount; ++i) {
+                const int* t = triangles + 3 * (size_t)i;
+                add(t[0], t[1]); add(t[1], t[2]); add(t[2], t[0]);
+            }
+        }
+        if (fallback[0] || fallback[1]) {
+            for (const XMUINT4& t : m_meshTets) {
+                const unsigned v[4] = {t.x, t.y, t.z, t.w};
+                bool touchesFree = false;
+                for (unsigned id : v) touchesFree |= flags[id] < 0;
+                if (!touchesFree) continue;
+                for (int i = 0; i < 4; ++i)
+                    for (int j = i + 1; j < 4; ++j) {
+                        const int side = flags[v[i]];
+                        if (side >= 0 && side == flags[v[j]] && fallback[side])
+                            add(v[i], v[j]);
+                    }
+            }
         }
         std::sort(edges.begin(), edges.end());
         edges.erase(std::unique(edges.begin(), edges.end()), edges.end());
-        poses.reserve(edges.size() * 2);
-        cols.reserve(edges.size() * 2);
-        for (unsigned long long e : edges) {
-            const unsigned a = (unsigned)(e >> 32), b = (unsigned)(e & 0xFFFFFFFFULL);
-            const XMFLOAT4& c = flags[a] ? Colors::RED : Colors::BLUE;
-            poses.push_back(m_meshPos[a]); cols.push_back(c);
-            poses.push_back(m_meshPos[b]); cols.push_back(c);
+        indices.reserve(edges.size() * 2);
+        for (auto edge : edges) {
+            indices.push_back((DWORD)(edge >> 32));
+            indices.push_back((DWORD)edge);
         }
     } else {
-        poses.reserve(m_meshEdges.size() * 2);
-        cols.reserve(m_meshEdges.size() * 2);
-        for (unsigned long long e : m_meshEdges) {
-            const unsigned a = (unsigned)(e >> 32), b = (unsigned)(e & 0xFFFFFFFFULL);
-            if (a >= nn || b >= nn) continue;
-            poses.push_back(m_meshPos[a]); cols.push_back(Colors::Lerp(Colors::BLUE, Colors::RED, m_meshT[a]));
-            poses.push_back(m_meshPos[b]); cols.push_back(Colors::Lerp(Colors::BLUE, Colors::RED, m_meshT[b]));
+        indices.reserve(m_meshEdges.size() * 2);
+        for (auto edge : m_meshEdges) {
+            indices.push_back((DWORD)(edge >> 32));
+            indices.push_back((DWORD)edge);
         }
     }
-    m_mesh = scene.AddColoredLines(poses, cols, "mesh_" + Stem(m_srcPath), AttachParent());
-    if (!m_mesh) return;
-    StyleLines(m_mesh, LINESTYLE_HAIRLINE);
-    ConfigureSurface3D(m_mesh);
-    if (!wasVisible) scene.SetNodeVisibleCascade(m_mesh, false);
+
+    std::vector<Vertex> vertices;
+    if (!indices.empty()) {
+        vertices.reserve(m_meshPos.size());
+        for (size_t i = 0; i < m_meshPos.size(); ++i) {
+            const XMFLOAT4 color = bc ? (flags[i] == 1 ? Colors::RED : Colors::BLUE)
+                                      : Colors::Lerp(Colors::BLUE, Colors::RED, m_meshT[i]);
+            vertices.emplace_back(m_meshPos[i], color);
+        }
+    }
+
+    // Preserve the domain's tree entry and the user's free-node visibility.
+    Primitive* oldDots = nullptr;
+    for (SceneNode* child : m_mesh->children) {
+        if (child && child->IsPrimitive() && child->name == "free nodes") {
+            oldDots = static_cast<Primitive*>(child);
+            break;
+        }
+    }
+    if (oldDots) {
+        m_freeNodesVisible = oldDots->visible;
+        scene.RemovePrimitive(oldDots);
+    }
+    const bool drawn = m_mesh->SetIndexedLines(std::move(vertices), std::move(indices));
+    m_meshDrawBC = bc;
+    // A failed allocation should not loop on every frame.
+    m_meshDisplayDirty = false;
+    if (!drawn) Report(scene, true, "Could not allocate the domain's display buffers.");
+    if (bc) {
+        std::vector<XMFLOAT3> freePts;
+        for (size_t i = 0; i < flags.size(); ++i)
+            if (flags[i] < 0) freePts.push_back(m_meshPos[i]);
+        const XMFLOAT4 dotCol = scene.lightTheme ? XMFLOAT4(0.45f, 0.45f, 0.45f, 0.45f)
+                                                 : XMFLOAT4(0.85f, 0.85f, 0.85f, 0.45f);
+        if (Primitive* dots = scene.AddPointCloud(freePts, dotCol, "free nodes", m_mesh)) {
+            dots->pointStyle = Primitive::POINTSTYLE_DOT;
+            dots->visible = m_freeNodesVisible;
+        }
+    }
 }
 
 void SemSession::RebuildGridBox(Scene& scene) {
@@ -520,6 +576,7 @@ void SemSession::DropMesh(Scene& scene) {
     if (Alive(scene, m_mesh)) scene.RemovePrimitive(m_mesh);
     if (Alive(scene, m_gridBox)) scene.RemovePrimitive(m_gridBox);
     m_mesh = nullptr; m_gridBox = nullptr; m_meshStats = Stats(); m_meshPath.clear();
+    m_meshDisplayDirty = false;
     m_meshPos.clear(); m_meshT.clear(); m_meshTets.clear(); m_meshEdges.clear();
     m_thermalSolved = false;
     DropIsoline(scene);
@@ -529,9 +586,9 @@ void SemSession::ReloadMeshColored(Scene& scene) {
     // 3D: the solve wrote T into the core's mesh; take it and redraw.
     if (dim == 3) {
         if (m_meshEdges.empty()) return;
-        CSV3DLoader::CSV3DData data;
-        if (!FetchMeshData(scene, true, data)) return;
-        TakeMeshData(data, data.nodes.size() != m_meshPos.size());
+        SEM_MeshView mesh{};
+        if (SEM_GetMesh3D(&mesh) != 0 || (size_t)mesh.num_nodes != m_meshPos.size()) return;
+        TakeMeshTemperatures(mesh);
         RebuildMeshDisplay(scene);
         scene.UpdateLight();
         return;

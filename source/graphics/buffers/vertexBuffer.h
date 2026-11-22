@@ -52,6 +52,24 @@ public:
 		return this->stride.get();
 	}
 
+    void Clear() {
+        buffer.Reset();
+        bufferSize = 0;
+        std::vector<T>().swap(data);
+    }
+
+    template<class Edit>
+    HRESULT EditVertices(ID3D11DeviceContext* context, Edit edit) {
+        if (!buffer.Get()) return E_FAIL;
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        const HRESULT hr = context->Map(buffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+        if (FAILED(hr)) return hr;
+        edit(data);
+        memcpy(mapped.pData, data.data(), sizeof(T) * data.size());
+        context->Unmap(buffer.Get(), 0);
+        return S_OK;
+    }
+
 	std::vector<T> GetData()const {
 		return this->data;
 	}

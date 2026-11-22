@@ -129,10 +129,13 @@ void Scene::Draw()
 		this->deviceContext->ClearRenderTargetView(this->primitivesIDsRTV.Get(), Colors::clearColor);
 
 	for (Primitive* p : primitivesOrdered) {
-		if (!p->visible) continue;
+        if (!p->visible || !p->GetVertexCount()) continue;
 		UCHAR dim = p->GetDimension();
 		switch (dim) {
-		case 0: this->deviceContext->GSSetShader(this->geometryshaderpoints.GetShader(), NULL, 0); break;
+		case 0:
+			this->deviceContext->GSSetShader(p->pointStyle == Primitive::POINTSTYLE_DOT
+				? this->geometryshaderdots.GetShader() : this->geometryshaderpoints.GetShader(), NULL, 0);
+			break;
 		case 1:
 			this->deviceContext->GSSetShader(this->geometryshaderthickness.GetShader(), NULL, 0);
 			// Push this line's own style width; the GS reads Thickness per draw.
@@ -166,6 +169,11 @@ void Scene::Draw()
 			if (p->selected) {
 				p->SetColor(Colors::SelectedColor);
 				this->deviceContext->OMSetDepthStencilState(this->dsStateNoDepth.Get(), 0);
+			}
+			// A see-through dot cloud is depth-tested but writes no depth, so its
+			// dots blend over one another instead of blocking the ones behind.
+			else if (dim == 0 && p->pointStyle == Primitive::POINTSTYLE_DOT && p->GetTransparent()) {
+				this->deviceContext->OMSetDepthStencilState(this->dsStateDepthNoWrite.Get(), 0);
 			}
 			p->Draw(this->camera.GetViewMatrix(), projectionMatrix);
 
@@ -431,12 +439,37 @@ void Scene::DeleteSelected()
 	m_sortedDirty = true;
 }
 
+bool Scene::ScreenToPlane(float px, float py, const XMFLOAT4& plane, XMFLOAT3& out) const
+{
+	if (this->width <= 0 || this->height <= 0) return false;
+	const float nx = 2.0f * px / (float)this->width - 1.0f;
+	const float ny = 1.0f - 2.0f * py / (float)this->height;
+	const XMMATRIX inv = this->camera.GetInverseMatrix();
+	const XMVECTOR a = XMVector3TransformCoord(XMVectorSet(nx, ny, 0.0f, 1.0f), inv);
+	const XMVECTOR b = XMVector3TransformCoord(XMVectorSet(nx, ny, 1.0f, 1.0f), inv);
+	const XMVECTOR n = XMVectorSet(plane.x, plane.y, plane.z, 0.0f);
+	const float da = XMVectorGetX(XMVector3Dot(n, a)) + plane.w;
+	const float db = XMVectorGetX(XMVector3Dot(n, b)) + plane.w;
+	if (std::fabs(da - db) <= 1e-9f * (std::fabs(da) + std::fabs(db))) return false;
+	XMStoreFloat3(&out, XMVectorLerp(a, b, da / (da - db)));
+	return true;
+}
+
+XMFLOAT2 Scene::WorldToScreen(const XMFLOAT3& p) const
+{
+	const XMMATRIX vp = this->camera.GetViewMatrix() * this->camera.GetProjectionMatrix();
+	const XMVECTOR c = XMVector3TransformCoord(XMLoadFloat3(&p), vp);
+	return XMFLOAT2((XMVectorGetX(c) + 1.0f) * 0.5f * (float)this->width,
+	                (1.0f - XMVectorGetY(c)) * 0.5f * (float)this->height);
+}
+
 void Scene::HandleLMouse(int px, int py, bool tPressfRelease)
 {
 	static bool blockNextLMouseRelease = false;
 
 	try {
-		if (px < 0 || py < 0 || px >= this->width || py >= this->height || this->blockMousePick) return;
+		if (px < 0 || py < 0 || px >= this->width || py >= this->height || this->blockMousePick ||
+		    this->sceneToolActive) return;
 
 		UINT id = this->GetIdByPixel(px, py);
 
@@ -873,6 +906,21 @@ Primitive* Scene::AddColoredLines(const std::vector<XMFLOAT3>& poses, const std:
 	ApplyCurrentLighting(p);
 	m_sortedDirty = true;
 	return p;
+}
+
+Primitive* Scene::AddLineListNode(const std::string& name, SceneNode* parent)
+{
+    auto* p = new Primitive(device, deviceContext);
+    p->SetIndexedLines({}, {});
+    p->SetIlluminationCapability(false);
+    p->SetUseVertexColor(true);
+    p->SetColor({1, 1, 1, 1});
+    p->name = name;
+    p->id = NextId();
+    primitives.push_back(p);
+    (parent ? parent : &root)->AddChild(p);
+    m_sortedDirty = true;
+    return p;
 }
 
 Primitive* Scene::AddColoredTriangles(const std::vector<XMFLOAT3>& poses, const std::vector<XMFLOAT4>& cols,
@@ -1340,6 +1388,9 @@ bool Scene::InitializeDirectX()
 	if (!this->geometryshaderpoints.Initialize(this->device, this->shadersPath + L"geometryshaderpoints.cso"))
 		return false;
 
+	if (!this->geometryshaderdots.Initialize(this->device, this->shadersPath + L"geometryshaderdots.cso"))
+		return false;
+
 	if (!this->geometryshaderthickness.Initialize(this->device, this->shadersPath + L"geometryshaderthickness.cso"))
 		return false;
 
@@ -1579,68 +1630,46 @@ void Scene::DrawGrid()
 
 	this->deviceContext->GSSetShader(this->geometryshaderthickness.GetShader(), NULL, 0);
 
-	const float baseGridSize = 128.f;
-	const int   linesNum     = 40;
-	const float logStep      = 2.0f;
+    constexpr float baseGridSize = 128.f;
+    constexpr int extent = 40;
+    const float level = std::log2(this->camera.GetScale());
+    const float levelFloor = std::floor(level);
+    const float step = baseGridSize * std::exp2(levelFloor);
+    const float fraction = level - levelFloor;
+    const auto& view = camera.GetViewMatrix();
+    const auto& projection = camera.GetProjectionMatrix();
 
-	float camScale = this->camera.GetScale();
-
-	float logScale = std::log(camScale) / std::log(logStep);
-	float levelF   = std::floor(logScale);
-	float fraction = logScale - levelF;
-
-	float step0 = baseGridSize * std::pow(logStep, levelF);
-	float step1 = baseGridSize * std::pow(logStep, levelF + 1.f);
-
-	if (showGrid) {
-		float alpha0 = 1.0f - fraction;
-		float alpha1 = fraction;
-		float extent = linesNum * step1 / 2.f;
-
-		auto drawGrid = [&](float gridSize, float alpha) {
-			if (alpha <= 0.01f) return;
-			XMFLOAT4 color = { Colors::GRAY.x, Colors::GRAY.y, Colors::GRAY.z, Colors::GRAY.w * alpha };
-			int lineCount = (int)(extent / gridSize);
-			for (int ix = -lineCount; ix <= lineCount; ix++) {
-				float x = (float)ix * gridSize;
-				std::vector<XMFLOAT3> poses = {
-					XMFLOAT3(x,  extent, 0),
-					XMFLOAT3(x, -extent, 0)
-				};
-				auto p1 = PrimitiveConstructor::Line(poses, color, 0);
-				poses = {
-					XMFLOAT3( extent, x, 0),
-					XMFLOAT3(-extent, x, 0)
-				};
-				auto p2 = PrimitiveConstructor::Line(poses, color, 0);
-				p1->Draw(this->camera.GetViewMatrix(), this->camera.GetProjectionMatrix());
-				p2->Draw(this->camera.GetViewMatrix(), this->camera.GetProjectionMatrix());
-				delete p1;
-				delete p2;
-			}
-		};
-
-		drawGrid(step0, alpha0);
-		drawGrid(step1, alpha1);
-	}
-
-	if (showAxes) {
-		float axisLen = step1;
-
-		struct AxisLine { XMFLOAT3 from; XMFLOAT3 to; XMFLOAT4 color; };
-		AxisLine axes[] = {
-			{ XMFLOAT3(0, 0, 0), XMFLOAT3(axisLen, 0,       0), Colors::RED   },
-			{ XMFLOAT3(0, 0, 0), XMFLOAT3(0,       axisLen, 0), Colors::GREEN },
-			{ XMFLOAT3(0, 0, 0), XMFLOAT3(0,       0,       axisLen), Colors::BLUE  },
-		};
-
-		for (auto& axis : axes) {
-			std::vector<XMFLOAT3> poses = { axis.from, axis.to };
-			auto line = PrimitiveConstructor::Line(poses, axis.color, 0);
-			line->Draw(this->camera.GetViewMatrix(), this->camera.GetProjectionMatrix());
-			delete line;
-		}
-	}
+    if (showGrid) {
+        const float alpha[2] = {1.0f - fraction, fraction};
+        for (int i = 0; i < 2; ++i) {
+            if (alpha[i] <= 0.01f) continue;
+            auto& grid = m_gridLines[i];
+            if (!grid) {
+                std::vector<XMFLOAT3> positions;
+                const int stride = i + 1;
+                for (int k = -extent; k <= extent; k += stride) {
+                    positions.emplace_back((float)k, (float)extent, 0.0f);
+                    positions.emplace_back((float)k, -(float)extent, 0.0f);
+                    positions.emplace_back((float)extent, (float)k, 0.0f);
+                    positions.emplace_back(-(float)extent, (float)k, 0.0f);
+                }
+                grid.reset(PrimitiveConstructor::ColoredLine(positions, {}, true, 0));
+                grid->SetUseVertexColor(false);
+            }
+            grid->SetScale(step);
+            grid->SetColor({Colors::GRAY.x, Colors::GRAY.y, Colors::GRAY.z, Colors::GRAY.w * alpha[i]});
+            grid->Draw(view, projection);
+        }
+    }
+    if (showAxes) {
+        if (!m_axisLines) {
+            const std::vector<XMFLOAT3> positions{{0,0,0}, {1,0,0}, {0,0,0}, {0,1,0}, {0,0,0}, {0,0,1}};
+            const std::vector<XMFLOAT4> colors{Colors::RED, Colors::RED, Colors::GREEN, Colors::GREEN, Colors::BLUE, Colors::BLUE};
+            m_axisLines.reset(PrimitiveConstructor::ColoredLine(positions, colors, true, 0));
+        }
+        m_axisLines->SetScale(2.0f * step);
+        m_axisLines->Draw(view, projection);
+    }
 }
 
 const std::vector<Primitive*>& Scene::GetPrimitivesSorted() const
